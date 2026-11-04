@@ -341,3 +341,158 @@ async fn test_shutdown_drops_pending_events_without_responding() {
         "pending event must be dropped, not answered"
     );
 }
+
+// -----------------------------------------------------------------------
+// reads that arrive while a snapshot installs
+// -----------------------------------------------------------------------
+
+/// Business scenario: a follower that fell far behind is installing the leader's snapshot. A
+/// client sends it an eventual read; the read fell back from the ReadActor fast path to the Raft
+/// loop, which is busy awaiting the install.
+///
+/// Expected: the read waits behind the install. It is not answered from the half-installed state
+/// and it does not fail. Once the install is done it is answered from the new state.
+#[tokio::test]
+async fn test_read_queued_during_snapshot_install_is_answered_from_new_state() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use d_engine_proto::server::storage::SnapshotChunk;
+    use tokio::sync::mpsc;
+    use tokio::sync::oneshot;
+
+    use crate::ClientCmd;
+    use crate::MockStateMachineHandler;
+    use crate::PreparedSnapshot;
+    use crate::SnapshotApplyResult;
+    use crate::StateMachineCommand;
+    use crate::StateMachineCommandSender;
+    use crate::client::ClientReadRequest;
+    use crate::client::ClientResponsePayload;
+    use crate::client::ErrorCode;
+    use crate::client::KvEntry;
+    use crate::config::RaftNodeConfig;
+    use crate::config::ReadConsistencyPolicy;
+
+    const INSTALL_TIME: Duration = Duration::from_millis(400);
+
+    // The state machine holds "old" until the worker finishes installing, then "new".
+    let installed = Arc::new(AtomicBool::new(false));
+    let mut smh = MockStateMachineHandler::new();
+    smh.expect_update_pending().returning(|_| {});
+    smh.expect_last_applied().returning(|| 0);
+    smh.expect_should_snapshot().returning(|_| false);
+    smh.expect_get_latest_snapshot_metadata().returning(|| None);
+    smh.expect_try_begin_local_snapshot_capture().returning(|| Ok(()));
+    smh.expect_end_local_snapshot_capture().returning(|| {});
+    smh.expect_prepare_snapshot_stream().once().returning(|_, _, _, _| {
+        Ok(PreparedSnapshot {
+            metadata: Default::default(),
+            temp_dir: tempfile::tempdir().unwrap(),
+        })
+    });
+    let read_view = installed.clone();
+    smh.expect_read_from_state_machine().returning(move |keys| {
+        let value = if read_view.load(Ordering::SeqCst) {
+            "new"
+        } else {
+            "old"
+        };
+        Ok(keys
+            .into_iter()
+            .map(|key| KvEntry {
+                key,
+                value: Bytes::from(value),
+            })
+            .collect())
+    });
+
+    // The worker takes INSTALL_TIME to install, then switches the state machine to "new".
+    let (sm_tx, mut sm_rx) = mpsc::unbounded_channel();
+    let (install_started_tx, install_started_rx) = oneshot::channel();
+    let worker_state = installed.clone();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::InstallSnapshot { response, .. }) = sm_rx.recv().await {
+            let _ = install_started_tx.send(());
+            tokio::time::sleep(INSTALL_TIME).await;
+            worker_state.store(true, Ordering::SeqCst);
+            let _ = response.send(Ok(SnapshotApplyResult::Applied {
+                last_included: Default::default(),
+            }));
+        }
+    });
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.default_policy = ReadConsistencyPolicy::EventualConsistency;
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx)
+        .with_node_config(node_config)
+        .with_state_machine_handler(smh)
+        .with_state_machine_commands(StateMachineCommandSender::new(sm_tx))
+        .turn_on_election(false)
+        .build_raft();
+    let event_tx = raft.event_sender();
+    let cmd_tx = raft.cmd_sender();
+    let _loop = tokio::spawn(async move { raft.run().await });
+
+    // The leader starts a snapshot transfer; the loop now awaits the worker.
+    let (chunk_tx, chunk_rx) = mpsc::channel(8);
+    chunk_tx
+        .send(SnapshotChunk {
+            leader_term: 1,
+            leader_id: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    drop(chunk_tx);
+    let (install_resp_tx, _install_resp_rx) = MaybeCloneOneshot::new();
+    event_tx
+        .send(InboundEvent::InstallSnapshotChunk(
+            chunk_rx,
+            install_resp_tx,
+        ))
+        .await
+        .unwrap();
+    install_started_rx.await.expect("the install must reach the worker");
+
+    // A read arrives while the install is running.
+    let (read_tx, mut read_rx) = MaybeCloneOneshot::new();
+    cmd_tx
+        .send(ClientCmd::Read(
+            ClientReadRequest {
+                client_id: 1,
+                consistency_policy: None, // server default: eventual
+                keys: vec![Bytes::from_static(b"k")],
+            },
+            read_tx,
+        ))
+        .await
+        .unwrap();
+
+    assert!(
+        tokio::time::timeout(INSTALL_TIME / 4, read_rx.recv()).await.is_err(),
+        "the read must wait behind the install, not be answered from the old state"
+    );
+
+    let response = tokio::time::timeout(Duration::from_secs(5), read_rx.recv())
+        .await
+        .expect("the queued read must be answered once the install is done")
+        .expect("the response channel must stay open")
+        .expect("the read must not fail");
+    assert_eq!(response.error, ErrorCode::Success);
+    match response.result {
+        Some(ClientResponsePayload::Read(results)) => {
+            assert_eq!(results.entries.len(), 1);
+            assert_eq!(
+                results.entries[0].value,
+                Bytes::from_static(b"new"),
+                "the read must see the state the snapshot installed"
+            );
+        }
+        other => panic!("expected read results, got: {other:?}"),
+    }
+}

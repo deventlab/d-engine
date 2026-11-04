@@ -50,7 +50,7 @@ watcher_buffer_size = 100
     let engine = DefaultEmbeddedEngine::start_custom(
         temp_dir.path(),
         Arc::new(storage),
-        Arc::new(state_machine),
+        state_machine,
         Some(config_path.to_str().unwrap()),
     )
     .await

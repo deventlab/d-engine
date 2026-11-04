@@ -133,7 +133,7 @@ where
     pub(crate) _data_dir_lock: DataDirLock,
 
     /// Fast-path read routing. Always set; `read_tx = None` means no ReadActor.
-    pub(crate) read_handle: crate::api::StandaloneReadHandle,
+    pub(crate) read_handle: crate::api::ReadHandle,
 }
 
 impl<T> Debug for Node<T>
@@ -212,9 +212,17 @@ where
             }
         }
 
-        // Shutdown in reverse startup order: stop the sm worker first so its Arc<SM> clone is
-        // dropped before we return, letting the storage backend release any exclusive
-        // resources it holds.
+        // Stop the read path first: the state machine worker closes the state machine as its last
+        // act, and the engine calls nothing on a state machine after `close()` has started. Reads
+        // that arrive during shutdown fail instead of reaching a state machine that is closing.
+        let ra_handle = self.read_actor_handle.lock().unwrap().take();
+        if let Some(ra_handle) = ra_handle {
+            ra_handle.abort();
+            let _ = ra_handle.await;
+        }
+
+        // Then stop the sm worker, so its Arc<SM> clone is dropped before we return, letting the
+        // storage backend release any exclusive resources it holds.
         let timeout =
             Duration::from_millis(self.node_config.raft.state_machine.shutdown_apply_timeout_ms);
         if let Err(e) = self.sm_worker.stop_and_join(timeout).await {
@@ -222,14 +230,6 @@ where
                 "state machine worker did not stop cleanly: {e}; shutting down anyway, \
                  committed entries may be unapplied until restart"
             );
-        }
-
-        // Abort the ReadActor last. The worker has already closed the state machine, and the
-        // ReadActor only serves reads, so there is nothing left to wait for.
-        let ra_handle = self.read_actor_handle.lock().unwrap().take();
-        if let Some(ra_handle) = ra_handle {
-            ra_handle.abort();
-            let _ = ra_handle.await;
         }
     }
 

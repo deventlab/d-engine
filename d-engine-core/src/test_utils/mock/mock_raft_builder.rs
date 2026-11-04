@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::mpsc;
@@ -29,7 +28,6 @@ use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStorageHandles;
 use crate::SignalParams;
-use crate::SnapshotApplyResult;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
 
@@ -383,44 +381,36 @@ pub fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> {
 pub fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
-    mock.expect_start().returning(|| Ok(()));
     mock.expect_close().returning(|| Ok(()));
-    mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
-    mock.expect_len().returning(|| 0);
 
-    mock.expect_update_last_applied().returning(|_| ());
     mock.expect_last_applied().return_const(LogId::default());
-    mock.expect_persist_last_applied().returning(|_| Ok(()));
 
-    mock.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
-    mock.expect_snapshot_metadata().returning(|| None);
-    mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
-
-    mock.expect_apply_snapshot_from_file().returning(|_, _| {
-        Ok(SnapshotApplyResult::Applied {
-            last_included: LogId::default(),
-        })
-    });
-    mock.expect_generate_snapshot_data()
-        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
-
-    mock.expect_save_hard_state().returning(|| Ok(()));
-    mock.expect_flush().returning(|| Ok(()));
+    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    mock.expect_generate_snapshot_data().returning(|_| Ok(LogId::default()));
 
     mock
 }
 
 pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
+    mock_state_machine_handler_with_snapshot(None)
+}
+
+/// Like [`mock_state_machine_handler`], for a node whose latest snapshot is `latest_snapshot`.
+pub fn mock_state_machine_handler_with_snapshot(
+    latest_snapshot: Option<d_engine_proto::server::storage::SnapshotMetadata>
+) -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
     // Commit delivery (also run on shutdown) reads the applied position every iteration.
     state_machine_handler.expect_last_applied().returning(|| 0);
-    state_machine_handler.expect_read_from_state_machine().returning(|_| None);
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| None);
+    state_machine_handler
+        .expect_get_latest_snapshot_metadata()
+        .returning(move || latest_snapshot.clone());
     // handle_create_snapshot (#436 Task #21) always acquires/releases this guard
     // before it can even reach the Worker round-trip, regardless of whether the
     // test cares about snapshot creation — give every default-builder test a

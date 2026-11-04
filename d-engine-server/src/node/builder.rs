@@ -224,9 +224,9 @@ where
     /// Sets a custom state machine implementation
     pub fn state_machine(
         mut self,
-        state_machine: Arc<SM>,
+        state_machine: SM,
     ) -> Self {
-        self.state_machine = Some(state_machine);
+        self.state_machine = Some(Arc::new(state_machine));
         self
     }
 
@@ -308,9 +308,6 @@ where
                 "State machine must be set before calling build()".to_string(),
             )
         })?;
-
-        // Start state machine: flip flags and load persisted data
-        state_machine.start().await?;
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().ok_or_else(|| {
@@ -612,7 +609,7 @@ where
             state_machine,
             max_drain,
         ));
-        let read_handle = crate::api::StandaloneReadHandle::new(Some(read_tx), cmd_tx.clone());
+        let read_handle = crate::api::ReadHandle::new(Some(read_tx), cmd_tx.clone());
 
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,

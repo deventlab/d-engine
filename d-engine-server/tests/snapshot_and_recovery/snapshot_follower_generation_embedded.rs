@@ -128,7 +128,7 @@ retained_log_entries = {}
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             Some(&config_path),
         )
         .await?;

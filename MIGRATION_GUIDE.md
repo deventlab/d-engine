@@ -10,10 +10,65 @@
 
 - Remove calls to `put_with_ttl` and the `ttl_secs` field of `Command::Insert`. Implement key expiry in the layer above d-engine.
 - Delete the `[raft.state_machine.lease]` section from your config files.
-- Custom state machines: remove `lease_background_cleanup`.
+- Custom state machines: see [Upgrading to v0.3.0: your `StateMachine`](#upgrading-to-v030-your-statemachine).
 - Proto: `WriteCommand.Insert.ttl_secs` (field 3) is removed. Regenerate your client code.
 - The file state machine storage format changed. Start with a fresh data directory; old files are not supported.
 - RocksDB state machine: keys written with `put_with_ttl` under v0.2.x are kept forever after the upgrade. v0.3.0 neither reads the old `ttl_state` entry nor deletes expired keys. Before upgrading, either delete the keys you no longer want, or record their deadlines and have your own expiry layer delete them. Or start with a fresh data directory.
+- A read that fails in the state machine now returns an error to the client instead of an empty result (before, it looked like "key not found"). Handle it in your client.
+
+## Upgrading to v0.3.0: your `StateMachine`
+
+The trait went from 17 methods to 8, and the engine now owns snapshots. Go through this list.
+
+| If you have | Do this |
+| --- | --- |
+| `start`, `is_running`, `len`, `is_empty`, `reset`, `entry_term`, `lease_background_cleanup` | Delete. Do `start`'s setup in your constructor. Keep `len` as a plain method if you need it. |
+| `stop`, `close_storage` | Delete `stop`. Rename `close_storage` to `close`. |
+| `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async` | Delete. The engine never called them. |
+| `snapshot_metadata`, `persist_last_snapshot_metadata` | Delete. The engine records the snapshots it holds. |
+| Methods that return `d_engine::Error` | Return `std::io::Result` (see Errors below). |
+| `generate_snapshot_data(dir, last_included)` | Drop `last_included`. Return the position of the last entry the exported data contains. |
+| A snapshot checksum, or stale / duplicate / conflict checks in `apply_snapshot_from_file` | Delete. The engine does them and calls you only for a newer snapshot. |
+| `Arc<MyStateMachine>` passed to the engine | Pass `MyStateMachine` by value. |
+
+**Errors.** Every method returns `std::io::Result`. You no longer build `d_engine::Error` or `StorageError`. `?` works on an `io::Error` as is; convert any other error with `io::Error::other`:
+
+```rust
+// before
+self.db.put(k, v).map_err(|e| StorageError::DbError(e.to_string()))?;
+
+// after
+self.db.put(k, v).map_err(io::Error::other)?;
+```
+
+The engine does not look at the error kind. A failed `apply_chunk` or `apply_snapshot_from_file` stops the node, which recovers from its replicas. A failed read fails only that read.
+
+**What your state machine must guarantee**
+
+1. After a restart, `last_applied()` is the last entry whose effects are durable. Write it in the same transaction as the data.
+2. `generate_snapshot_data` creates the directory, exports a consistent view, and returns that view's position (not a separate counter: `apply_chunk` keeps running).
+3. While `apply_snapshot_from_file` runs, a read returns the old state, the new state, or an error, never a mix. Afterwards `last_applied()` equals `metadata.last_included`.
+4. `close()` persists and releases resources, and may be called twice. Do not rely on it for crash safety: it may not run if shutdown times out.
+
+**Engine API**
+
+```rust
+// before
+let sm = Arc::new(MyStateMachine::new()?);
+EmbeddedEngine::<MyStorage, MyStateMachine>::start_custom(dir, storage, sm, None).await?;
+
+// after
+let sm = MyStateMachine::new()?;
+EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
+```
+
+- `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
+- `FileStateMachine::new` and `RocksDBStateMachine::new` return `std::io::Result<Self>` instead of `d_engine::Error`. Code that uses `?` keeps compiling; only code that matches on `d_engine::Error` variants from these constructors needs a change.
+- If you read your own storage directly (for example `DLmdb`), share the storage handles behind an `Arc` inside a `Clone` state machine; give the engine one clone and keep the other.
+- Embedded reads (`get_eventual`, lease reads) go through the ReadActor, as in standalone mode: one extra channel hop.
+- Existing snapshot archives have no `.meta` record, so a node reports no snapshot until it builds its next one. The snapshot directory may contain only regular files and directories.
+
+**Tests.** `StateMachineBuilder::build()` returns a state machine on new, empty storage. Implement the new `reopen()` to restart the same storage. `build_from_crash_image()` is optional and enables the crash-recovery test.
 
 ---
 
@@ -21,14 +76,14 @@
 
 v0.3.0 nodes and clients cannot talk to v0.2.4 ones. There is no rolling upgrade: stop the whole cluster, upgrade every node, then upgrade every client.
 
-| Proto item                      | v0.2.4                       | v0.3.0                                                             |
-| ------------------------------- | ---------------------------- | ------------------------------------------------------------------ |
-| `ClientResponse.metadata`       | field 4                      | field 5 (field 4 is now `scan_data`)                               |
-| `HandleClientScan` response     | `ScanResponse`               | `ClientResponse`; the scan payload is the `ScanResults` message    |
-| `ChunkStatus`                   | `ACCEPTED = 0` … `FAILED = 4` | `CHUNK_STATUS_UNSPECIFIED = 0`, `CHUNK_STATUS_ACCEPTED = 1` … `CHUNK_STATUS_FAILED = 5` |
-| `WriteCommand.Insert.ttl_secs`  | field 3                      | removed, number 3 and the name are reserved                        |
-| `StreamSnapshot` RPC            | present                      | removed (see the learner snapshot section below)                   |
-| `PreVote` RPC                   | -                            | new                                                                |
+| Proto item                     | v0.2.4                        | v0.3.0                                                                                  |
+| ------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------- |
+| `ClientResponse.metadata`      | field 4                       | field 5 (field 4 is now `scan_data`)                                                    |
+| `HandleClientScan` response    | `ScanResponse`                | `ClientResponse`; the scan payload is the `ScanResults` message                         |
+| `ChunkStatus`                  | `ACCEPTED = 0` … `FAILED = 4` | `CHUNK_STATUS_UNSPECIFIED = 0`, `CHUNK_STATUS_ACCEPTED = 1` … `CHUNK_STATUS_FAILED = 5` |
+| `WriteCommand.Insert.ttl_secs` | field 3                       | removed, number 3 and the name are reserved                                             |
+| `StreamSnapshot` RPC           | present                       | removed (see the learner snapshot section below)                                        |
+| `PreVote` RPC                  | -                             | new                                                                                     |
 
 Clients in other languages: regenerate your stubs from the v0.3.0 `.proto` files. Rust users get this by upgrading the crate.
 
@@ -156,12 +211,12 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version       | WAL Format          | Wire Protocol         | Migration Required                                                                                                              |
-| ------------- | ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1.x        | Relative TTL        | Compatible            | -                                                                                                                               |
-| v0.2.0–v0.2.2 | Absolute expiration | Compatible            | ✅ Yes (clear WAL from v0.1.x)                                                                                                  |
-| v0.2.3        | Same as v0.2.0+     | **Incompatible**      | ✅ Yes (protobuf enum changes + API changes)                                                                                    |
-| v0.2.4        | Same as v0.2.0+     | Compatible (additive) | ✅ Yes (delete `snapshot/` — format changed to CF export)                                                                       |
+| Version       | WAL Format             | Wire Protocol                                                                               | Migration Required                                                                                                                                                                                      |
+| ------------- | ---------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1.x        | Relative TTL           | Compatible                                                                                  | -                                                                                                                                                                                                       |
+| v0.2.0–v0.2.2 | Absolute expiration    | Compatible                                                                                  | ✅ Yes (clear WAL from v0.1.x)                                                                                                                                                                          |
+| v0.2.3        | Same as v0.2.0+        | **Incompatible**                                                                            | ✅ Yes (protobuf enum changes + API changes)                                                                                                                                                            |
+| v0.2.4        | Same as v0.2.0+        | Compatible (additive)                                                                       | ✅ Yes (delete `snapshot/` — format changed to CF export)                                                                                                                                               |
 | v0.3.0        | File SM format changed | **Incompatible** (proto field and enum renumbering; upgrade all nodes and clients together) | ⚠️ Yes (TTL removed; fresh data directory; custom SM: remove `entry_term()`, `lease_background_cleanup`, rename `close_storage()` to `close()`; use `start_node` instead of `start_custom_with_config`) |
 
 ---
@@ -380,45 +435,6 @@ fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
 
 ---
 
-## 🚨 For v0.2.4 Users: `StateMachine` Lifecycle Changes in v0.3.0 (#455)
-
-### What Changed
-
-| Before (v0.2.4)                                                  | After (v0.3.0)                                                    |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `fn stop(&self) -> Result<(), Error>` (required)                 | **Removed**                                                       |
-| `fn close_storage(&self)` (default no-op)                        | **Renamed** `fn close(&self) -> Result<(), Error>` (default `Ok`) |
-| `[raft.storage]` accepted as an alias of `[raft.state_machine]`  | Use `[raft.state_machine]`                                        |
-
-`stop()` was never called by d-engine. `close()` is now the one end-of-life hook. d-engine calls it once, as the last step of the
-state machine worker. When the worker drains cleanly, every committed entry has been applied by then; if
-`shutdown_apply_timeout_ms` expires first, shutdown continues and committed entries may remain unapplied until the next start.
-Because you may keep your own `Arc` to the state machine, do not rely on `Drop` alone. `close()` returns an error if persisting
-fails: release your resources anyway and return the first error. The node logs it at ERROR level.
-
-### Migration Steps
-
-1. Delete your `fn stop(...)`.
-2. Rename `fn close_storage(&self)` to `fn close(&self) -> Result<(), Error>`.
-3. If your `stop()` persisted something that must survive a restart (for example lease state), do it in `close()`.
-4. `close()` must be synchronous and idempotent: after it returns, every operation should return a "not serving" error.
-5. In config files, rename `[raft.storage]` to `[raft.state_machine]`.
-
-```rust
-// Before
-fn stop(&self) -> Result<(), Error> { self.persist_ttl()?; Ok(()) }
-fn close_storage(&self) { self.db.flush(); }
-
-// After
-fn close(&self) -> Result<(), Error> {
-    let persisted = self.persist_ttl();
-    self.db.flush();
-    persisted
-}
-```
-
----
-
 ## 🚨 For v0.2.3 Users: API Surface Changes in v0.2.4 (#326)
 
 ### What Changed
@@ -585,61 +601,6 @@ fn entry_term(&self, entry_id: u64) -> Option<u64> {
 ```
 
 Compilation will fail with "method not found in trait" if you forget to remove it.
-
----
-
-## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Return Type Changed in v0.3.0 (#436)
-
-### What Changed
-
-`apply_snapshot_from_file` now returns `Result<SnapshotApplyResult>` instead of `Result<()>`, so
-the caller knows whether the install actually ran or was a no-op instead of every outcome looking
-identical.
-
-```rust
-pub enum SnapshotApplyResult {
-    Applied { last_included: LogId },    // install actually ran
-    IgnoredStale { current: LogId },     // incoming.index < current — no-op, not an error
-    IgnoredDuplicate { current: LogId }, // incoming == current, same term — no-op, not an error
-}
-```
-
-### Impact
-
-⚠️ **Breaking for custom `StateMachine` implementations.**
-
-```rust
-// Old (v0.2.4)
-async fn apply_snapshot_from_file(
-    &self,
-    metadata: &SnapshotMetadata,
-    path: PathBuf,
-) -> Result<()> {
-    // ... install logic ...
-    Ok(())
-}
-
-// New (v0.3.0)
-async fn apply_snapshot_from_file(
-    &self,
-    metadata: &SnapshotMetadata,
-    path: PathBuf,
-) -> Result<SnapshotApplyResult> {
-    // ... same install logic ...
-    Ok(SnapshotApplyResult::Applied { last_included: new_last_included })
-}
-```
-
-Return `IgnoredStale` for a snapshot strictly older than what's already applied, and
-`IgnoredDuplicate` only when the index **and** term both match what's already applied — that's
-Raft's own idempotency check on the install call, not a failure. An equal index with a
-**different** term is not a duplicate: it means two different leadership terms produced
-conflicting content at the same boundary, which the public error contract classifies as fatal —
-return `Err(SnapshotError::BoundaryConflict { .. })` for that case. Reserve `Err` generally for a
-genuine failure (checksum mismatch, I/O error, corrupted data, or this boundary conflict).
-
-Built-in implementations (`FileStateMachine`, `RocksDBStateMachine`) are already updated.
-Compilation fails with "incompatible type for trait" until a custom implementation is updated.
 
 ---
 

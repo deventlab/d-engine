@@ -17,7 +17,6 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::ClientApiError;
@@ -98,14 +97,11 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         )
         .await;
 
-        // Create fresh Arc for state machine to ensure single ownership
-        let state_machine = Arc::new(
-            prepare_state_machine(
-                node_id as u32,
-                &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/{node_id}"),
-            )
-            .await,
-        );
+        let state_machine = prepare_state_machine(
+            node_id as u32,
+            &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/{node_id}"),
+        )
+        .await;
 
         let raft_log = match i {
             0 => Some(r1.clone()),

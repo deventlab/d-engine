@@ -26,6 +26,7 @@ use d_engine_server::StateMachine;
 use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing_test::traced_test;
 
+use crate::common::SharedStateMachine;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 
@@ -86,7 +87,7 @@ async fn start_single_node(
     let engine = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::clone(&storage_arc),
-        Arc::clone(&sm_arc),
+        SharedStateMachine::new(Arc::clone(&sm_arc)),
         Some(config_path),
     )
     .await?;
@@ -126,7 +127,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
             )
             .await?;
     }
-    // Guarantees the SM has applied every write above before flush_async() runs.
+    // Guarantees the SM has applied every write above before flush() runs.
     let last = engine
         .client()
         .get_linearizable(format!("key-{:02}", N - 1).into_bytes())
@@ -136,7 +137,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
         Some(format!("val-{:02}", N - 1).as_bytes())
     );
 
-    sm_arc.flush_async().await?;
+    sm_arc.flush()?;
     let last_applied_after_flush = sm_arc.last_applied().index;
 
     // True crash: no graceful close, no further flush.

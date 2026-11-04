@@ -23,6 +23,10 @@
 
 mod integration;
 mod mock;
+// One source of truth for the shared-state-machine wrapper used by both unit and integration tests.
+#[path = "../../tests/common/shared_state_machine.rs"]
+mod shared_state_machine;
 
 pub use integration::*;
 pub use mock::*;
+pub use shared_state_machine::SharedStateMachine;

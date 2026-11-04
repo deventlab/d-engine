@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use bytes::Bytes;
 use d_engine_core::ElectionConfig;
 use d_engine_core::InboundEvent;
 use d_engine_core::InternalEvent;
@@ -27,7 +26,6 @@ use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
 use d_engine_core::SignalParams;
 use d_engine_core::SmWorkerHandle;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StateMachineCommand;
 use d_engine_core::StateMachineWorker;
@@ -351,7 +349,7 @@ impl MockBuilder {
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
-            read_handle: crate::api::StandaloneReadHandle::new(None, cmd_tx.clone()),
+            read_handle: crate::api::ReadHandle::new(None, cmd_tx.clone()),
             cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
@@ -409,7 +407,7 @@ impl MockBuilder {
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
-            read_handle: crate::api::StandaloneReadHandle::new(None, cmd_tx.clone()),
+            read_handle: crate::api::ReadHandle::new(None, cmd_tx.clone()),
             cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
@@ -625,32 +623,15 @@ pub(crate) fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> 
 pub(crate) fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
-    mock.expect_start().returning(|| Ok(()));
     mock.expect_close().returning(|| Ok(()));
-    mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
-    mock.expect_len().returning(|| 0);
 
-    mock.expect_update_last_applied().returning(|_| ());
     mock.expect_last_applied().return_const(LogId::default());
-    mock.expect_persist_last_applied().returning(|_| Ok(()));
 
-    mock.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
-    mock.expect_snapshot_metadata().returning(|| None);
-    mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
-
-    mock.expect_apply_snapshot_from_file().returning(|_, _| {
-        Ok(SnapshotApplyResult::Applied {
-            last_included: LogId::default(),
-        })
-    });
-    mock.expect_generate_snapshot_data()
-        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
-
-    mock.expect_save_hard_state().returning(|| Ok(()));
-    mock.expect_flush().returning(|| Ok(()));
+    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    mock.expect_generate_snapshot_data().returning(|_| Ok(LogId::default()));
 
     mock
 }
@@ -661,7 +642,7 @@ pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeCo
     state_machine_handler.expect_update_pending().returning(|_| {});
     // Commit delivery (also run on shutdown) reads the applied position every iteration.
     state_machine_handler.expect_last_applied().returning(|| 0);
-    state_machine_handler.expect_read_from_state_machine().returning(|_| None);
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }

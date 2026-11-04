@@ -2,9 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use tracing::error;
+use tracing::info;
 use tracing::trace;
+use tracing::warn;
 
 use super::StateMachineWriterOps;
 use crate::ApplyResult;
@@ -19,8 +23,10 @@ use crate::TypeConfig;
 use crate::alias::SMOF;
 use crate::convert::classify_error;
 use crate::decode_entries;
+use crate::file_io::compute_checksum_from_folder_path;
 use crate::scoped_timer::ScopedTimer;
 use crate::state_machine_handler::applied_state::AppliedState;
+use crate::state_machine_handler::snapshot_catalog::SnapshotCatalog;
 
 /// The only type allowed to run destructive state-machine mutations — held exclusively
 /// by `StateMachineWorker`. Shares `state_machine`/`applied` with its paired
@@ -40,6 +46,9 @@ where
     /// build/cleanup (reader side) never drift apart.
     path_mgr: Arc<SnapshotPathManager>,
 
+    /// Shared with the paired handler: records the snapshots this node holds.
+    catalog: Arc<SnapshotCatalog>,
+
     #[cfg(feature = "watch")]
     watch_event_tx: Option<tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>>,
     #[cfg(feature = "watch")]
@@ -52,6 +61,7 @@ impl<T: TypeConfig> DefaultStateMachineWriter<T> {
         state_machine: Arc<SMOF<T>>,
         applied: Arc<AppliedState>,
         path_mgr: Arc<SnapshotPathManager>,
+        catalog: Arc<SnapshotCatalog>,
         #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
             tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
         >,
@@ -64,6 +74,7 @@ impl<T: TypeConfig> DefaultStateMachineWriter<T> {
             state_machine,
             applied,
             path_mgr,
+            catalog,
             #[cfg(feature = "watch")]
             watch_event_tx,
             #[cfg(feature = "watch")]
@@ -168,7 +179,7 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             }
         }
 
-        apply_result
+        apply_result.map_err(Into::into)
     }
 
     async fn install_prepared_snapshot(
@@ -176,15 +187,85 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         metadata: SnapshotMetadata,
         dir: PathBuf,
     ) -> Result<SnapshotApplyResult> {
-        let result = self.state_machine.apply_snapshot_from_file(&metadata, dir).await?;
-        if let SnapshotApplyResult::Applied { last_included } = &result {
-            self.applied.advance(last_included.index);
+        // The engine, not the state machine, decides whether a snapshot is installed. A snapshot
+        // without a boundary cannot be classified at all, so it is rejected rather than guessed.
+        let incoming = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
+        })?;
+        let current = self.state_machine.last_applied();
+        match incoming.index.cmp(&current.index) {
+            std::cmp::Ordering::Less => {
+                info!(?incoming, ?current, "Ignoring stale snapshot");
+                return Ok(SnapshotApplyResult::IgnoredStale { current });
+            }
+            std::cmp::Ordering::Equal if incoming.term == current.term => {
+                info!(?incoming, ?current, "Ignoring duplicate snapshot");
+                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
+            }
+            // The same log index with a different term means the two histories disagree. That
+            // is a real inconsistency: it must be neither ignored nor installed over.
+            std::cmp::Ordering::Equal => {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: current.index,
+                    local_term: current.term,
+                    incoming_term: incoming.term,
+                }
+                .into());
+            }
+            std::cmp::Ordering::Greater => {}
         }
-        Ok(result)
+
+        // Only a snapshot that will be installed is read and hashed. The checksum guarantees a
+        // state machine only ever receives a directory that matches what the leader exported.
+        let computed = compute_checksum_from_folder_path(&dir).await?;
+        if metadata.checksum.as_ref() != computed.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed, metadata.checksum
+            );
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
+        self.state_machine.apply_snapshot_from_file(&metadata, dir).await?;
+
+        // The state machine must now be at the snapshot's boundary. If it is not, the engine
+        // would believe the node is still behind and replay entries that the installed state
+        // already contains, so this is reported instead of carried on from.
+        let reached = self.state_machine.last_applied();
+        if reached != incoming {
+            return Err(SnapshotError::OperationFailed(format!(
+                "state machine reports last_applied {reached:?} after installing a snapshot that \
+                 ends at {incoming:?}"
+            ))
+            .into());
+        }
+
+        self.applied.advance(incoming.index);
+
+        // The snapshot is installed, so this node now holds it: the archive was kept at its final
+        // path when it was received. A failure to record it does not undo the install.
+        let archive = self.path_mgr.final_snapshot_path(&incoming);
+        if tokio::fs::try_exists(&archive).await.unwrap_or(false) {
+            if let Err(e) = self.catalog.publish(&metadata).await {
+                error!(?e, "Failed to record the installed snapshot");
+            }
+        } else {
+            warn!(
+                ?archive,
+                "The installed snapshot's archive is missing; not recorded"
+            );
+        }
+
+        Ok(SnapshotApplyResult::Applied {
+            last_included: incoming,
+        })
     }
     async fn capture_local_snapshot(&self) -> Result<CapturedLocalSnapshot> {
-        let last_included = self.state_machine.last_applied();
-        let temp_path = self.path_mgr.temp_work_path(&last_included);
+        // The position is read before and after the export only to bound what the state machine
+        // may return; the label comes from the state machine, which reads it from the view it
+        // exported.
+        let before = self.state_machine.last_applied();
+        let temp_path = self.path_mgr.temp_work_path(&before);
 
         // A crashed/killed previous attempt at this exact index can leave temp_path
         // behind; without removing it first, generate_snapshot_data fails with
@@ -198,16 +279,28 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             .into());
         }
 
-        // generate_snapshot_data commits SnapshotMetadata as the state machine's
-        // current snapshot internally (each StateMachine adapter does this as part
-        // of the same call) — by the time this returns, the boundary is durable,
-        // not just captured in memory.
-        let checksum = match self
-            .state_machine
-            .generate_snapshot_data(temp_path.clone(), last_included)
-            .await
-        {
-            Ok(bytes) => bytes,
+        // generate_snapshot_data only exports the state; it does not publish snapshot
+        // metadata. The metadata is published later, once the archive is durably built.
+        let exported = match self.state_machine.generate_snapshot_data(temp_path.clone()).await {
+            Ok(position) => position,
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&temp_path).await;
+                return Err(e.into());
+            }
+        };
+        let after = self.state_machine.last_applied();
+        if exported.index < before.index || exported.index > after.index {
+            let _ = tokio::fs::remove_dir_all(&temp_path).await;
+            return Err(SnapshotError::OperationFailed(format!(
+                "state machine exported a snapshot at {exported:?}, outside the range                  {before:?}..={after:?} that it applied while exporting"
+            ))
+            .into());
+        }
+        let last_included = exported;
+
+        // The framework, not the state machine, checksums the exported directory.
+        let checksum = match compute_checksum_from_folder_path(&temp_path).await {
+            Ok(sum) => Bytes::copy_from_slice(&sum),
             Err(e) => {
                 let _ = tokio::fs::remove_dir_all(&temp_path).await;
                 return Err(e);
@@ -224,6 +317,6 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
     }
 
     fn close(&self) -> Result<()> {
-        self.state_machine.close()
+        self.state_machine.close().map_err(Into::into)
     }
 }

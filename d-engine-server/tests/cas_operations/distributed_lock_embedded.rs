@@ -58,7 +58,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;

@@ -5,7 +5,6 @@
 //! The test validates the complete cluster state after all nodes have joined.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -154,10 +153,8 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
             Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
         // Start the node with its specific state machine and storage engine
-        // Create fresh Arc for state machine to ensure single ownership
-        let state_machine = Arc::new(
-            prepare_state_machine(node_id as u32, &format!("{db_dir}/cs/{node_id}")).await,
-        );
+        let state_machine =
+            prepare_state_machine(node_id as u32, &format!("{db_dir}/cs/{node_id}")).await;
         let (graceful_tx, node_handle) = start_node(
             format!("{db_dir}/cs/{node_id}"),
             node_config,
@@ -223,8 +220,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     node_config.raft.snapshot.cleanup_retain_count = 2;
     node_config.raft.snapshot.chunk_size = 100;
 
-    // Create fresh Arc for node 4 state machine to ensure single ownership
-    let state_machine_4 = Arc::new(prepare_state_machine(4, &format!("{db_dir}/cs/4")).await);
+    let state_machine_4 = prepare_state_machine(4, &format!("{db_dir}/cs/4")).await;
     let (graceful_tx4, node_n4) = start_node(
         format!("{db_dir}/cs/4"),
         node_config,
@@ -267,7 +263,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     node_config.raft.snapshot.chunk_size = 100;
 
     // Create fresh Arc for node 5 state machine to ensure single ownership
-    let state_machine_5 = Arc::new(prepare_state_machine(5, &format!("{db_dir}/cs/5")).await);
+    let state_machine_5 = prepare_state_machine(5, &format!("{db_dir}/cs/5")).await;
     let (graceful_tx5, node_n5) = start_node(
         format!("{db_dir}/cs/5"),
         node_config,
@@ -334,7 +330,15 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     let node1_sm = FileStateMachine::new(PathBuf::from(format!("{db_dir}/cs/1/state_machine")))
         .await
         .expect("Failed to open node 1 state machine for verification");
-    assert_eq!(node1_sm.len(), 11);
+    // Node 1 reopened from disk must hold the seeded entries plus entry 11.
+    for i in 1..=last_log_id {
+        let value = node1_sm.get(&safe_kv(i)).unwrap();
+        assert_eq!(value, Some(Bytes::from(safe_kv(i).to_vec())));
+    }
+    assert!(
+        node1_sm.get(&safe_kv(11)).unwrap().is_some(),
+        "entry 11 was not persisted on node 1"
+    );
 
     // Verify leader is still node 3
     assert_eq!(client_manager.list_leader_id().await.unwrap(), Some(3));

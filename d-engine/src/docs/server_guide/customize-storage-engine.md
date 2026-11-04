@@ -179,7 +179,7 @@ async fn test_performance() -> Result<(), Error> {
 use d_engine::{EmbeddedEngine, FileStateMachine};
 
 let storage_engine = Arc::new(CustomStorageEngine::new().await?);
-let state_machine = Arc::new(FileStateMachine::new("./data/state_machine").await?);
+let state_machine = FileStateMachine::new("./data/state_machine").await?;
 
 let engine = EmbeddedEngine::start_custom(
     "./data",       // data_dir

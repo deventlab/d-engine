@@ -54,6 +54,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -66,13 +67,8 @@ use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
 use d_engine_core::Command;
-use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotApplyResult;
-use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
-use d_engine_core::StorageError;
-use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
@@ -216,7 +212,6 @@ pub struct FileStateMachine {
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
-    last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
 
     // Operational state
     running: AtomicBool,
@@ -240,8 +235,9 @@ impl FileStateMachine {
     /// * `data_dir` - Directory where data files will be stored
     ///
     /// # Returns
-    /// Result containing the initialized FileStateMachine
-    pub async fn new(data_dir: PathBuf) -> Result<Self, Error> {
+    /// The initialized FileStateMachine, or an error if the files cannot be read or the WAL is
+    /// corrupt
+    pub async fn new(data_dir: PathBuf) -> io::Result<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&data_dir).await?;
 
@@ -249,7 +245,6 @@ impl FileStateMachine {
             data: RwLock::new(HashMap::new()),
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
-            last_snapshot_metadata: RwLock::new(None),
             running: AtomicBool::new(true),
             wal_entries_since_checkpoint: AtomicU64::new(0),
             last_checkpoint: Mutex::new(Instant::now()),
@@ -263,7 +258,7 @@ impl FileStateMachine {
     }
 
     /// Loads state machine data from disk files
-    async fn load_from_disk(&self) -> Result<(), Error> {
+    async fn load_from_disk(&self) -> io::Result<()> {
         // Load last applied index and term from metadata file
         self.load_metadata().await?;
 
@@ -278,7 +273,7 @@ impl FileStateMachine {
     }
 
     /// Loads metadata from disk
-    async fn load_metadata(&self) -> Result<(), Error> {
+    async fn load_metadata(&self) -> io::Result<()> {
         let metadata_path = self.data_dir.join("metadata.bin");
         if !metadata_path.exists() {
             return Ok(());
@@ -306,7 +301,7 @@ impl FileStateMachine {
     }
 
     /// Loads key-value data from disk
-    async fn load_data(&self) -> Result<(), Error> {
+    async fn load_data(&self) -> io::Result<()> {
         let data_path = self.data_dir.join("state.data");
         if !data_path.exists() {
             return Ok(());
@@ -401,7 +396,7 @@ impl FileStateMachine {
     }
 
     /// Replays write-ahead log for crash recovery
-    async fn replay_wal(&self) -> Result<(), Error> {
+    async fn replay_wal(&self) -> io::Result<()> {
         let wal_path = self.data_dir.join("wal.log");
         if !wal_path.exists() {
             debug!("No WAL file found, skipping replay");
@@ -420,6 +415,10 @@ impl FileStateMachine {
         let mut pos = 0;
         let mut operations = Vec::new();
         let mut replayed_count = 0;
+        // The position of the last record replayed: the WAL carries the index and term of every
+        // entry, and the data replayed below is only consistent with the position once it
+        // reaches that record.
+        let mut replayed_up_to: Option<LogId> = None;
 
         let last_applied = self.last_applied_index.load(Ordering::SeqCst);
 
@@ -435,10 +434,12 @@ impl FileStateMachine {
             pos += 8;
 
             // Read operation code (1 byte)
-            let op_code =
-                WalOpCode::from_u8(buffer[pos]).ok_or_else(|| StorageError::DataCorruption {
-                    location: format!("WAL opcode {} at byte offset {}", buffer[pos], pos),
-                })?;
+            let op_code = WalOpCode::from_u8(buffer[pos]).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("WAL opcode {} at byte offset {}", buffer[pos], pos),
+                )
+            })?;
             pos += 1;
 
             // Check if we have enough bytes for key length
@@ -497,6 +498,7 @@ impl FileStateMachine {
             }
 
             operations.push((op_code, key, value, term));
+            replayed_up_to = Some(LogId { index, term });
             replayed_count += 1;
         }
 
@@ -544,6 +546,17 @@ impl FileStateMachine {
             replayed_count, applied_count,
         );
 
+        // The replayed entries are now part of the data, so last_applied moves to the last of
+        // them; otherwise a restart would report the position of the last checkpoint and the
+        // engine would apply entries again that the data already contains. The WAL is the only
+        // durable copy of these entries until the next checkpoint, so data and position are
+        // written out before it is cleared.
+        if let Some(position) = replayed_up_to {
+            self.update_last_applied(position);
+            self.persist_data_async().await?;
+            self.persist_metadata_async().await?;
+        }
+
         // Unconditionally clear WAL after replay. load_data() already restored the last
         // checkpoint; WAL is only the post-checkpoint delta. Even if 0 entries were applied
         // (e.g. truncated tail only), the WAL is stale. Keeping it would cause infinite
@@ -558,7 +571,7 @@ impl FileStateMachine {
     }
 
     /// Persists key-value data to disk
-    fn persist_data(&self) -> Result<(), Error> {
+    fn persist_data(&self) -> io::Result<()> {
         // Collect data first to minimize lock time
         let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
@@ -585,7 +598,7 @@ impl FileStateMachine {
     }
 
     /// Persists key-value data to disk
-    async fn persist_data_async(&self) -> Result<(), Error> {
+    async fn persist_data_async(&self) -> io::Result<()> {
         // Collect data under minimal lock scope
         let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
@@ -620,8 +633,39 @@ impl FileStateMachine {
         Ok(())
     }
 
+    pub(crate) fn update_last_applied(
+        &self,
+        last_applied: LogId,
+    ) {
+        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
+        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
+    }
+
+    pub(crate) fn persist_last_applied(
+        &self,
+        last_applied: LogId,
+    ) -> io::Result<()> {
+        self.update_last_applied(last_applied);
+        self.persist_metadata()
+    }
+
+    pub(crate) fn save_hard_state(&self) -> io::Result<()> {
+        let last_applied = self.last_applied();
+        self.persist_last_applied(last_applied)?;
+
+        self.flush()?;
+        Ok(())
+    }
+
+    pub(crate) fn flush(&self) -> io::Result<()> {
+        self.persist_data()?;
+        self.persist_metadata()?;
+        // self.clear_wal()?;
+        Ok(())
+    }
+
     /// Persists metadata to disk
-    fn persist_metadata(&self) -> Result<(), Error> {
+    fn persist_metadata(&self) -> io::Result<()> {
         let metadata_path = self.data_dir.join("metadata.bin");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -639,7 +683,7 @@ impl FileStateMachine {
         Ok(())
     }
 
-    async fn persist_metadata_async(&self) -> Result<(), Error> {
+    async fn persist_metadata_async(&self) -> io::Result<()> {
         let metadata_path = self.data_dir.join("metadata.bin");
         let mut file = OpenOptions::new()
             .write(true)
@@ -660,7 +704,7 @@ impl FileStateMachine {
 
     /// Clears the write-ahead log (called after successful persistence)
     #[allow(unused)]
-    fn clear_wal(&self) -> Result<(), Error> {
+    fn clear_wal(&self) -> io::Result<()> {
         let wal_path = self.data_dir.join("wal.log");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -674,7 +718,7 @@ impl FileStateMachine {
     }
 
     /// Clears the write-ahead log (called after successful persistence)
-    async fn clear_wal_async(&self) -> Result<(), Error> {
+    async fn clear_wal_async(&self) -> io::Result<()> {
         let wal_path = self.data_dir.join("wal.log");
         let mut file = OpenOptions::new()
             .write(true)
@@ -709,7 +753,7 @@ impl FileStateMachine {
     /// Checkpoint: snapshot full data + metadata to disk, then clear WAL.
     ///
     /// WAL is the primary crash-safety path; checkpoint bounds recovery replay time.
-    pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
+    pub(crate) async fn checkpoint(&self) -> io::Result<()> {
         self.persist_data_async().await?;
         self.persist_metadata_async().await?;
         self.clear_wal_async().await?;
@@ -722,80 +766,14 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Resets the state machine to its initial empty state
-    ///
-    /// This method:
-    /// 1. Clears all in-memory data
-    /// 2. Resets Raft state to initial values
-    /// 3. Clears all persisted files
-    /// 4. Maintains operational state (running status, node ID)
-    pub async fn reset(&self) -> Result<(), Error> {
-        info!("Resetting state machine");
-
-        // Clear in-memory data
-        {
-            let mut data = self.data.write();
-            data.clear();
-        }
-
-        // Reset Raft state
-        self.last_applied_index.store(0, Ordering::SeqCst);
-        self.last_applied_term.store(0, Ordering::SeqCst);
-
-        {
-            let mut snapshot_metadata = self.last_snapshot_metadata.write();
-            *snapshot_metadata = None;
-        }
-
-        // Clear all persisted files
-        self.clear_data_file().await?;
-        self.clear_metadata_file().await?;
-        self.clear_wal_async().await?;
-
-        info!("State machine reset completed");
-        Ok(())
-    }
-
-    /// Clears the data file
-    async fn clear_data_file(&self) -> Result<(), Error> {
-        let data_path = self.data_dir.join("state.data");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_path)
-            .await?;
-
-        file.set_len(0).await?;
-        file.flush().await?;
-        Ok(())
-    }
-
-    /// Clears the metadata file
-    async fn clear_metadata_file(&self) -> Result<(), Error> {
-        let metadata_path = self.data_dir.join("metadata.bin");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(metadata_path)
-            .await?;
-
-        // Write default values (0 for both index and term)
-        file.write_all(&0u64.to_be_bytes()).await?;
-        file.write_all(&0u64.to_be_bytes()).await?;
-
-        file.flush().await?;
-        Ok(())
-    }
-
-    /// Reads are served only while running. After `close()` the developer may still hold a clone
-    /// of the state machine, and it must not answer from state that is no longer maintained.
-    fn ensure_serving(&self) -> Result<(), Error> {
+    /// Reads are served only while running. After `close()` the state machine may still be
+    /// reachable through a handle the developer shares, and it must not answer from state that
+    /// is no longer maintained.
+    fn ensure_serving(&self) -> io::Result<()> {
         if self.running.load(Ordering::Acquire) {
             Ok(())
         } else {
-            Err(StorageError::NotServing("state machine stopped".into()).into())
+            Err(io::Error::other("state machine stopped"))
         }
     }
 
@@ -819,7 +797,7 @@ impl FileStateMachine {
         &self,
         entries: &[ApplyEntry],
         cas_outcomes: &[bool],
-    ) -> Result<(), Error> {
+    ) -> io::Result<()> {
         assert_eq!(
             entries.len(),
             cas_outcomes.len(),
@@ -859,31 +837,20 @@ impl Drop for FileStateMachine {
 
 #[async_trait]
 impl StateMachine for FileStateMachine {
-    async fn start(&self) -> Result<(), Error> {
-        self.running.store(true, Ordering::SeqCst);
-
-        info!("File state machine started");
-        Ok(())
-    }
-
-    fn close(&self) -> Result<(), Error> {
+    fn close(&self) -> io::Result<()> {
         if !self.running.swap(false, Ordering::SeqCst) {
             return Ok(()); // already closed
         }
-        // The developer may keep an `Arc` to this state machine, so `Drop` may never run:
-        // persist everything a restart needs here.
+        // `Drop` does not run when the engine stops if the developer still holds a shared
+        // handle: persist everything a restart needs here.
         // No exclusive OS lock file to release.
         self.save_hard_state()
-    }
-
-    fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
     }
 
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> io::Result<Option<Bytes>> {
         self.ensure_serving()?;
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
@@ -893,7 +860,7 @@ impl StateMachine for FileStateMachine {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, Error> {
+    ) -> io::Result<Vec<ApplyResult>> {
         self.ensure_serving()?;
         let chunk_len = chunk.len();
         let mut results = Vec::with_capacity(chunk_len);
@@ -1067,15 +1034,18 @@ impl StateMachine for FileStateMachine {
                     }
                 }
             }
+
+            // last_applied changes under the same write lock as the data, so a snapshot that
+            // reads both under the read lock never sees one without the other.
+            if let Some(log_id) = highest_log_id {
+                debug!("State machine - updated last_applied: {:?}", log_id);
+                self.update_last_applied(log_id);
+            }
         } // Lock released immediately - no awaits inside!
 
-        // PHASE 4: Update last applied index and conditionally checkpoint.
+        // PHASE 4: Conditionally checkpoint.
         // WAL (written in PHASE 2) is the primary crash-safety path.
         // Checkpoint snapshots full data periodically to bound WAL replay time on recovery.
-        if let Some(log_id) = highest_log_id {
-            debug!("State machine - updated last_applied: {:?}", log_id);
-            self.update_last_applied(log_id);
-        }
 
         self.wal_entries_since_checkpoint.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
@@ -1086,18 +1056,6 @@ impl StateMachine for FileStateMachine {
         Ok(results)
     }
 
-    fn len(&self) -> usize {
-        self.data.read().len()
-    }
-
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
-        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
-    }
-
     fn last_applied(&self) -> LogId {
         LogId {
             index: self.last_applied_index.load(Ordering::SeqCst),
@@ -1105,75 +1063,14 @@ impl StateMachine for FileStateMachine {
         }
     }
 
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<(), Error> {
-        self.update_last_applied(last_applied);
-        self.persist_metadata()
-    }
-
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        *self.last_snapshot_metadata.write() = Some(snapshot_metadata.clone());
-        Ok(())
-    }
-
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.last_snapshot_metadata.read().clone()
-    }
-
-    fn persist_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.update_last_snapshot_metadata(snapshot_metadata)
-    }
-
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<SnapshotApplyResult, Error> {
-        // (#436) — every StateMachine backend must honor this contract, not just RocksDB.
-        // A missing boundary can't be classified — reject rather than fall through
-        // to an unconditional install.
-        let incoming = metadata.last_included.ok_or_else(|| {
-            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
-        })?;
-
-        let current = self.last_applied();
-        match incoming.index.cmp(&current.index) {
-            std::cmp::Ordering::Less => {
-                info!(?incoming, ?current, "Ignoring stale snapshot");
-                return Ok(SnapshotApplyResult::IgnoredStale { current });
-            }
-            std::cmp::Ordering::Equal if incoming.term == current.term => {
-                info!(?incoming, ?current, "Ignoring duplicate snapshot");
-                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
-            }
-            std::cmp::Ordering::Equal => {
-                return Err(SnapshotError::BoundaryConflict {
-                    index: current.index,
-                    local_term: current.term,
-                    incoming_term: incoming.term,
-                }
-                .into());
-            }
-            std::cmp::Ordering::Greater => {}
-        }
-
-        // Verify the snapshot's end-to-end checksum before installing (#436).
-        let computed_checksum = compute_checksum_from_folder_path(&snapshot_dir).await?;
-        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-            error!(
-                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                computed_checksum, metadata.checksum
-            );
-            return Err(SnapshotError::ChecksumMismatch.into());
-        }
+    ) -> io::Result<()> {
+        let incoming = metadata
+            .last_included
+            .ok_or_else(|| io::Error::other("Missing last_included in snapshot metadata"))?;
 
         info!("Applying snapshot from file: {:?}", snapshot_dir);
 
@@ -1271,9 +1168,6 @@ impl StateMachine for FileStateMachine {
             *data = new_data;
         }
 
-        // Update metadata
-        *self.last_snapshot_metadata.write() = Some(metadata.clone());
-
         self.update_last_applied(incoming);
 
         // Persist to disk
@@ -1283,16 +1177,13 @@ impl StateMachine for FileStateMachine {
 
         info!("Snapshot applied successfully");
 
-        Ok(SnapshotApplyResult::Applied {
-            last_included: incoming,
-        })
+        Ok(())
     }
 
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        _last_included: LogId,
-    ) -> Result<Bytes, Error> {
+    ) -> io::Result<LogId> {
         // Create snapshot directory
         fs::create_dir_all(&new_snapshot_dir).await?;
 
@@ -1300,9 +1191,12 @@ impl StateMachine for FileStateMachine {
         let snapshot_path = new_snapshot_dir.join("snapshot.bin");
         let mut file = File::create(&snapshot_path).await?;
 
-        let data_copy: HashMap<Bytes, (Bytes, u64)> = {
+        // The data and the position are read under one read lock; apply_chunk updates both under
+        // the write lock, so they describe the same applied entry.
+        let (data_copy, position): (HashMap<Bytes, (Bytes, u64)>, LogId) = {
             let data = self.data.read();
-            data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
+            let copy = data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect();
+            (copy, self.last_applied())
         };
 
         // Batch serialize into a single buffer — eliminates per-entry async yield overhead.
@@ -1324,42 +1218,13 @@ impl StateMachine for FileStateMachine {
 
         info!("Snapshot generated at {:?}", snapshot_path);
 
-        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
-        Ok(Bytes::copy_from_slice(&checksum))
-    }
-
-    fn save_hard_state(&self) -> Result<(), Error> {
-        let last_applied = self.last_applied();
-        self.persist_last_applied(last_applied)?;
-
-        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
-            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        }
-
-        self.flush()?;
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.persist_data()?;
-        self.persist_metadata()?;
-        // self.clear_wal()?;
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        // Force checkpoint on shutdown to ensure WAL entries are not lost.
-        self.checkpoint().await
-    }
-
-    async fn reset(&self) -> Result<(), Error> {
-        self.reset().await
+        Ok(position)
     }
 
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
+    ) -> io::Result<ScanResult> {
         self.ensure_serving()?;
         let data = self.data.read();
         let entries: Vec<(Bytes, Bytes)> = data
@@ -1374,7 +1239,7 @@ impl StateMachine for FileStateMachine {
     fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> d_engine_core::Result<Vec<Option<Bytes>>> {
+    ) -> io::Result<Vec<Option<Bytes>>> {
         self.ensure_serving()?;
         // Hold read lock for the full batch so all keys come from the same consistent view.
         // apply_chunk holds the write lock; parking_lot RwLock ensures they don't interleave.

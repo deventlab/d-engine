@@ -40,11 +40,9 @@ use super::StateMachineWriterOps;
 #[cfg(feature = "watch")]
 use super::broadcast_watch_events;
 use super::new_reader_writer_pair;
-use crate::Error;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockTypeConfig;
-use crate::SnapshotError;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::snapshot_config;
 
@@ -218,7 +216,7 @@ mod apply_chunk_test {
         if apply_chunk_error {
             state_machine
                 .expect_apply_chunk()
-                .returning(|_| Err(Error::Fatal("Test error".to_string())));
+                .returning(|_| Err(std::io::Error::other("Test error")));
         } else {
             state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         }
@@ -337,7 +335,7 @@ mod apply_chunk_test {
         let (watch_tx, mut watch_rx) = tokio::sync::broadcast::channel(16);
         let mut sm = MockStateMachine::new();
         sm.expect_apply_chunk()
-            .returning(|_| Err(Error::Fatal("batch failed".to_string())));
+            .returning(|_| Err(std::io::Error::other("batch failed")));
 
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
@@ -857,6 +855,55 @@ async fn test_prepare_snapshot_stream_persists_file_in_snapshots_dir() {
     );
 }
 
+/// Node C receives a snapshot from the leader, then a third node that is even further behind
+/// asks C for a snapshot at the same boundary.
+///
+/// Purpose: the archive C kept must actually be servable. `load_snapshot_data` finds it at the
+/// path derived from the boundary and streams exactly the bytes that were received. Together
+/// with `test_prepare_snapshot_stream_persists_file_in_snapshots_dir` this pins the whole
+/// receive-then-forward path: a node that installed a snapshot can later serve it.
+#[tokio::test]
+#[traced_test]
+async fn test_snapshot_received_from_leader_can_be_served_to_another_node() {
+    let temp_dir = tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_received_snapshot_is_servable");
+    create_dir_all(&temp_path).await.unwrap();
+    let handler = create_test_handler(&temp_path, None);
+
+    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
+    let first_chunk = SnapshotChunk {
+        leader_term: TEST_TERM,
+        leader_id: TEST_LEADER_ID,
+        metadata: Some(metadata.clone()),
+        seq: 0,
+        total_chunks: 1,
+        data: Bytes::from(compressed_data.clone()),
+        chunk_checksum: Bytes::from(crc32fast::hash(&compressed_data).to_be_bytes().to_vec()),
+    };
+    let (ack_tx, _ack_rx) = mpsc::channel::<SnapshotAck>(1);
+    let (_tx, rx) = mpsc::channel(32);
+    drop(_tx);
+    let config = snapshot_config(temp_path.to_path_buf());
+    handler
+        .prepare_snapshot_stream(first_chunk, rx, ack_tx, &config)
+        .await
+        .expect("the snapshot should be received");
+
+    let mut stream = handler
+        .load_snapshot_data(metadata, TEST_TERM)
+        .await
+        .expect("a node that received a snapshot must be able to serve it");
+    let mut served = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        served.extend_from_slice(&chunk.expect("every chunk must load").data);
+    }
+
+    assert_eq!(
+        served, compressed_data,
+        "the served bytes must be the archive that was received"
+    );
+}
+
 const TEST_TERM: u64 = 1;
 const TEST_LEADER_ID: u32 = 1;
 
@@ -894,23 +941,26 @@ mod create_snapshot_tests {
         // Mock state machine behavior
         let mut seq = Sequence::new();
         sm.expect_last_applied()
-            .times(1)
+            .times(1) // before the export
             .in_sequence(&mut seq)
             .returning(|| LogId { index: 5, term: 1 });
         sm.expect_generate_snapshot_data()
             .times(1)
-            .withf(|path, last_included| {
-                debug!(?path, ?last_included);
+            .withf(|path| {
+                debug!(?path);
                 // Create the directory structure correctly
                 fs::create_dir_all(path.clone()).unwrap();
 
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
 
-                path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
+                path.ends_with("temp-5-1")
             })
-            .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+            .returning(|_| Ok(LogId { index: 5, term: 1 }));
+        sm.expect_last_applied()
+            .times(1) // after the export
+            .in_sequence(&mut seq)
+            .returning(|| LogId { index: 5, term: 1 });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -970,23 +1020,21 @@ mod create_snapshot_tests {
 
         let mut seq = Sequence::new();
         sm.expect_last_applied()
-            .times(1)
+            .times(1) // before the export
             .in_sequence(&mut seq)
             .returning(|| LogId { index: 5, term: 1 });
         sm.expect_generate_snapshot_data()
             .times(1)
             .in_sequence(&mut seq)
-            .returning(|path, _| {
+            .returning(|path| {
                 fs::create_dir_all(path.clone()).unwrap();
                 fs::create_dir(path.join("state_machine")).unwrap();
-                Ok(Bytes::from(vec![0; 32]))
+                Ok(LogId { index: 5, term: 1 })
             });
-        // The publish must come after generate_snapshot_data (capture), i.e. during
-        // build_local_snapshot once the archive exists — never during capture.
-        sm.expect_persist_last_snapshot_metadata()
-            .times(1)
+        sm.expect_last_applied()
+            .times(1) // after the export
             .in_sequence(&mut seq)
-            .returning(|_| Ok(()));
+            .returning(|| LogId { index: 5, term: 1 });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1020,13 +1068,7 @@ mod create_snapshot_tests {
         // Setup slow snapshot generation
         let (tx, _rx) = tokio::sync::oneshot::channel();
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-        sm.expect_snapshot_metadata().returning(move || {
-            Some(SnapshotMetadata {
-                last_included: Some(LogId { index: 1, term: 1 }),
-                checksum: Bytes::from(vec![1; 8]),
-            })
-        });
-        sm.expect_generate_snapshot_data().times(1..=2).returning(move |path, _| {
+        sm.expect_generate_snapshot_data().times(1..=2).returning(move |path| {
             // Track invocation count
             let mut count = counter_clone.lock().unwrap();
             *count += 1;
@@ -1037,12 +1079,11 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path.clone()).unwrap();
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
-                Ok(Bytes::copy_from_slice(&[0; 32]))
+                Ok(LogId { term: 1, index: 1 })
             } else {
-                Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
+                Err(std::io::Error::other("Concurrency failure"))
             }
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut snapshot_policy = MockSnapshotPolicy::new();
         snapshot_policy.expect_should_trigger().returning(|_| true);
@@ -1108,21 +1149,21 @@ mod create_snapshot_tests {
         let temp_path = temp_dir.path().join("test_create_snapshot_case3");
 
         let mut sm = MockStateMachine::new();
-        let mut count = 0;
-        sm.expect_last_applied().returning(move || {
-            count += 1;
-            LogId {
-                term: 1,
-                index: count,
-            }
+        // Every export moves the state machine one entry further, so each snapshot gets the next
+        // index: 1, 2, 3, 4.
+        let applied = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let applied_for_read = applied.clone();
+        sm.expect_last_applied().returning(move || LogId {
+            term: 1,
+            index: applied_for_read.load(std::sync::atomic::Ordering::SeqCst),
         });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(move |path| {
             debug!(?path, "expect_generate_snapshot_data");
             std::fs::create_dir_all(path).expect("Failed to create directory");
 
-            Ok(Bytes::copy_from_slice(&[0; 32]))
+            let index = applied.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Ok(LogId { term: 1, index })
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
         let snapshot_dir = temp_path.to_path_buf();
 
         let mut config = snapshot_config(snapshot_dir.clone());
@@ -1168,7 +1209,7 @@ mod create_snapshot_tests {
         // Setup failing snapshot generation
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_, _| Err(SnapshotError::OperationFailed("test failure".into()).into()));
+            .returning(|_| Err(std::io::Error::other("test failure")));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1200,11 +1241,10 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(|path| {
             fs::create_dir_all(path).unwrap();
-            Ok(Bytes::from(vec![0; 32]))
+            Ok(LogId { term: 1, index: 5 })
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1239,7 +1279,7 @@ mod create_snapshot_tests {
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_, _| Err(SnapshotError::OperationFailed("test error".into()).into()));
+            .returning(|_| Err(std::io::Error::other("test error")));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1296,16 +1336,13 @@ mod create_snapshot_tests {
             term: 1,
             index: 100,
         });
-        sm.expect_generate_snapshot_data()
-            .times(1)
-            .withf(|_path, last_included| {
-                last_included.index == 100 && last_included.term == 1 // NOT 90
+        sm.expect_generate_snapshot_data().times(1).returning(|path| {
+            fs::create_dir_all(path).unwrap();
+            Ok(LogId {
+                term: 1,
+                index: 100,
             })
-            .returning(|path, _| {
-                fs::create_dir_all(path).unwrap();
-                Ok(Bytes::from(vec![0; 32]))
-            });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+        });
 
         let mut config = snapshot_config(temp_path.clone());
         config.retained_log_entries = 10;
@@ -1371,17 +1408,16 @@ mod create_snapshot_tests {
             term: 2,
             index: 100,
         });
-        sm.expect_generate_snapshot_data()
-            .times(1)
-            .withf(|path, last_included| {
-                fs::create_dir_all(path).unwrap();
-                // Old code: index = 100 - 60 = 40, term = 2 (copied from last_applied.term)
-                // → forged LogId { index: 40, term: 2 } — entry 40 was in term 1, not term 2
-                // New code: last_included = last_applied = { index: 100, term: 2 } — truthful
-                last_included.index == 100 && last_included.term == 2
+        // The state machine reports { index: 100, term: 2 }. Subtracting retained_log_entries
+        // (60) and keeping the term would forge { index: 40, term: 2 }, an entry that was in term
+        // 1; the snapshot must carry exactly what the state machine reported.
+        sm.expect_generate_snapshot_data().times(1).returning(|path| {
+            fs::create_dir_all(path).unwrap();
+            Ok(LogId {
+                term: 2,
+                index: 100,
             })
-            .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+        });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         // retained=60: old code would subtract and land in term 1 territory (index 40)
@@ -1435,14 +1471,10 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 0, index: 0 });
-        sm.expect_generate_snapshot_data()
-            .times(1)
-            .withf(|_, last_included| last_included.index == 0 && last_included.term == 0)
-            .returning(|path, _| {
-                fs::create_dir_all(path).unwrap();
-                Ok(Bytes::from(vec![0; 32]))
-            });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+        sm.expect_generate_snapshot_data().times(1).returning(|path| {
+            fs::create_dir_all(path).unwrap();
+            Ok(LogId { term: 0, index: 0 })
+        });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 10;
@@ -1473,10 +1505,10 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(|path| {
             // Simulate a partial write before the failure (e.g. checkpoint killed mid-copy).
             fs::create_dir_all(&path).unwrap();
-            Err(SnapshotError::OperationFailed("simulated crash".into()).into())
+            Err(std::io::Error::other("simulated crash"))
         });
 
         let config = snapshot_config(snapshot_dir.clone());
@@ -1509,18 +1541,17 @@ mod create_snapshot_tests {
 
         let mut sm = MockStateMachine::new();
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(|path| {
             // Real engines (e.g. RocksDB checkpoint) fail with "File exists" if `path`
             // is already present — mirror that here instead of using the idempotent
             // `create_dir_all`, otherwise this test can't distinguish "cleaned up" from
             // "never checked".
             if path.exists() {
-                return Err(SnapshotError::OperationFailed("mkdir: File exists".into()).into());
+                return Err(std::io::Error::other("mkdir: File exists"));
             }
             fs::create_dir_all(&path).unwrap();
-            Ok(Bytes::from(vec![0; 32]))
+            Ok(LogId { term: 1, index: 5 })
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let config = snapshot_config(snapshot_dir.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1555,10 +1586,10 @@ fn count_snapshots(
             // Ignore directory entries that cannot be read
             let entry = entry.ok()?;
             // Extract the file name and check the prefix
-            entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.starts_with(snapshots_dir_prefix).then_some(()))
+            // Count archives only: each archive's record (`.meta`) is bookkeeping.
+            entry.file_name().to_str().and_then(|name| {
+                (name.starts_with(snapshots_dir_prefix) && !name.ends_with(".meta")).then_some(())
+            })
         })
         .count()
 }
@@ -1574,8 +1605,12 @@ fn get_snapshot_versions(dir: &Path) -> Vec<u64> {
             let name = name.to_str().unwrap();
             debug!(%name, "get_snapshot_versions");
 
+            // A snapshot's record (`.meta`) is bookkeeping, not another snapshot.
+            if name.ends_with(".meta") {
+                None
+            }
             // Handle compressed snapshots
-            if name.ends_with(".tar.gz") {
+            else if name.ends_with(".tar.gz") {
                 let base_name = name.trim_end_matches(".tar.gz");
                 base_name.split('-').nth(1).and_then(|v| v.parse().ok())
             }
@@ -1606,10 +1641,7 @@ async fn test_cleanup_snapshot_case1() {
         MockSnapshotPolicy::new(),
     );
 
-    handler
-        .cleanup_snapshot(2, temp_dir.path(), &config.snapshots_dir_prefix)
-        .await
-        .unwrap();
+    handler.cleanup_snapshot(2).await.unwrap();
 
     // Verify remaining snapshots
     let mut remaining = get_snapshot_versions(temp_dir.path());
@@ -1646,10 +1678,7 @@ async fn test_cleanup_snapshot_case2() {
         MockSnapshotPolicy::new(),
     );
 
-    handler
-        .cleanup_snapshot(2, temp_dir.path(), &config.snapshots_dir_prefix)
-        .await
-        .unwrap();
+    handler.cleanup_snapshot(2).await.unwrap();
 
     // Verify no deletions
     let mut remaining = get_snapshot_versions(temp_dir.path());
@@ -1684,10 +1713,7 @@ async fn test_cleanup_snapshot_case3() {
         MockSnapshotPolicy::new(),
     );
 
-    handler
-        .cleanup_snapshot(2, temp_dir.path(), &config.snapshots_dir_prefix)
-        .await
-        .unwrap();
+    handler.cleanup_snapshot(2).await.unwrap();
 
     //Verify only valid version 1 is deleted
     let remaining = get_dir_names(temp_dir.path()).await;
@@ -1710,6 +1736,22 @@ async fn create_test_files(
         let mut file = File::create(&path).await.unwrap();
         // Write some dummy content
         file.write_all(b"dummy snapshot data").await.unwrap();
+
+        // A snapshot the node holds has a record next to its archive.
+        let metadata = SnapshotMetadata {
+            last_included: Some(LogId {
+                index: *id,
+                term: 1,
+            }),
+            checksum: Bytes::from(vec![*id as u8; 32]),
+        };
+        let record = format!("{snapshots_dir_prefix}{id}-1.meta");
+        tokio::fs::write(
+            temp_dir.path().join(record),
+            prost::Message::encode_to_vec(&metadata),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -1960,7 +2002,7 @@ async fn test_snapshot_compression() {
 
     // Mock state machine to create test data
     sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
-    sm.expect_generate_snapshot_data().returning(|path, _| {
+    sm.expect_generate_snapshot_data().returning(|path| {
         // Create the directory structure correctly
         fs::create_dir_all(path.clone()).unwrap();
         // Create test files in the temp directory
@@ -1970,9 +2012,8 @@ async fn test_snapshot_compression() {
         std::fs::write(&file1, "This is a test file").unwrap();
         std::fs::write(&file2, vec![0u8; 1024]).unwrap();
 
-        Ok(Bytes::from(vec![0; 32]))
+        Ok(LogId { index: 10, term: 2 })
     });
-    sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
@@ -2046,22 +2087,9 @@ async fn test_build_local_snapshot_removes_partial_archive_on_compression_failur
     let mut sm = MockStateMachine::new();
 
     sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
-    sm.expect_generate_snapshot_data().returning(|path, _| {
-        fs::create_dir_all(&path).unwrap();
-        fs::write(path.join("readable.txt"), "fine").unwrap();
-
-        // Unreadable file: tar_builder.append_dir_all must fail trying to
-        // read its content, after compress_directory has already created
-        // final_path via File::create.
-        let unreadable = path.join("unreadable.bin");
-        fs::write(&unreadable, vec![0u8; 16]).unwrap();
-        fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        Ok(Bytes::from(vec![0; 32]))
-    });
 
     let config = snapshot_config(snapshot_dir.clone());
-    let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+    let (handler, _writer) = new_reader_writer_pair::<MockTypeConfig>(
         1,
         0,
         Arc::new(sm),
@@ -2072,10 +2100,26 @@ async fn test_build_local_snapshot_removes_partial_archive_on_compression_failur
         Arc::new(AtomicUsize::new(0)),
     );
 
-    handler.try_begin_local_snapshot_capture().unwrap();
-    let captured = writer.capture_local_snapshot().await.unwrap();
-    let captured_temp_dir = captured.temp_dir.path().to_path_buf();
+    // The staging directory a capture would have produced. It is built by hand because a real
+    // capture now reads every exported file to checksum it, so an unreadable file would fail the
+    // capture before compression, and this test is about compression failing.
+    let captured_temp_dir = snapshot_dir.join("staging");
+    fs::create_dir_all(&captured_temp_dir).unwrap();
+    fs::write(captured_temp_dir.join("readable.txt"), "fine").unwrap();
+    // Unreadable file: tar_builder.append_dir_all must fail trying to read its content, after
+    // compress_directory has already created final_path via File::create.
+    let unreadable = captured_temp_dir.join("unreadable.bin");
+    fs::write(&unreadable, vec![0u8; 16]).unwrap();
+    fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let captured = crate::CapturedLocalSnapshot {
+        metadata: SnapshotMetadata {
+            last_included: Some(LogId { index: 10, term: 2 }),
+            checksum: Bytes::new(),
+        },
+        temp_dir: crate::OwnedSnapshotDir::from_existing(captured_temp_dir.clone()).unwrap(),
+    };
 
+    handler.try_begin_local_snapshot_capture().unwrap();
     let result = handler.build_local_snapshot(captured).await;
     handler.end_local_snapshot_capture();
 
@@ -2850,6 +2894,1013 @@ mod wait_applied_tests {
         assert!(
             c7.load(Ordering::SeqCst),
             "waiter@7 must unblock at index 7"
+        );
+    }
+}
+
+// ── read_from_state_machine ──────────────────────────────────────────────────
+
+fn handler_over(
+    state_machine: MockStateMachine,
+    temp_dir: &Path,
+) -> DefaultStateMachineHandler<MockTypeConfig> {
+    DefaultStateMachineHandler::new(
+        1,
+        0,
+        Arc::new(state_machine),
+        temp_dir.to_path_buf(),
+        snapshot_config(temp_dir.to_path_buf()),
+        MockSnapshotPolicy::new(),
+    )
+}
+
+/// A state machine failure must come back as an error. Turning it into "no keys found" would
+/// make a failing disk look like an empty database.
+#[test]
+fn test_read_from_state_machine_returns_the_state_machine_error() {
+    let temp_dir = tempdir().unwrap();
+    let mut state_machine = MockStateMachine::new();
+    state_machine
+        .expect_get_multi()
+        .returning(|_| Err(std::io::Error::other("disk failure")));
+    let handler = handler_over(state_machine, temp_dir.path());
+
+    let err = handler
+        .read_from_state_machine(vec![bytes::Bytes::from_static(b"k")])
+        .expect_err("a failing state machine must not look like an empty one");
+
+    assert!(format!("{err:?}").contains("disk failure"), "got: {err:?}");
+}
+
+/// Business scenario: the disk under a node fails while a client reads. A state machine reports
+/// that as a plain `io::Error`; the client must receive the "storage I/O error" code and no
+/// payload, so it can tell a failing disk from a missing key.
+#[test]
+fn test_state_machine_io_error_reaches_client_as_storage_io_error() {
+    use crate::client::types::ClientResponse;
+    use crate::client::types::ErrorCode;
+
+    let temp_dir = tempdir().unwrap();
+    let mut state_machine = MockStateMachine::new();
+    state_machine
+        .expect_get_multi()
+        .returning(|_| Err(std::io::Error::other("disk failure")));
+    let handler = handler_over(state_machine, temp_dir.path());
+
+    let result = handler.read_from_state_machine(vec![bytes::Bytes::from_static(b"k")]);
+    let response = ClientResponse::from_read(result);
+
+    assert_eq!(response.error, ErrorCode::StorageIoError);
+    assert!(response.result.is_none());
+}
+
+/// Keys that do not exist are left out; the others keep the order they were asked in. All keys
+/// are read with one `get_multi` call, so they come from one consistent view.
+#[test]
+fn test_read_from_state_machine_skips_missing_keys_and_reads_one_view() {
+    let temp_dir = tempdir().unwrap();
+    let mut state_machine = MockStateMachine::new();
+    state_machine.expect_get_multi().times(1).returning(|_| {
+        Ok(vec![
+            Some(bytes::Bytes::from_static(b"a")),
+            None,
+            Some(bytes::Bytes::from_static(b"c")),
+        ])
+    });
+    let handler = handler_over(state_machine, temp_dir.path());
+
+    let entries = handler
+        .read_from_state_machine(vec![
+            bytes::Bytes::from_static(b"k1"),
+            bytes::Bytes::from_static(b"k2"),
+            bytes::Bytes::from_static(b"k3"),
+        ])
+        .unwrap();
+
+    let keys: Vec<_> = entries.iter().map(|e| e.key.clone()).collect();
+    let values: Vec<_> = entries.iter().map(|e| e.value.clone()).collect();
+    assert_eq!(keys, vec![
+        bytes::Bytes::from_static(b"k1"),
+        bytes::Bytes::from_static(b"k3")
+    ]);
+    assert_eq!(values, vec![
+        bytes::Bytes::from_static(b"a"),
+        bytes::Bytes::from_static(b"c")
+    ]);
+}
+
+fn writer_with_mock_state_machine(
+    sm: MockStateMachine,
+    root: &Path,
+) -> (
+    DefaultStateMachineHandler<MockTypeConfig>,
+    DefaultStateMachineWriter<MockTypeConfig>,
+) {
+    new_reader_writer_pair::<MockTypeConfig>(
+        1,
+        0,
+        Arc::new(sm),
+        root.to_path_buf(),
+        snapshot_config(root.to_path_buf()),
+        MockSnapshotPolicy::new(),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    )
+}
+
+/// Mock state machine whose `last_applied()` is `before` until the export runs and `after` once it
+/// has, and whose export reports `exported`.
+fn mock_sm_applying_during_export(
+    before: u64,
+    after: u64,
+    exported: u64,
+) -> MockStateMachine {
+    let position = Arc::new(std::sync::atomic::AtomicU64::new(before));
+    let mut sm = MockStateMachine::new();
+    let reader = position.clone();
+    sm.expect_last_applied().returning(move || LogId {
+        index: reader.load(std::sync::atomic::Ordering::SeqCst),
+        term: 2,
+    });
+    sm.expect_generate_snapshot_data().returning(move |path| {
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("data.bin"), b"state").unwrap();
+        // Entries keep being applied while the export runs.
+        position.store(after, std::sync::atomic::Ordering::SeqCst);
+        Ok(LogId {
+            index: exported,
+            term: 2,
+        })
+    });
+    sm
+}
+
+/// Orders service: the node applies entries 10..=12 while its state machine exports, and the export
+/// holds everything up to entry 11.
+///
+/// Purpose: the snapshot is labelled with the position the state machine reports for what it
+/// exported (11), not with the position the engine saw before the export started (10), which would
+/// make the label older than the data.
+#[tokio::test]
+async fn test_capture_local_snapshot_is_labelled_with_the_position_the_state_machine_exported() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = mock_sm_applying_during_export(10, 12, 11);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let captured = writer.capture_local_snapshot().await.unwrap();
+
+    assert_eq!(
+        captured.metadata.last_included,
+        Some(LogId { index: 11, term: 2 })
+    );
+}
+
+/// The state machine reports an export at entry 7 although the node had applied up to 10 before the
+/// export started.
+///
+/// Purpose: a position older than anything the node applied cannot describe an export made now, so
+/// the snapshot is rejected and its directory removed; the node keeps running.
+#[tokio::test]
+async fn test_capture_local_snapshot_rejects_a_position_before_the_export_started() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = mock_sm_applying_during_export(10, 12, 7);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.capture_local_snapshot().await;
+
+    assert!(
+        result.is_err(),
+        "a position before the export started must be rejected"
+    );
+    assert!(
+        std::fs::read_dir(temp_dir.path()).unwrap().next().is_none(),
+        "the rejected export must not be left on disk"
+    );
+}
+
+/// The state machine reports an export at entry 15 although the node had applied only up to 12 when
+/// the export finished.
+///
+/// Purpose: a position the node has not reached yet cannot be right, so the snapshot is rejected
+/// and its directory removed.
+#[tokio::test]
+async fn test_capture_local_snapshot_rejects_a_position_the_node_has_not_reached() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = mock_sm_applying_during_export(10, 12, 15);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.capture_local_snapshot().await;
+
+    assert!(
+        result.is_err(),
+        "a position the node has not reached must be rejected"
+    );
+    assert!(
+        std::fs::read_dir(temp_dir.path()).unwrap().next().is_none(),
+        "the rejected export must not be left on disk"
+    );
+}
+
+/// A leader exports a snapshot for a lagging follower and records the checksum the follower will
+/// verify against. The state machine only writes files; it never returns a checksum.
+///
+/// Purpose: the framework must record the SHA-256 of the exported directory itself. If it did not,
+/// followers would verify against a value nobody produced.
+#[tokio::test]
+#[traced_test]
+async fn test_capture_local_snapshot_records_checksum_of_exported_directory() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
+    sm.expect_generate_snapshot_data().returning(|path| {
+        fs::create_dir_all(path.clone()).unwrap();
+        fs::write(path.join("a.bin"), b"alpha").unwrap();
+        fs::write(path.join("b.bin"), b"beta").unwrap();
+        Ok(LogId { index: 10, term: 2 })
+    });
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let captured = writer.capture_local_snapshot().await.unwrap();
+
+    let expected = crate::file_io::compute_checksum_from_folder_path(captured.temp_dir.path())
+        .await
+        .unwrap();
+    assert_eq!(
+        captured.metadata.checksum.as_ref(),
+        expected.as_ref(),
+        "recorded checksum must be the checksum of the exported directory"
+    );
+    assert!(
+        captured.metadata.checksum.iter().any(|&b| b != 0),
+        "recorded checksum must not be an all-zero placeholder"
+    );
+}
+
+/// A follower receives a snapshot whose files do not match the checksum the leader recorded
+/// (corrupted or tampered in transit, after the per-chunk crc32 checks passed).
+///
+/// Purpose: the framework rejects the install and the state machine is never called, so the
+/// follower keeps its current state instead of replacing it with bad data.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_checksum_mismatch_rejects_without_calling_state_machine() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let received = temp_dir.path().join("received");
+    fs::create_dir_all(&received).unwrap();
+    fs::write(received.join("data.bin"), b"content").unwrap();
+
+    let mut sm = MockStateMachine::new();
+    // A node that has applied nothing yet, receiving a snapshot that ends at log 5.
+    sm.expect_last_applied().return_const(LogId::default());
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::from(vec![0; 32]),
+    };
+    let err = writer
+        .install_prepared_snapshot(metadata, received)
+        .await
+        .expect_err("a snapshot with a mismatched checksum must be rejected");
+
+    assert!(
+        format!("{err:?}").contains("ChecksumMismatch"),
+        "expected ChecksumMismatch, got: {err:?}"
+    );
+}
+
+/// The same follower receives an intact snapshot.
+///
+/// Purpose: when the checksum matches, the framework hands the directory to the state machine
+/// exactly once and returns its result, so the verification does not block valid installs.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_matching_checksum_installs_once() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let received = temp_dir.path().join("received");
+    fs::create_dir_all(&received).unwrap();
+    fs::write(received.join("data.bin"), b"content").unwrap();
+    let checksum = crate::file_io::compute_checksum_from_folder_path(&received).await.unwrap();
+
+    // A node that has applied nothing yet; installing the snapshot moves it to log 5.
+    let position = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut sm = MockStateMachine::new();
+    let reported = position.clone();
+    sm.expect_last_applied().returning(move || LogId {
+        index: reported.load(std::sync::atomic::Ordering::SeqCst),
+        term: 1,
+    });
+    let installer = position.clone();
+    sm.expect_apply_snapshot_from_file().times(1).returning(move |_, _| {
+        installer.store(5, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    });
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::copy_from_slice(&checksum),
+    };
+    let result = writer.install_prepared_snapshot(metadata, received).await.unwrap();
+
+    assert!(
+        matches!(result, crate::SnapshotApplyResult::Applied { .. }),
+        "expected Applied, got: {result:?}"
+    );
+}
+
+/// A follower receives a RocksDB-style snapshot (data files in a sub-directory) in which one data
+/// file was corrupted after the leader recorded the checksum.
+///
+/// Purpose: the install must be rejected and the state machine never called. If the checksum only
+/// covered top-level files, this corruption would be installed silently.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_nested_file_corruption_rejects_without_calling_state_machine()
+ {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let received = temp_dir.path().join("received");
+    fs::create_dir_all(received.join("sm")).unwrap();
+    fs::write(received.join("sm_metadata.bin"), b"metadata").unwrap();
+    fs::write(received.join("sm").join("000008.sst"), b"table-data").unwrap();
+    let recorded = crate::file_io::compute_checksum_from_folder_path(&received).await.unwrap();
+
+    // Corrupted in transit, after the checksum was recorded.
+    fs::write(received.join("sm").join("000008.sst"), b"table-dat!").unwrap();
+
+    let mut sm = MockStateMachine::new();
+    // A node that has applied nothing yet, receiving a snapshot that ends at log 5.
+    sm.expect_last_applied().return_const(LogId::default());
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::copy_from_slice(&recorded),
+    };
+    let err = writer
+        .install_prepared_snapshot(metadata, received)
+        .await
+        .expect_err("a snapshot with a corrupted nested file must be rejected");
+
+    assert!(
+        format!("{err:?}").contains("ChecksumMismatch"),
+        "expected ChecksumMismatch, got: {err:?}"
+    );
+}
+
+// ── install_prepared_snapshot: boundary decision and result verification ─────────────────────
+//
+// The engine, not the state machine, decides whether a received snapshot is installed, and it
+// checks afterwards that the state machine really moved to the snapshot's boundary.
+
+/// A snapshot directory with real content, and the metadata (boundary + real checksum) a leader
+/// would have recorded for it.
+async fn received_snapshot(
+    root: &Path,
+    last_included: Option<LogId>,
+) -> (PathBuf, SnapshotMetadata) {
+    let dir = root.join("received");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("data.bin"), b"content").unwrap();
+    let checksum = crate::file_io::compute_checksum_from_folder_path(&dir).await.unwrap();
+    (dir, SnapshotMetadata {
+        last_included,
+        checksum: Bytes::copy_from_slice(&checksum),
+    })
+}
+
+/// Node B has applied up to log 100 and receives a delayed snapshot that ends at log 50.
+///
+/// Purpose: installing it would roll B back to 50 and lose data. The engine must ignore it and
+/// never call the state machine.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_older_than_applied_is_ignored_without_calling_state_machine()
+ {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) =
+        received_snapshot(temp_dir.path(), Some(LogId { index: 50, term: 3 })).await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert_eq!(result, crate::SnapshotApplyResult::IgnoredStale {
+        current: LogId {
+            index: 100,
+            term: 3
+        }
+    });
+}
+
+/// B receives the snapshot it already has (same index, same term).
+///
+/// Purpose: nothing to install; the state machine is not called.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_same_boundary_is_ignored_without_calling_state_machine() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 100,
+            term: 3,
+        }),
+    )
+    .await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert_eq!(result, crate::SnapshotApplyResult::IgnoredDuplicate {
+        current: LogId {
+            index: 100,
+            term: 3
+        }
+    });
+}
+
+/// B is at log 100 of term 3; the snapshot says log 100 belongs to term 4.
+///
+/// Purpose: two histories disagree about the same log index. That is a serious error, not
+/// something to ignore or to overwrite silently. The state machine is not called.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_same_index_different_term_is_a_conflict_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 100,
+            term: 4,
+        }),
+    )
+    .await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let err = writer
+        .install_prepared_snapshot(metadata, dir)
+        .await
+        .expect_err("a conflicting boundary must be an error");
+
+    assert!(
+        format!("{err:?}").contains("BoundaryConflict"),
+        "got: {err:?}"
+    );
+}
+
+/// Metadata without a boundary cannot be classified as older, equal or newer.
+///
+/// Purpose: reject it outright instead of guessing, and never call the state machine.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_without_boundary_is_rejected() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(temp_dir.path(), None).await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await;
+
+    assert!(
+        result.is_err(),
+        "a snapshot without a boundary must be rejected"
+    );
+}
+
+/// A snapshot that is older than B's state also has a wrong checksum.
+///
+/// Purpose: the boundary is decided first. A snapshot that would be ignored anyway is not read
+/// and hashed (it can be large), and the answer is "ignored", not "corrupt".
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_stale_is_ignored_before_its_checksum_is_checked() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, mut metadata) =
+        received_snapshot(temp_dir.path(), Some(LogId { index: 50, term: 3 })).await;
+    metadata.checksum = Bytes::from(vec![0; 32]);
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert!(
+        matches!(result, crate::SnapshotApplyResult::IgnoredStale { .. }),
+        "got: {result:?}"
+    );
+}
+
+/// B at log 100 receives a newer snapshot (log 500) and the state machine installs it correctly,
+/// including moving its position to 500.
+///
+/// Purpose: the normal path still works: installed exactly once, reported as applied.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_newer_is_installed_once() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 500,
+            term: 3,
+        }),
+    )
+    .await;
+    let position = Arc::new(std::sync::atomic::AtomicU64::new(100));
+    let mut sm = MockStateMachine::new();
+    let reported = position.clone();
+    sm.expect_last_applied().returning(move || LogId {
+        index: reported.load(std::sync::atomic::Ordering::SeqCst),
+        term: 3,
+    });
+    let installer = position.clone();
+    sm.expect_apply_snapshot_from_file().times(1).returning(move |_, _| {
+        installer.store(500, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    });
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert_eq!(result, crate::SnapshotApplyResult::Applied {
+        last_included: LogId {
+            index: 500,
+            term: 3
+        }
+    });
+}
+
+/// The state machine installs the data but forgets to move its position: it still reports log 100
+/// after being given a snapshot that ends at 500.
+///
+/// Purpose: the engine must notice and fail loudly. Otherwise it would treat B as still at 100
+/// and replay logs 101..500 on top of state that already contains them.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_state_machine_not_advanced_is_an_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 500,
+            term: 3,
+        }),
+    )
+    .await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(1).returning(|_, _| Ok(()));
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await;
+
+    assert!(
+        result.is_err(),
+        "a state machine that did not move to the snapshot's boundary must be reported"
+    );
+}
+
+// ── The engine's own record of the snapshots this node holds ─────────────────────────────────
+//
+// What the latest snapshot is (boundary and checksum) is recorded by the engine next to the
+// archive, not by the state machine. The mock state machine below reports no snapshot at all, so
+// every answer these tests see comes from the engine.
+
+mod snapshot_catalog_behavior_tests {
+    use super::*;
+
+    fn mock_sm_at(index: Arc<std::sync::atomic::AtomicU64>) -> MockStateMachine {
+        let mut sm = MockStateMachine::new();
+        let position = index.clone();
+        sm.expect_last_applied().returning(move || LogId {
+            index: position.load(std::sync::atomic::Ordering::SeqCst),
+            term: 2,
+        });
+        let exported = index.clone();
+        sm.expect_generate_snapshot_data().returning(move |path| {
+            let at = LogId {
+                index: exported.load(std::sync::atomic::Ordering::SeqCst),
+                term: 2,
+            };
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("data.bin"), format!("state at {}", at.index)).unwrap();
+            Ok(at)
+        });
+        sm
+    }
+
+    fn pair_over(
+        dir: &Path,
+        sm: MockStateMachine,
+        retain: u64,
+    ) -> (
+        DefaultStateMachineHandler<MockTypeConfig>,
+        DefaultStateMachineWriter<MockTypeConfig>,
+    ) {
+        let mut config = snapshot_config(dir.to_path_buf());
+        config.cleanup_retain_count = retain;
+        new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            dir.to_path_buf(),
+            config,
+            MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
+        )
+    }
+
+    async fn take_snapshot(
+        handler: &DefaultStateMachineHandler<MockTypeConfig>,
+        writer: &DefaultStateMachineWriter<MockTypeConfig>,
+    ) -> (SnapshotMetadata, PathBuf) {
+        handler.try_begin_local_snapshot_capture().unwrap();
+        let captured = writer.capture_local_snapshot().await.unwrap();
+        let built = handler.build_local_snapshot(captured).await.unwrap();
+        handler.end_local_snapshot_capture();
+        built
+    }
+
+    fn files_with_extension(
+        dir: &Path,
+        extension: &str,
+    ) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == extension))
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Leader A builds a snapshot at log 10. A's state machine keeps no snapshot record.
+    ///
+    /// Purpose: the engine reports the snapshot it just built (boundary and checksum), and records
+    /// it next to the archive, so nothing depends on the state machine remembering it.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_built_snapshot_is_reported_as_the_latest_snapshot() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (handler, writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(10.into())), 3);
+
+        let (metadata, archive) = take_snapshot(&handler, &writer).await;
+
+        assert_eq!(handler.get_latest_snapshot_metadata(), Some(metadata));
+        assert!(archive.exists());
+        assert_eq!(files_with_extension(temp_dir.path(), "meta"), vec![
+            "snapshot-10-2.meta"
+        ]);
+    }
+
+    /// Leader A restarts. Its state machine still reports no snapshot.
+    ///
+    /// Purpose: the engine finds the latest snapshot again from what it recorded on disk. If it
+    /// did not, leader A would have nothing to push to a follower that fell behind.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_latest_snapshot_is_recovered_after_restart() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (handler, writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(10.into())), 3);
+        let (metadata, _) = take_snapshot(&handler, &writer).await;
+        drop((handler, writer));
+
+        let (restarted, _writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(10.into())), 3);
+
+        assert_eq!(restarted.get_latest_snapshot_metadata(), Some(metadata));
+    }
+
+    /// Follower C installs a snapshot (its archive was kept when it was received).
+    ///
+    /// Purpose: after a successful install the engine reports that snapshot as C's latest, so C
+    /// can serve it to another node and does not immediately take a snapshot of its own.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_installed_snapshot_is_reported_as_the_latest_snapshot() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let position = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut sm = mock_sm_at(position.clone());
+        let installer = position.clone();
+        sm.expect_apply_snapshot_from_file().times(1).returning(move |_, _| {
+            installer.store(5, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        let (handler, writer) = pair_over(temp_dir.path(), sm, 3);
+        // What `prepare_snapshot_stream` leaves behind: the received archive at its final path.
+        fs::write(
+            temp_dir.path().join("snapshot-5-2.tar.gz"),
+            b"received archive",
+        )
+        .unwrap();
+        let (dir, metadata) = received_snapshot(
+            &temp_dir.path().join("work"),
+            Some(LogId { index: 5, term: 2 }),
+        )
+        .await;
+
+        writer.install_prepared_snapshot(metadata.clone(), dir).await.unwrap();
+
+        assert_eq!(handler.get_latest_snapshot_metadata(), Some(metadata));
+        assert_eq!(files_with_extension(temp_dir.path(), "meta"), vec![
+            "snapshot-5-2.meta"
+        ]);
+    }
+
+    /// A snapshot that is rejected (here: corrupted in transit) is never reported as the latest.
+    ///
+    /// Purpose: only a snapshot the node actually installed is offered to other nodes.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_rejected_snapshot_is_not_reported_as_the_latest_snapshot() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut sm = mock_sm_at(Arc::new(0.into()));
+        sm.expect_apply_snapshot_from_file().times(0);
+        let (handler, writer) = pair_over(temp_dir.path(), sm, 3);
+        fs::write(
+            temp_dir.path().join("snapshot-5-2.tar.gz"),
+            b"received archive",
+        )
+        .unwrap();
+        let (dir, mut metadata) = received_snapshot(
+            &temp_dir.path().join("work"),
+            Some(LogId { index: 5, term: 2 }),
+        )
+        .await;
+        metadata.checksum = Bytes::from(vec![0; 32]);
+
+        let result = writer.install_prepared_snapshot(metadata, dir).await;
+
+        assert!(result.is_err());
+        assert_eq!(handler.get_latest_snapshot_metadata(), None);
+        assert!(files_with_extension(temp_dir.path(), "meta").is_empty());
+    }
+
+    /// An archive with no record next to it (a crash between receiving and installing, or an
+    /// archive from before the engine kept records) is not a snapshot the node can vouch for.
+    ///
+    /// Purpose: it is ignored, not reported with guessed metadata.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_archive_without_a_record_is_ignored() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        fs::write(temp_dir.path().join("snapshot-9-2.tar.gz"), b"archive").unwrap();
+
+        let (handler, _writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(9.into())), 3);
+
+        assert_eq!(handler.get_latest_snapshot_metadata(), None);
+    }
+
+    fn write_record(
+        dir: &Path,
+        index: u64,
+        term: u64,
+    ) {
+        use prost::Message;
+        fs::write(
+            dir.join(format!("snapshot-{index}-{term}.tar.gz")),
+            b"archive",
+        )
+        .unwrap();
+        let metadata = SnapshotMetadata {
+            last_included: Some(LogId { index, term }),
+            checksum: Bytes::from(vec![index as u8; 32]),
+        };
+        fs::write(
+            dir.join(format!("snapshot-{index}-{term}.meta")),
+            metadata.encode_to_vec(),
+        )
+        .unwrap();
+    }
+
+    /// Node C holds snapshot 10 (recorded). A snapshot 20 was received but then ignored, so its
+    /// archive is on disk without a record. Cleanup runs with "keep the newest 1".
+    ///
+    /// Purpose: cleanup counts only snapshots the node holds. The newest recorded snapshot is
+    /// never deleted, so the node can still serve it, and nothing has to be rescanned afterwards.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cleanup_never_deletes_the_newest_recorded_snapshot() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        write_record(temp_dir.path(), 10, 2);
+        fs::write(
+            temp_dir.path().join("snapshot-20-2.tar.gz"),
+            b"received, then ignored",
+        )
+        .unwrap();
+        let (handler, _writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(10.into())), 1);
+
+        handler.cleanup_snapshot(1).await.unwrap();
+
+        assert!(temp_dir.path().join("snapshot-10-2.tar.gz").exists());
+        assert!(temp_dir.path().join("snapshot-10-2.meta").exists());
+        assert_eq!(
+            handler.get_latest_snapshot_metadata().and_then(|m| m.last_included),
+            Some(LogId { index: 10, term: 2 })
+        );
+        assert!(
+            temp_dir.path().join("snapshot-20-2.tar.gz").exists(),
+            "an archive newer than every recorded snapshot may be one being installed"
+        );
+    }
+
+    /// An archive with no record that is older than the newest recorded snapshot.
+    ///
+    /// Purpose: it can never be installed or served (an install needs a snapshot newer than the
+    /// node's position), so cleanup removes it instead of leaving it on disk forever.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cleanup_removes_an_unrecorded_archive_older_than_the_newest_recorded_snapshot() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        write_record(temp_dir.path(), 30, 2);
+        fs::write(
+            temp_dir.path().join("snapshot-10-2.tar.gz"),
+            b"received, then ignored",
+        )
+        .unwrap();
+        let (handler, _writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(30.into())), 3);
+
+        handler.cleanup_snapshot(3).await.unwrap();
+
+        assert!(!temp_dir.path().join("snapshot-10-2.tar.gz").exists());
+        assert!(temp_dir.path().join("snapshot-30-2.tar.gz").exists());
+    }
+
+    /// A node upgraded from a build that kept no records: its archives have none.
+    ///
+    /// Purpose: with no recorded snapshot there is nothing to compare against, so cleanup deletes
+    /// nothing. The first snapshot the node builds after the upgrade starts the records.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cleanup_deletes_nothing_when_no_snapshot_is_recorded() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        for index in [10, 20, 30] {
+            fs::write(
+                temp_dir.path().join(format!("snapshot-{index}-2.tar.gz")),
+                b"legacy",
+            )
+            .unwrap();
+        }
+        let (handler, _writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(30.into())), 1);
+
+        handler.cleanup_snapshot(1).await.unwrap();
+
+        assert_eq!(files_with_extension(temp_dir.path(), "gz").len(), 3);
+    }
+
+    /// Node C is at log 100 and receives a delayed push of a snapshot that ends at log 5.
+    ///
+    /// Purpose: pins what really happens to the archive of a snapshot that is received and then
+    /// ignored: it stays at its final path with no record. That is why cleanup must go by the
+    /// records, not by counting archive files.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_received_snapshot_that_is_ignored_leaves_an_archive_without_a_record() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (handler, writer) = pair_over(temp_dir.path(), mock_sm_at(Arc::new(100.into())), 3);
+        let (compressed_data, metadata) = create_test_compressed_snapshot().await;
+        let first_chunk = SnapshotChunk {
+            leader_term: TEST_TERM,
+            leader_id: TEST_LEADER_ID,
+            metadata: Some(metadata.clone()),
+            seq: 0,
+            total_chunks: 1,
+            data: Bytes::from(compressed_data.clone()),
+            chunk_checksum: Bytes::from(crc32fast::hash(&compressed_data).to_be_bytes().to_vec()),
+        };
+        let (ack_tx, _ack_rx) = mpsc::channel::<SnapshotAck>(1);
+        let (_tx, rx) = mpsc::channel(32);
+        drop(_tx);
+        let config = snapshot_config(temp_dir.path().to_path_buf());
+        let prepared = handler
+            .prepare_snapshot_stream(first_chunk, rx, ack_tx, &config)
+            .await
+            .expect("the snapshot should be received");
+
+        let result = writer
+            .install_prepared_snapshot(
+                prepared.metadata.clone(),
+                prepared.temp_dir.path().to_path_buf(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(result, crate::SnapshotApplyResult::IgnoredStale { .. }),
+            "got: {result:?}"
+        );
+        assert!(
+            temp_dir.path().join("snapshot-5-1.tar.gz").exists(),
+            "the received archive stays on disk"
+        );
+        assert!(files_with_extension(temp_dir.path(), "meta").is_empty());
+        assert_eq!(handler.get_latest_snapshot_metadata(), None);
+    }
+
+    /// Node C installs a snapshot, but writing the record next to its archive fails (here: a
+    /// non-empty directory sits where the record file must go, standing in for a full disk or a
+    /// permission error).
+    ///
+    /// Purpose: the install has already replaced C's state, so it is still reported as applied.
+    /// Failing it would leave the commit index behind the state machine and skip the log purge.
+    /// The failure is logged, and C simply holds no record of this snapshot.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_install_succeeds_even_when_its_record_cannot_be_written() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let position = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut sm = mock_sm_at(position.clone());
+        let installer = position.clone();
+        sm.expect_apply_snapshot_from_file().times(1).returning(move |_, _| {
+            installer.store(5, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        let (handler, writer) = pair_over(temp_dir.path(), sm, 3);
+        fs::write(
+            temp_dir.path().join("snapshot-5-2.tar.gz"),
+            b"received archive",
+        )
+        .unwrap();
+        fs::create_dir_all(temp_dir.path().join("snapshot-5-2.meta")).unwrap();
+        fs::write(
+            temp_dir.path().join("snapshot-5-2.meta").join("blocker"),
+            b"x",
+        )
+        .unwrap();
+        let (dir, metadata) = received_snapshot(
+            &temp_dir.path().join("work"),
+            Some(LogId { index: 5, term: 2 }),
+        )
+        .await;
+
+        let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+        assert!(
+            matches!(result, crate::SnapshotApplyResult::Applied { .. }),
+            "got: {result:?}"
+        );
+        assert!(logs_contain("Failed to record the installed snapshot"));
+        assert_eq!(handler.get_latest_snapshot_metadata(), None);
+    }
+
+    /// Old snapshots are cleaned up, keeping the newest one.
+    ///
+    /// Purpose: the record goes with its archive. The newest archive keeps its record, and no
+    /// record is left behind for an archive that was deleted.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cleanup_removes_the_record_together_with_the_archive() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let position = Arc::new(std::sync::atomic::AtomicU64::new(10));
+        let (handler, writer) = pair_over(temp_dir.path(), mock_sm_at(position.clone()), 1);
+
+        for index in [10, 20, 30] {
+            position.store(index, std::sync::atomic::Ordering::SeqCst);
+            take_snapshot(&handler, &writer).await;
+        }
+
+        assert_eq!(files_with_extension(temp_dir.path(), "gz"), vec![
+            "snapshot-30-2.tar.gz"
+        ]);
+        assert_eq!(files_with_extension(temp_dir.path(), "meta"), vec![
+            "snapshot-30-2.meta"
+        ]);
+        assert_eq!(
+            handler.get_latest_snapshot_metadata().and_then(|m| m.last_included),
+            Some(LogId { index: 30, term: 2 })
         );
     }
 }

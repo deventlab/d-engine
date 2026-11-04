@@ -1860,7 +1860,7 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
     state_machine_handler
         .expect_read_from_state_machine()
         .times(1)
-        .returning(|_| Some(vec![]));
+        .returning(|_| Ok(vec![]));
     context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     let mut state =
@@ -1884,6 +1884,49 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
         ErrorCode::Success,
         "EventualConsistency read should succeed on follower"
     );
+}
+
+/// Business scenario: a follower's disk fails while a client reads from it with eventual
+/// consistency. The client must get an error it can act on, not an empty "key not found" answer.
+#[tokio::test]
+async fn test_follower_eventual_read_reports_state_machine_failure_as_error() {
+    let cases: [(fn() -> Error, ErrorCode); 1] = [(
+        || -> Error { crate::StorageError::DbError("disk failure".into()).into() },
+        ErrorCode::StorageIoError,
+    )];
+
+    for (failure, expected) in cases {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
+        state_machine_handler
+            .expect_read_from_state_machine()
+            .times(1)
+            .returning(move |_| Err(failure()));
+        context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let cmd = ClientCmd::Read(
+            ClientReadRequest {
+                client_id: 1,
+                consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
+                keys: vec![bytes::Bytes::from_static(b"k")],
+            },
+            resp_tx,
+        );
+
+        state.push_client_cmd(cmd, &context);
+
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(
+            response.error, expected,
+            "a failed read must be reported, not answered as an empty result"
+        );
+        assert!(response.result.is_none());
+    }
 }
 
 #[tokio::test]

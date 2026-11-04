@@ -50,7 +50,6 @@ use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::client::ClientReadRequest;
 use crate::client::ClientResponse;
-use crate::client::KvEntry;
 use crate::client::LeaderHint;
 use crate::event::ClientCmd;
 use crate::scoped_timer::ScopedTimer;
@@ -520,12 +519,9 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
     ) {
         // Read directly from local state machine without any consistency checks
-        let results: Vec<KvEntry> = ctx
-            .state_machine_handler()
-            .read_from_state_machine(req.keys)
-            .unwrap_or_default();
-
-        let response = ClientResponse::read_results(results);
+        let response = ClientResponse::from_read(
+            ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+        );
         let _ = sender.send(Ok(response));
     }
 

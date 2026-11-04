@@ -26,6 +26,8 @@ All notable changes to this project will be documented in this file.
 
 - **`raft.state_machine.shutdown_apply_timeout_ms`** (#455, default `5000`): how long shutdown waits for the state machine worker to apply the entries already committed. On timeout it logs an error and shuts down anyway; a restart replays what was not applied.
 
+- **Crash-recovery test for state machines** (#400): `StateMachineTestSuite` now checks that a restart after a crash reports a position that matches the data. Implement `StateMachineBuilder::build_from_crash_image` to enable it.
+
 ### Fixed
 
 - **🛑 Snapshot data corruption — label/data mismatch** (#418): `last_included` in snapshot metadata was computed by subtracting `retained_log_entries` from `last_applied`, but the snapshot data already reflected the full `last_applied` state. Followers installing such snapshots would re-apply entries 91–100 after restoring state through index 100, causing double-application and permanent cluster state divergence. Also fixes a fabricated `LogId` where `last_included.term` was copied from `last_applied.term` instead of queried from the log. Snapshot label is now always truthful: `last_included == last_applied`.
@@ -55,6 +57,12 @@ All notable changes to this project will be documented in this file.
 - **Quorum confirmation no longer derives from replicated history** (#423): In a 5+ voter cluster, a leader cut off from the majority but still reached by one follower kept renewing its read lease and never stepped down, because the commit median over every peer's stored `match_index` stayed true. A leader is now confirmed only when a quorum of voters acknowledged a newer heartbeat round; unreachable peers stop counting. Applies to lease reads, queued linearizable reads, CheckQuorum, write admission and the vote guard.
 
 - **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
+
+- **RocksDB snapshot could be ahead of its data** (#400): a snapshot taken during writes could make a node skip entries after it installed it. Snapshots are now exported from one consistent copy.
+
+- **File state machine reported an old position after a crash** (#400): recovery now restores `last_applied` together with the data.
+
+- **Snapshot checksum now covers every file** (#400), including sub-directories. Delete snapshot archives made by older versions when you upgrade.
 
 ### Changed
 
@@ -115,6 +123,12 @@ All notable changes to this project will be documented in this file.
   `durable_index`, which is no longer a configurable choice. Existing configs setting `strategy =
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
+
+- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, every method returns `std::io::Result` instead of `d_engine::Error` (as do the constructors of the built-in file and RocksDB state machines), and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
+- **⚠️ The engine takes the state machine by value** (#400): `start_custom`, `start_node` and `run_custom` take `SM` instead of `Arc<SM>`, and `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
+
+- **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
 
 ### Removed
 

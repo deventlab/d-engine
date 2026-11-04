@@ -42,6 +42,10 @@ pub(super) fn base_db_options() -> Options {
     // but provides no durability guarantee. Pairs well with Level 3 (flush_wal) if added.
     opts.set_wal_bytes_per_sync(1024 * 1024);
     opts.set_manual_wal_flush(true);
+    // State machine writes skip the WAL, so its data and `last_applied` column families must reach
+    // disk together; otherwise a flush of one without the other leaves `last_applied` ahead of the
+    // data. Checkpoints rely on the same guarantee.
+    opts.set_atomic_flush(true);
     opts.set_max_background_jobs(2);
     opts.set_max_open_files(5000);
     opts.set_use_direct_io_for_flush_and_compaction(true);
@@ -75,7 +79,7 @@ pub(super) fn sm_cf_options(cache: &Cache) -> Options {
     let mut opts = Options::default();
     opts.set_write_buffer_size(64 * 1024 * 1024);
     opts.set_max_write_buffer_number(4);
-    opts.set_min_write_buffer_number_to_merge(2);
+    opts.set_min_write_buffer_number_to_merge(1);
     opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
     opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
 

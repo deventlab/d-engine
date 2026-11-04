@@ -254,7 +254,7 @@ impl From<ErrorCode> for ClientApiError {
             },
             ErrorCode::DataCorruption => ClientApiError::Storage {
                 code,
-                message: "Data corruption detected".to_string(),
+                message: "The stored data for this request may be damaged. Treat the result as unreliable and contact the administrator.".to_string(),
             },
             ErrorCode::StorageIoError => ClientApiError::Storage {
                 code,

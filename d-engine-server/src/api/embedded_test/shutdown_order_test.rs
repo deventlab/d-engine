@@ -15,9 +15,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
-use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -32,10 +30,38 @@ use crate::storage::FileStorageEngine;
 struct SlowApplyProbe {
     inner: FileStateMachine,
     apply_delay: Duration,
+    /// How long `close()` takes after it has marked the storage closed (a large database
+    /// flushing).
+    close_delay: Duration,
+    flags: Arc<ProbeFlags>,
+}
+
+/// What the probe observed. Shared with the test through an `Arc`, because the engine takes the
+/// state machine by value and the test can no longer hold the state machine itself.
+#[derive(Debug, Default)]
+struct ProbeFlags {
     apply_started: AtomicBool,
     storage_closed: AtomicBool,
     /// Entries whose apply started or finished after `close_storage()` had been called.
     applied_after_close: AtomicUsize,
+    /// Reads (`get`, `scan_prefix`) that reached the state machine after `close()` had started.
+    reads_after_close: AtomicUsize,
+    /// Set when the probe (the state machine) is dropped.
+    dropped: AtomicBool,
+}
+
+impl SlowApplyProbe {
+    fn note_read(&self) {
+        if self.flags.storage_closed.load(Ordering::SeqCst) {
+            self.flags.reads_after_close.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for SlowApplyProbe {
+    fn drop(&mut self) {
+        self.flags.dropped.store(true, Ordering::SeqCst);
+    }
 }
 
 #[async_trait]
@@ -43,98 +69,52 @@ impl StateMachine for SlowApplyProbe {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, Error> {
-        self.apply_started.store(true, Ordering::SeqCst);
-        let closed_at_start = self.storage_closed.load(Ordering::SeqCst);
+    ) -> std::io::Result<Vec<ApplyResult>> {
+        self.flags.apply_started.store(true, Ordering::SeqCst);
+        let closed_at_start = self.flags.storage_closed.load(Ordering::SeqCst);
         tokio::time::sleep(self.apply_delay).await;
         let result = self.inner.apply_chunk(chunk).await;
-        if closed_at_start || self.storage_closed.load(Ordering::SeqCst) {
-            self.applied_after_close.fetch_add(chunk.len(), Ordering::SeqCst);
+        if closed_at_start || self.flags.storage_closed.load(Ordering::SeqCst) {
+            self.flags.applied_after_close.fetch_add(chunk.len(), Ordering::SeqCst);
         }
         result
     }
 
-    fn close(&self) -> Result<(), Error> {
-        self.storage_closed.store(true, Ordering::SeqCst);
+    fn close(&self) -> std::io::Result<()> {
+        self.flags.storage_closed.store(true, Ordering::SeqCst);
+        std::thread::sleep(self.close_delay);
         self.inner.close()
     }
 
     // Everything below delegates unchanged.
-    async fn start(&self) -> Result<(), Error> {
-        self.inner.start().await
-    }
-    fn is_running(&self) -> bool {
-        self.inner.is_running()
-    }
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> std::io::Result<Option<Bytes>> {
+        self.note_read();
         self.inner.get(key_buffer)
-    }
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        self.inner.update_last_applied(last_applied)
     }
     fn last_applied(&self) -> LogId {
         self.inner.last_applied()
-    }
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<(), Error> {
-        self.inner.persist_last_applied(last_applied)
-    }
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.inner.update_last_snapshot_metadata(snapshot_metadata)
-    }
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.inner.snapshot_metadata()
-    }
-    fn persist_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.inner.persist_last_snapshot_metadata(snapshot_metadata)
     }
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<SnapshotApplyResult, Error> {
+    ) -> std::io::Result<()> {
         self.inner.apply_snapshot_from_file(metadata, snapshot_path).await
     }
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
-    ) -> Result<Bytes, Error> {
-        self.inner.generate_snapshot_data(new_snapshot_dir, last_included).await
-    }
-    fn save_hard_state(&self) -> Result<(), Error> {
-        self.inner.save_hard_state()
-    }
-    fn flush(&self) -> Result<(), Error> {
-        self.inner.flush()
-    }
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.inner.flush_async().await
-    }
-    async fn reset(&self) -> Result<(), Error> {
-        self.inner.reset().await
+    ) -> std::io::Result<LogId> {
+        self.inner.generate_snapshot_data(new_snapshot_dir).await
     }
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
+    ) -> std::io::Result<ScanResult> {
+        self.note_read();
         self.inner.scan_prefix(prefix)
     }
 }
@@ -154,15 +134,15 @@ async fn test_stop_closes_state_machine_storage_only_after_in_flight_applies_fin
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let storage =
         Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
-    let probe = Arc::new(SlowApplyProbe {
+    let flags = Arc::new(ProbeFlags::default());
+    let probe = SlowApplyProbe {
         inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
         apply_delay: Duration::from_millis(300),
-        apply_started: AtomicBool::new(false),
-        storage_closed: AtomicBool::new(false),
-        applied_after_close: AtomicUsize::new(0),
-    });
+        close_delay: Duration::ZERO,
+        flags: Arc::clone(&flags),
+    };
 
-    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe.clone(), None)
+    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
         .await
         .expect("start engine");
     engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
@@ -176,14 +156,108 @@ async fn test_stop_closes_state_machine_storage_only_after_in_flight_applies_fin
         });
     }
     // Wait until the state machine is busy applying, then stop the engine.
-    while !probe.apply_started.load(Ordering::SeqCst) {
+    while !flags.apply_started.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     engine.stop().await.expect("stop");
 
     assert_eq!(
-        probe.applied_after_close.load(Ordering::SeqCst),
+        flags.applied_after_close.load(Ordering::SeqCst),
         0,
         "stop() closed the state machine's storage while committed entries were still being applied"
+    );
+}
+
+/// Business scenario: an operator stops a node and immediately reopens the same data directory
+/// (rolling restart, or a test harness reusing a path). The state machine owns an exclusive
+/// resource (for RocksDB: the DB handle and its LOCK file) that is only released when the state
+/// machine is dropped.
+///
+/// Purpose: the engine takes the state machine by value and owns every reference to it, so by the
+/// time `stop()` returns the state machine must already be dropped. If any internal holder (read
+/// path, apply worker, Raft core) outlives `stop()`, the exclusive resource stays held and the
+/// reopen fails.
+#[tokio::test]
+async fn test_stop_drops_state_machine_before_returning() {
+    unsafe {
+        std::env::remove_var("CONFIG_PATH");
+    }
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+    let flags = Arc::new(ProbeFlags::default());
+    let probe = SlowApplyProbe {
+        inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
+        apply_delay: Duration::ZERO,
+        close_delay: Duration::ZERO,
+        flags: Arc::clone(&flags),
+    };
+
+    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
+        .await
+        .expect("start engine");
+    engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
+
+    // Exercise both the write path and the read path, so every internal holder has been used.
+    let client = engine.client();
+    client.put("key", "value").await.expect("put");
+    let _ = client.get_eventual("key").await.expect("get");
+    assert!(
+        !flags.dropped.load(Ordering::SeqCst),
+        "state machine must stay alive while the engine is running"
+    );
+
+    engine.stop().await.expect("stop");
+
+    assert!(
+        flags.dropped.load(Ordering::SeqCst),
+        "stop() returned while the state machine was still referenced by an internal holder"
+    );
+}
+
+/// Business scenario: a single-node embedded service is serving reads when its operator stops it.
+/// Closing a large state machine takes a while (it flushes everything to disk), and clients keep
+/// reading during that time.
+///
+/// Purpose: the engine calls nothing on the state machine after `close()` has started, so an
+/// implementation need not define what a closed state machine does when asked to read. The read
+/// path must therefore be stopped before the state machine is closed.
+#[tokio::test]
+async fn test_stop_sends_no_reads_to_the_state_machine_once_it_is_closing() {
+    unsafe {
+        std::env::remove_var("CONFIG_PATH");
+    }
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+    let flags = Arc::new(ProbeFlags::default());
+    let probe = SlowApplyProbe {
+        inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
+        apply_delay: Duration::ZERO,
+        close_delay: Duration::from_millis(300),
+        flags: Arc::clone(&flags),
+    };
+
+    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
+        .await
+        .expect("start engine");
+    engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
+    let client = engine.client();
+    client.put("key", "value").await.expect("put");
+
+    // Clients keep reading until the engine refuses them.
+    let reader = {
+        let client = client.clone();
+        tokio::spawn(async move { while client.get_eventual("key").await.is_ok() {} })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    engine.stop().await.expect("stop");
+    let _ = tokio::time::timeout(Duration::from_secs(2), reader).await;
+
+    assert_eq!(
+        flags.reads_after_close.load(Ordering::SeqCst),
+        0,
+        "a read reached the state machine after close() had started"
     );
 }

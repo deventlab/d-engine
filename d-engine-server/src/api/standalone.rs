@@ -58,11 +58,11 @@ impl StandaloneEngine {
             (storage, sm)
         };
 
-        Self::start_node_with_lock(
+        Self::start_node_inner(
             data_dir.as_path().to_path_buf(),
-            data_dir_lock,
+            Some(data_dir_lock),
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             shutdown_rx,
             config,
         )
@@ -107,13 +107,13 @@ impl StandaloneEngine {
             (storage, sm)
         };
 
-        // start_node_with_lock directly — config already loaded/validated,
+        // start_node_inner directly — config already loaded/validated,
         // lock already held.
-        Self::start_node_with_lock(
+        Self::start_node_inner(
             data_dir.as_path().to_path_buf(),
-            data_dir_lock,
+            Some(data_dir_lock),
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             shutdown_rx,
             config,
         )
@@ -133,7 +133,7 @@ impl StandaloneEngine {
     /// # Example
     /// ```ignore
     /// let storage = Arc::new(MyCustomStorage::new()?);
-    /// let sm = Arc::new(MyCustomStateMachine::new()?);
+    /// let sm = MyCustomStateMachine::new()?;
     ///
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
     /// StandaloneEngine::run_custom("./data/my-node", storage, sm, shutdown_rx, Some("config.toml")).await?;
@@ -141,7 +141,7 @@ impl StandaloneEngine {
     pub async fn run_custom<SE, SM>(
         data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
+        state_machine: SM,
         shutdown_rx: watch::Receiver<()>,
         config_path: Option<impl AsRef<std::path::Path>>,
     ) -> Result<()>
@@ -168,7 +168,7 @@ impl StandaloneEngine {
     pub async fn start_node<SE, SM>(
         data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
+        state_machine: SM,
         shutdown_rx: watch::Receiver<()>,
         config: d_engine_core::RaftNodeConfig,
     ) -> Result<()>
@@ -187,38 +187,11 @@ impl StandaloneEngine {
         .await
     }
 
-    /// Same as `start_node`, but for callers (`run`/`run_with`) that already
-    /// opened storage and therefore must have acquired the lock *before*
-    /// that — see `NodeBuilder::data_dir_lock`'s doc comment.
-    #[allow(dead_code)]
-    async fn start_node_with_lock<SE, SM>(
-        data_dir: std::path::PathBuf,
-        data_dir_lock: crate::node::DataDirLock,
-        storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
-        shutdown_rx: watch::Receiver<()>,
-        config: d_engine_core::RaftNodeConfig,
-    ) -> Result<()>
-    where
-        SE: StorageEngine + std::fmt::Debug + 'static,
-        SM: StateMachine + std::fmt::Debug + 'static,
-    {
-        Self::start_node_inner(
-            data_dir,
-            Some(data_dir_lock),
-            storage_engine,
-            state_machine,
-            shutdown_rx,
-            config,
-        )
-        .await
-    }
-
     async fn start_node_inner<SE, SM>(
         data_dir: std::path::PathBuf,
         data_dir_lock: Option<crate::node::DataDirLock>,
         storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
+        state_machine: SM,
         shutdown_rx: watch::Receiver<()>,
         config: d_engine_core::RaftNodeConfig,
     ) -> Result<()>

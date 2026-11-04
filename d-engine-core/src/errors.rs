@@ -35,13 +35,12 @@ pub enum Error {
 impl Error {
     /// Returns true only for errors that require node shutdown.
     ///
-    /// Fatal: explicit `Fatal` marker, storage data corruption.
+    /// Fatal: explicit `Fatal` marker, snapshot boundary conflict.
     /// Non-fatal (warn + continue): network, snapshot, election, replication.
     pub fn is_fatal(&self) -> bool {
         matches!(
             self,
             Error::Fatal(_)
-                | Error::System(SystemError::Storage(StorageError::DataCorruption { .. }))
                 | Error::Consensus(ConsensusError::Snapshot(
                     SnapshotError::BoundaryConflict { .. }
                 ))
@@ -223,10 +222,6 @@ pub enum StorageError {
     // /// Snapshot creation/restoration failures
     // #[error("Snapshot operation failed: {0}")]
     // Snapshot(String),
-    /// Checksum validation failures
-    #[error("Data corruption detected at {location}")]
-    DataCorruption { location: String },
-
     /// Configuration storage failures
     #[error("Configuration storage error: {0}")]
     ConfigStorage(String),
@@ -250,14 +245,6 @@ pub enum StorageError {
     /// ID allocation errors
     #[error(transparent)]
     IdAllocation(#[from] IdAllocationError),
-
-    /// State machine not serving requests
-    ///
-    /// Returned when read operations are attempted during critical operations
-    /// such as snapshot restoration. This ensures reads never access inconsistent
-    /// or temporary state during database transitions.
-    #[error("State machine not serving: {0}")]
-    NotServing(String),
 }
 
 #[doc(hidden)]

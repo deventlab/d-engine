@@ -5,6 +5,7 @@ use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing::info;
 
+use crate::common::SharedStateMachine;
 use crate::common::create_node_config;
 use crate::common::create_rejoin_node_config;
 use crate::common::get_available_ports;
@@ -96,7 +97,7 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
         let engine = DefaultEmbeddedEngine::start_custom(
             db_paths.last().unwrap(),
             Arc::new(storage),
-            Arc::clone(&sm_for_crash),
+            SharedStateMachine::new(Arc::clone(&sm_for_crash)),
             Some(&configs[i].1),
         )
         .await?;
@@ -209,7 +210,7 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
     let restarted = DefaultEmbeddedEngine::start_custom(
         &crash_snapshot_path,
         Arc::new(storage),
-        Arc::new(state_machine),
+        state_machine,
         Some(&crashed_config.1),
     )
     .await?;
@@ -306,7 +307,7 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
         let engine = DefaultEmbeddedEngine::start_custom(
             db_paths.last().unwrap(),
             Arc::new(storage),
-            Arc::clone(&sm_for_crash),
+            SharedStateMachine::new(Arc::clone(&sm_for_crash)),
             Some(&configs[i].1),
         )
         .await?;
@@ -427,7 +428,7 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
     let rejoined = DefaultEmbeddedEngine::start_custom(
         &crashed_leader_snapshot_path,
         Arc::new(storage),
-        Arc::new(state_machine),
+        state_machine,
         Some(&crashed_leader_config.1),
     )
     .await?;

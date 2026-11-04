@@ -1,13 +1,13 @@
-/// Unit tests for StandaloneReadHandle routing logic.
+/// Unit tests for ReadHandle routing logic.
 ///
-/// StandaloneReadHandle is the single source of truth for read routing:
-///   Eventual/LeaseRead  → ReadActor fast path; fallback to cmd_tx on LeaseInvalid/SmStopped
+/// ReadHandle is the single source of truth for read routing:
+///   Eventual/LeaseRead  → ReadActor fast path; fallback to cmd_tx on LeaseInvalid only
 ///   LinearizableRead    → cmd_tx always
 ///   SmError             → returned directly, NO cmd_tx fallback
 ///
 /// Proof technique (same as embedded_client_fast_path_test.rs):
 ///   cmd_rx is dropped so any fallback to cmd_tx returns a Network/channel-closed error.
-///   A Business error proves SmError was returned directly.
+///   A Storage error proves SmError was returned directly.
 ///   An Ok(value) with cmd_rx dropped proves the fast path was taken.
 #[cfg(test)]
 mod read_handle_tests {
@@ -17,17 +17,17 @@ mod read_handle_tests {
     use bytes::Bytes;
     use d_engine_core::ClientApiError;
     use d_engine_core::ClientCmd;
-    use d_engine_core::Error;
     use d_engine_core::MockStateMachine;
     use d_engine_core::ReadLease;
     use d_engine_core::client::ClientResponse;
+    use d_engine_core::client::ErrorCode;
     use d_engine_core::client::KvEntry;
     use d_engine_core::config::ReadConsistencyPolicy;
     use d_engine_core::now_ms;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use super::super::StandaloneReadHandle;
+    use super::super::ReadHandle;
     use crate::read_actor::run_read_actor;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -52,7 +52,6 @@ mod read_handle_tests {
 
     fn sm_running_with(value: Bytes) -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi()
             .returning(move |keys| Ok(keys.iter().map(|_| Some(value.clone())).collect()));
         sm
@@ -60,25 +59,23 @@ mod read_handle_tests {
 
     fn sm_running_empty() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi().returning(|keys| Ok(keys.iter().map(|_| None).collect()));
         sm
     }
 
-    fn sm_stopped() -> MockStateMachine {
+    fn sm_unavailable() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| false);
+        sm.expect_get_multi().returning(|_| Err(std::io::Error::other("stopped")));
         sm
     }
 
     fn sm_with_error() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
-        sm.expect_get_multi().returning(|_| Err(Error::Fatal("disk failure".into())));
+        sm.expect_get_multi().returning(|_| Err(std::io::Error::other("disk failure")));
         sm
     }
 
-    /// Build a StandaloneReadHandle with a live ReadActor.
+    /// Build a ReadHandle with a live ReadActor.
     ///
     /// `drop_cmd_rx=true` closes the cmd_tx receiver — any cmd_tx fallback
     /// returns a channel-closed Network error (proof the fast path was NOT taken).
@@ -86,14 +83,14 @@ mod read_handle_tests {
         sm: MockStateMachine,
         lease: Arc<ReadLease>,
         drop_cmd_rx: bool,
-    ) -> (StandaloneReadHandle, JoinHandle<()>) {
+    ) -> (ReadHandle, JoinHandle<()>) {
         let (read_tx, read_rx) = mpsc::channel(8);
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         if drop_cmd_rx {
             drop(cmd_rx);
         }
         let handle = tokio::spawn(run_read_actor(read_rx, lease, Arc::new(sm), 64));
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
         (rh, handle)
     }
 
@@ -130,15 +127,16 @@ mod read_handle_tests {
         handle.await.unwrap();
     }
 
-    /// Eventual, SM stopped → SmStopped → fallback to cmd_tx.
-    /// cmd_rx dropped: error is Network (channel-closed), proving cmd_tx fallback triggered.
+    /// Eventual read, SM cannot serve: the read fails with the state machine's own error. The Raft
+    /// path would read the same local state machine again, so it is not tried.
+    /// cmd_rx dropped: a fallback would show up as a Network (channel-closed) error.
     #[tokio::test]
-    async fn test_eventual_sm_stopped_falls_back_to_cmd_tx() {
-        let (rh, handle) = make_handle(sm_stopped(), valid_lease(), true).await;
+    async fn test_eventual_sm_not_serving_fails_without_trying_cmd_tx() {
+        let (rh, handle) = make_handle(sm_unavailable(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
-            matches!(result, Err(ClientApiError::Network { .. })),
-            "SmStopped must fall back to cmd_tx (Network error), got: {:?}",
+            matches!(&result, Err(e) if e.code() == ErrorCode::StorageIoError),
+            "the state machine's error must reach the caller, got: {:?}",
             result
         );
         drop(rh);
@@ -192,14 +190,15 @@ mod read_handle_tests {
         handle.await.unwrap();
     }
 
-    /// LeaseRead, SM stopped (even with valid lease) → LeaseInvalid → fallback.
+    /// LeaseRead with a valid lease, SM cannot serve: the read fails with the state machine's own
+    /// error; only an invalid lease sends a read to the Raft path.
     #[tokio::test]
-    async fn test_lease_read_sm_stopped_falls_back_to_cmd_tx() {
-        let (rh, handle) = make_handle(sm_stopped(), valid_lease(), true).await;
+    async fn test_lease_read_sm_not_serving_fails_without_trying_cmd_tx() {
+        let (rh, handle) = make_handle(sm_unavailable(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::LeaseRead, 1, TIMEOUT).await;
         assert!(
-            matches!(result, Err(ClientApiError::Network { .. })),
-            "SM stopped must fall back to cmd_tx, got: {:?}",
+            matches!(&result, Err(e) if e.code() == ErrorCode::StorageIoError),
+            "the state machine's error must reach the caller, got: {:?}",
             result
         );
         drop(rh);
@@ -208,18 +207,38 @@ mod read_handle_tests {
 
     // ── SmError — direct return, no cmd_tx fallback ───────────────────────────
 
-    /// sm.get() returns Err → SmError → Business error returned DIRECTLY.
+    /// sm.get() returns Err → SmError → Storage error returned DIRECTLY.
     /// cmd_rx dropped: if fallback were taken, error would be Network.
-    /// Business error proves SmError was returned without touching cmd_tx.
+    /// Storage error proves SmError was returned without touching cmd_tx.
     #[tokio::test]
     async fn test_sm_error_returned_directly_no_cmd_tx_fallback() {
         let (rh, handle) = make_handle(sm_with_error(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
-            matches!(result, Err(ClientApiError::Business { .. })),
-            "SmError must produce Business error (direct), not Network (fallback), got: {:?}",
+            matches!(result, Err(ClientApiError::Storage { .. })),
+            "SmError must produce Storage error (direct), not Network (fallback), got: {:?}",
             result
         );
+        drop(rh);
+        handle.await.unwrap();
+    }
+
+    /// The engine's own error text is internal detail: the client gets a fixed, friendly
+    /// message and a stable code; the original error only goes to the log.
+    #[tokio::test]
+    async fn test_sm_error_message_hides_engine_detail() {
+        let (rh, handle) = make_handle(sm_with_error(), valid_lease(), true).await;
+        let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
+        match result {
+            Err(ClientApiError::Storage { code, message }) => {
+                assert_eq!(code, ErrorCode::StorageIoError);
+                assert!(
+                    !message.contains("disk failure"),
+                    "engine detail leaked to the client: {message}"
+                );
+            }
+            other => panic!("expected a Storage error, got: {other:?}"),
+        }
         drop(rh);
         handle.await.unwrap();
     }
@@ -231,8 +250,7 @@ mod read_handle_tests {
     #[tokio::test]
     async fn test_linearizable_always_uses_cmd_tx() {
         // SM has no get() expectation — mockall panics if get() is called (implicit safety net).
-        let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
+        let sm = MockStateMachine::new();
         let (rh, handle) = make_handle(sm, valid_lease(), true).await;
 
         let result = rh.get(b"k", ReadConsistencyPolicy::LinearizableRead, 1, TIMEOUT).await;
@@ -247,12 +265,12 @@ mod read_handle_tests {
 
     // ── No read_tx — always cmd_tx ────────────────────────────────────────────
 
-    /// StandaloneReadHandle without read_tx (None) always falls through to cmd_tx for any policy.
+    /// ReadHandle without read_tx (None) always falls through to cmd_tx for any policy.
     #[tokio::test]
     async fn test_no_read_tx_all_policies_use_cmd_tx() {
         let (cmd_tx, cmd_rx) = mpsc::channel::<d_engine_core::ClientCmd>(1);
         drop(cmd_rx);
-        let rh = StandaloneReadHandle::new(None, cmd_tx);
+        let rh = ReadHandle::new(None, cmd_tx);
 
         for policy in [
             ReadConsistencyPolicy::EventualConsistency,
@@ -279,7 +297,7 @@ mod read_handle_tests {
         drop(read_rx); // ReadActor is gone
         drop(cmd_rx); // cmd_tx also closed — proves fallback was attempted
 
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
             matches!(result, Err(ClientApiError::Network { .. })),
@@ -290,19 +308,19 @@ mod read_handle_tests {
 
     // ── cmd_tx path: alignment helper ────────────────────────────────────────
 
-    /// Builds a StandaloneReadHandle wired to a one-shot mock Raft responder.
+    /// Builds a ReadHandle wired to a one-shot mock Raft responder.
     ///
     /// The responder returns the given sparse `entries` exactly as
     /// `read_from_state_machine` would — caller is responsible for verifying
     /// that `get_batch` re-aligns them to the input key positions.
-    async fn make_cmd_tx_handle(entries: Vec<KvEntry>) -> StandaloneReadHandle {
+    async fn make_cmd_tx_handle(entries: Vec<KvEntry>) -> ReadHandle {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         tokio::spawn(async move {
             if let Some(ClientCmd::Read(_, resp_tx)) = cmd_rx.recv().await {
                 let _ = resp_tx.send(Ok(ClientResponse::read_results(entries)));
             }
         });
-        StandaloneReadHandle::new(None, cmd_tx)
+        ReadHandle::new(None, cmd_tx)
     }
 
     // ── cmd_tx path: HashMap re-alignment correctness ─────────────────────────
@@ -451,7 +469,6 @@ mod read_handle_tests {
 
     fn sm_running_with_multi(vals: Vec<(&'static [u8], &'static [u8])>) -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi().returning(move |keys| {
             Ok(keys
                 .iter()
@@ -557,8 +574,7 @@ mod read_handle_tests {
     /// cmd_rx dropped: Network error proves cmd_tx was used.
     #[tokio::test]
     async fn test_get_batch_linearizable_always_uses_cmd_tx() {
-        let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
+        let sm = MockStateMachine::new();
         // no expect_get() — mockall panics if get() is called
         let (rh, handle) = make_handle(sm, valid_lease(), true).await;
 
@@ -583,7 +599,7 @@ mod read_handle_tests {
         let (cmd_tx, cmd_rx) = mpsc::channel::<d_engine_core::ClientCmd>(1);
         drop(cmd_rx);
 
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
 
         let short_timeout = Duration::from_millis(50);
         let start = tokio::time::Instant::now();
@@ -611,8 +627,8 @@ mod read_handle_tests {
 
 // ── Error helper tests ────────────────────────────────────────────────────────
 //
-// These functions live in standalone_read_handle.rs and are shared by both
-// StandaloneReadHandle and EmbeddedReadHandle (via re-export).  Testing them
+// These functions live in read_handle.rs and are shared by both
+// ReadHandle and EmbeddedReadHandle (via re-export).  Testing them
 // here keeps the coverage co-located with the implementation.
 
 #[cfg(test)]

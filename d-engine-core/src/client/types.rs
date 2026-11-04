@@ -14,9 +14,13 @@
 use bytes::Bytes;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::error;
 
 // ReadConsistencyPolicy already exists as a native type in crate::config; re-export it
 // here so all client-facing types live in one module.
+use crate::Error;
+use crate::StorageError;
+use crate::SystemError;
 pub use crate::config::ReadConsistencyPolicy;
 
 // ─── Write request ────────────────────────────────────────────────────────────
@@ -173,6 +177,21 @@ impl TryFrom<i32> for ErrorCode {
     }
 }
 
+impl ErrorCode {
+    /// The code a client sees when the state machine fails a read.
+    ///
+    /// A state machine reports every failure as an `io::Error`, so a failed read is a storage I/O
+    /// error; anything else is uncategorized.
+    pub fn for_read_failure(e: &Error) -> Self {
+        match e {
+            Error::System(SystemError::Storage(
+                StorageError::IoError(_) | StorageError::DbError(_),
+            )) => Self::StorageIoError,
+            _ => Self::Uncategorized,
+        }
+    }
+}
+
 // ─── ClientResponse constructors ─────────────────────────────────────────────
 
 impl ClientResponse {
@@ -265,5 +284,17 @@ impl ClientResponse {
     #[inline]
     pub fn is_propose_failure(&self) -> bool {
         self.error == ErrorCode::ProposeFailed
+    }
+
+    /// Builds the response to a read. A failure is logged and answered with an error code that
+    /// carries no internal detail, never with an empty result.
+    pub fn from_read(result: Result<Vec<KvEntry>, Error>) -> Self {
+        match result {
+            Ok(entries) => Self::read_results(entries),
+            Err(e) => {
+                error!(error = ?e, "state machine read failed");
+                Self::client_error(ErrorCode::for_read_failure(&e))
+            }
+        }
     }
 }

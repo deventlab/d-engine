@@ -279,7 +279,7 @@ mod start_node_tests {
     /// Create a RocksDB storage engine and state machine.
     fn create_rocksdb_se_and_sm(
         temp_dir: &tempfile::TempDir
-    ) -> (Arc<RocksDBStorageEngine>, Arc<RocksDBStateMachine>) {
+    ) -> (Arc<RocksDBStorageEngine>, RocksDBStateMachine) {
         let storage_path = temp_dir.path().join("storage");
         let sm_path = temp_dir.path().join("sm");
         std::fs::create_dir_all(&storage_path).unwrap();
@@ -288,7 +288,6 @@ mod start_node_tests {
         let storage =
             Arc::new(RocksDBStorageEngine::new(&storage_path).expect("create storage engine"));
         let sm = RocksDBStateMachine::new(&sm_path).expect("create state machine");
-        let sm = Arc::new(sm);
 
         (storage, sm)
     }
@@ -378,7 +377,6 @@ mod start_node_tests {
 
         let storage = Arc::new(RocksDBStorageEngine::new(&storage_path).expect("create storage"));
         let sm = RocksDBStateMachine::new(&sm_path).expect("create sm");
-        let sm = Arc::new(sm);
 
         let config = make_config(1);
 
@@ -423,7 +421,7 @@ mod run_custom_tests {
     /// Create a RocksDB storage engine and state machine.
     fn create_rocksdb_se_and_sm(
         temp_dir: &tempfile::TempDir
-    ) -> (Arc<RocksDBStorageEngine>, Arc<RocksDBStateMachine>) {
+    ) -> (Arc<RocksDBStorageEngine>, RocksDBStateMachine) {
         let storage_path = temp_dir.path().join("storage");
         let sm_path = temp_dir.path().join("sm");
         std::fs::create_dir_all(&storage_path).unwrap();
@@ -432,7 +430,6 @@ mod run_custom_tests {
         let storage =
             Arc::new(RocksDBStorageEngine::new(&storage_path).expect("create storage engine"));
         let sm = RocksDBStateMachine::new(&sm_path).expect("create state machine");
-        let sm = Arc::new(sm);
 
         (storage, sm)
     }

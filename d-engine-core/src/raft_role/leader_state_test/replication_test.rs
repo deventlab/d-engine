@@ -2677,7 +2677,7 @@ async fn five_voter_partition_context(path: &str) -> ProcessRaftRequestTestConte
         });
     context.raft_context.storage.raft_log = Arc::new(raft_log);
     let mut sm_handler = crate::MockStateMachineHandler::new();
-    sm_handler.expect_read_from_state_machine().returning(|_| Some(vec![]));
+    sm_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
     context.raft_context.handlers.state_machine_handler = Arc::new(sm_handler);
 
     context

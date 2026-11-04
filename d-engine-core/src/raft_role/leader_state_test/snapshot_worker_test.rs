@@ -51,7 +51,6 @@ use crate::MockRaftLog;
 use crate::MockStateMachine;
 use crate::MockTransport;
 use crate::RaftRequestWithSignal;
-use crate::SnapshotApplyResult;
 use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -60,6 +59,7 @@ use crate::raft_role::role_state::PeerReplicationState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
+use crate::test_utils::mock::mock_state_machine_handler_with_snapshot;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -99,31 +99,14 @@ fn stub_snapshot_metadata() -> SnapshotMetadata {
 }
 
 fn state_machine_with_snapshot() -> MockStateMachine {
-    use bytes::Bytes;
     use d_engine_proto::common::LogId;
     let mut sm = MockStateMachine::new();
-    sm.expect_start().returning(|| Ok(()));
     sm.expect_close().returning(|| Ok(()));
-    sm.expect_is_running().returning(|| true);
     sm.expect_get().returning(|_| Ok(None));
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));
-    sm.expect_len().returning(|| 0);
-    sm.expect_update_last_applied().returning(|_| ());
     sm.expect_last_applied().return_const(LogId::default());
-    sm.expect_persist_last_applied().returning(|_| Ok(()));
-    sm.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
-    // Return a valid snapshot so Phase 6 fires the Snapshot task to the worker.
-    sm.expect_snapshot_metadata().returning(|| Some(stub_snapshot_metadata()));
-    sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
-    sm.expect_apply_snapshot_from_file().returning(|_, _| {
-        Ok(SnapshotApplyResult::Applied {
-            last_included: LogId::default(),
-        })
-    });
-    sm.expect_generate_snapshot_data()
-        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
-    sm.expect_save_hard_state().returning(|| Ok(()));
-    sm.expect_flush().returning(|| Ok(()));
+    sm.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    sm.expect_generate_snapshot_data().returning(|_| Ok(LogId::default()));
     sm
 }
 
@@ -153,6 +136,10 @@ fn new_leader_and_ctx(
 
     ctx.membership = Arc::new(two_peer_membership());
     ctx.storage.state_machine = Arc::new(state_machine_with_snapshot());
+    // The engine reports a valid snapshot, so Phase 6 fires the Snapshot task to the worker.
+    ctx.handlers.state_machine_handler = Arc::new(mock_state_machine_handler_with_snapshot(Some(
+        stub_snapshot_metadata(),
+    )));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 15);

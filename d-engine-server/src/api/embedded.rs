@@ -115,7 +115,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_core::TypeConfig;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -123,7 +122,6 @@ use tracing::error;
 use tracing::info;
 
 use super::embedded_client::EmbeddedClient;
-use super::embedded_read_handle::EmbeddedReadHandle;
 use crate::Result;
 #[cfg(feature = "rocksdb")]
 use crate::RocksDBStateMachine;
@@ -134,12 +132,11 @@ use crate::RocksDBUnifiedEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::node::NodeBuilder;
-use crate::node::RaftTypeConfig;
 
-struct Inner<T: TypeConfig> {
+struct Inner {
     node_handle: Mutex<Option<JoinHandle<Result<()>>>>,
     shutdown_tx: watch::Sender<()>,
-    client: Arc<EmbeddedClient<T>>,
+    client: Arc<EmbeddedClient>,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
     membership_rx: watch::Receiver<crate::membership::MembershipSnapshot>,
     is_stopped: Mutex<bool>,
@@ -170,11 +167,11 @@ struct Inner<T: TypeConfig> {
 ///
 /// engine.stop().await?;
 /// ```
-pub struct EmbeddedEngine<T: TypeConfig> {
-    inner: Arc<Inner<T>>,
+pub struct EmbeddedEngine {
+    inner: Arc<Inner>,
 }
 
-impl<T: TypeConfig> Clone for EmbeddedEngine<T> {
+impl Clone for EmbeddedEngine {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -185,7 +182,7 @@ impl<T: TypeConfig> Clone for EmbeddedEngine<T> {
 // ─── RocksDB default start ───────────────────────────────────────────────────
 
 #[cfg(feature = "rocksdb")]
-impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
+impl EmbeddedEngine {
     /// Start engine with an explicit data directory.
     ///
     /// The directory is created automatically if it does not exist.
@@ -221,11 +218,11 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
             (storage, sm)
         };
 
-        Self::start_node_with_lock(
+        Self::start_node_inner(
             data_dir.as_path().to_path_buf(),
-            data_dir_lock,
+            Some(data_dir_lock),
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             config,
         )
         .await
@@ -271,15 +268,15 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
             (storage, sm)
         };
 
-        // start_node_with_lock directly, not start_custom — config is
+        // start_node_inner directly, not start_custom — config is
         // already loaded/validated here, and the lock is already held;
         // start_custom would re-parse config_path again for no benefit and
         // can't accept a pre-acquired lock anyway.
-        Self::start_node_with_lock(
+        Self::start_node_inner(
             data_dir.as_path().to_path_buf(),
-            data_dir_lock,
+            Some(data_dir_lock),
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             config,
         )
         .await
@@ -288,11 +285,7 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
 
 // ─── Custom SE/SM: start_custom + start_node ─────────────────────────────────
 
-impl<SE, SM> EmbeddedEngine<RaftTypeConfig<SE, SM>>
-where
-    SE: StorageEngine + Debug + 'static,
-    SM: StateMachine + Debug + 'static,
-{
+impl EmbeddedEngine {
     /// Starts the engine with a custom storage engine and state machine.
     ///
     /// `data_dir` is required and explicit — `config_path` is only for
@@ -312,15 +305,19 @@ where
     /// # Example
     /// ```ignore
     /// let storage = Arc::new(MyCustomStorage::new()?);
-    /// let sm = Arc::new(MyCustomStateMachine::new()?);
+    /// let sm = MyCustomStateMachine::new()?;
     /// let engine = EmbeddedEngine::start_custom("./data/my-node", storage, sm, None).await?;
     /// ```
-    pub async fn start_custom(
+    pub async fn start_custom<SE, SM>(
         data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
+        state_machine: SM,
         config_path: Option<&str>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        SE: StorageEngine + Debug + 'static,
+        SM: StateMachine + Debug + 'static,
+    {
         let node_config = if let Some(path) = config_path {
             d_engine_core::RaftNodeConfig::default().with_override_config(path)?
         } else {
@@ -336,12 +333,16 @@ where
     /// For library wrappers that build their own config layer and
     /// translate to `RaftNodeConfig` in Rust — no config file required.
     /// Same lock scope as [`start_custom`](Self::start_custom) — see its doc.
-    pub async fn start_node(
+    pub async fn start_node<SE, SM>(
         data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
+        state_machine: SM,
         node_config: d_engine_core::RaftNodeConfig,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        SE: StorageEngine + Debug + 'static,
+        SM: StateMachine + Debug + 'static,
+    {
         Self::start_node_inner(
             data_dir.as_ref().to_path_buf(),
             None,
@@ -352,43 +353,21 @@ where
         .await
     }
 
-    /// Same as `start_node`, but for callers (`start`/`start_with`) that
-    /// already opened storage and therefore must have acquired the lock
-    /// *before* that — see `NodeBuilder::data_dir_lock`'s doc comment.
-    #[allow(dead_code)]
-    async fn start_node_with_lock(
-        data_dir: std::path::PathBuf,
-        data_dir_lock: crate::node::DataDirLock,
-        storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
-        node_config: d_engine_core::RaftNodeConfig,
-    ) -> Result<Self> {
-        Self::start_node_inner(
-            data_dir,
-            Some(data_dir_lock),
-            storage_engine,
-            state_machine,
-            node_config,
-        )
-        .await
-    }
-
-    async fn start_node_inner(
+    async fn start_node_inner<SE, SM>(
         data_dir: std::path::PathBuf,
         data_dir_lock: Option<crate::node::DataDirLock>,
         storage_engine: Arc<SE>,
-        state_machine: Arc<SM>,
+        state_machine: SM,
         node_config: d_engine_core::RaftNodeConfig,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        SE: StorageEngine + Debug + 'static,
+        SM: StateMachine + Debug + 'static,
+    {
         info!("Starting embedded d-engine");
         d_engine_core::init_clock();
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
-
-        // Clone SM before NodeBuilder consumes it — EmbeddedReadHandle holds this
-        // for the direct-SM fast path. LOCK release is decoupled from Arc<SM> counting
-        // (via close_db()), so holding multiple Arc<SM> clones is safe.
-        let sm_for_client = Arc::clone(&state_machine);
 
         let mut builder = NodeBuilder::init(data_dir, node_config.validate()?, shutdown_rx)
             .storage_engine(storage_engine)
@@ -406,8 +385,9 @@ where
         let leader_elected_rx = node.leader_change_notifier();
         let membership_rx = node.membership_change_notifier();
 
-        let read_handle =
-            EmbeddedReadHandle::new(sm_for_client, node.read_lease(), node.cmd_tx.clone());
+        // Reads go through the ReadActor, the only holder of the state machine besides the
+        // Raft loop and the apply worker, so the engine controls when it is dropped.
+        let read_handle = node.read_handle.clone();
 
         let client = {
             let base = EmbeddedClient::new_internal(
@@ -456,9 +436,9 @@ where
     }
 }
 
-// ─── General API (all TypeConfig) ────────────────────────────────────────────
+// ─── General API  ────────────────────────────────────────────
 
-impl<T: TypeConfig> EmbeddedEngine<T> {
+impl EmbeddedEngine {
     /// Wait until the cluster is ready to serve requests.
     ///
     /// Blocks until a leader has been elected **and** its no-op entry is committed
@@ -661,7 +641,7 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;
     /// ```
-    pub fn client(&self) -> Arc<EmbeddedClient<T>> {
+    pub fn client(&self) -> Arc<EmbeddedClient> {
         Arc::clone(&self.inner.client)
     }
 
@@ -732,7 +712,7 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
     }
 }
 
-impl<T: TypeConfig> Drop for EmbeddedEngine<T> {
+impl Drop for EmbeddedEngine {
     fn drop(&mut self) {
         // Warn if stop() was not called
         if let Ok(handle) = self.inner.node_handle.try_lock()

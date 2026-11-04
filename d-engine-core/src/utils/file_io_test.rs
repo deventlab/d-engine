@@ -538,3 +538,130 @@ mod compute_checksum_from_file_path_tests {
         );
     }
 }
+
+// ── compute_checksum_from_folder_path ────────────────────────────────────────
+//
+// The snapshot checksum is what a follower checks a received snapshot against. These tests pin
+// what it must cover: every file at any depth, the boundaries between files, and file names.
+
+fn write_tree(
+    root: &std::path::Path,
+    files: &[(&str, &[u8])],
+) {
+    for (relative, content) in files {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+}
+
+/// RocksDB exports its data files into sub-directories (`sm/000008.sst`). A byte flipped in one
+/// of them is exactly the corruption the checksum exists to catch.
+#[tokio::test]
+async fn test_folder_checksum_changes_when_a_nested_file_is_modified() {
+    let dir = tempdir().unwrap();
+    write_tree(dir.path(), &[
+        ("meta.bin", b"meta"),
+        ("sm/000008.sst", b"table-data"),
+    ]);
+    let before = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
+
+    std::fs::write(dir.path().join("sm/000008.sst"), b"table-dat!").unwrap();
+    let after = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
+
+    assert_ne!(
+        before, after,
+        "a modified file in a sub-directory must change the checksum"
+    );
+}
+
+/// A snapshot that arrives with an extra file somewhere below the root is not the snapshot the
+/// leader exported.
+#[tokio::test]
+async fn test_folder_checksum_changes_when_a_nested_file_is_added() {
+    let dir = tempdir().unwrap();
+    write_tree(dir.path(), &[
+        ("meta.bin", b"meta"),
+        ("sm/000008.sst", b"table-data"),
+    ]);
+    let before = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
+
+    write_tree(dir.path(), &[("sm/000009.sst", b"extra")]);
+    let after = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
+
+    assert_ne!(
+        before, after,
+        "an added file in a sub-directory must change the checksum"
+    );
+}
+
+/// Where one file ends and the next begins is part of the content. Hashing the bytes of the files
+/// back to back lets `a="xy", b="z"` and `a="x", b="yz"` collide.
+#[tokio::test]
+async fn test_folder_checksum_distinguishes_where_one_file_ends_and_the_next_begins() {
+    let first = tempdir().unwrap();
+    write_tree(first.path(), &[("a.bin", b"xy"), ("b.bin", b"z")]);
+    let second = tempdir().unwrap();
+    write_tree(second.path(), &[("a.bin", b"x"), ("b.bin", b"yz")]);
+
+    let first_sum = file_io::compute_checksum_from_folder_path(first.path()).await.unwrap();
+    let second_sum = file_io::compute_checksum_from_folder_path(second.path()).await.unwrap();
+
+    assert_ne!(
+        first_sum, second_sum,
+        "moving a byte across a file boundary must change the checksum"
+    );
+}
+
+/// Two snapshots holding the same bytes under different file names are different snapshots (a
+/// state machine reads its files by name).
+#[tokio::test]
+async fn test_folder_checksum_changes_when_a_file_is_renamed() {
+    let first = tempdir().unwrap();
+    write_tree(first.path(), &[("a.bin", b"same")]);
+    let second = tempdir().unwrap();
+    write_tree(second.path(), &[("b.bin", b"same")]);
+
+    let first_sum = file_io::compute_checksum_from_folder_path(first.path()).await.unwrap();
+    let second_sum = file_io::compute_checksum_from_folder_path(second.path()).await.unwrap();
+
+    assert_ne!(
+        first_sum, second_sum,
+        "the file name must be part of the checksum"
+    );
+}
+
+/// The leader and a follower build the same directory in different orders; they must agree.
+#[tokio::test]
+async fn test_folder_checksum_is_independent_of_creation_order() {
+    let first = tempdir().unwrap();
+    write_tree(first.path(), &[
+        ("a.bin", b"1"),
+        ("sm/b.sst", b"2"),
+        ("sm/c.sst", b"3"),
+    ]);
+    let second = tempdir().unwrap();
+    write_tree(second.path(), &[
+        ("sm/c.sst", b"3"),
+        ("sm/b.sst", b"2"),
+        ("a.bin", b"1"),
+    ]);
+
+    let first_sum = file_io::compute_checksum_from_folder_path(first.path()).await.unwrap();
+    let second_sum = file_io::compute_checksum_from_folder_path(second.path()).await.unwrap();
+
+    assert_eq!(first_sum, second_sum);
+}
+
+/// Unchanged behaviour the rewrite must keep: a top-level change is still detected.
+#[tokio::test]
+async fn test_folder_checksum_changes_when_a_top_level_file_is_modified() {
+    let dir = tempdir().unwrap();
+    write_tree(dir.path(), &[("meta.bin", b"meta")]);
+    let before = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
+
+    std::fs::write(dir.path().join("meta.bin"), b"Meta").unwrap();
+    let after = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
+
+    assert_ne!(before, after);
+}

@@ -255,20 +255,69 @@ pub async fn compute_checksum_from_file_path(file_path: &Path) -> Result<[u8; 32
     Ok(hasher.finalize().into())
 }
 
-/// SHA-256 over every file in a directory, in deterministic (sorted) filename order.
+/// Domain separator mixed into every snapshot checksum, so it can never equal a hash of the
+/// same bytes computed for another purpose.
+const SNAPSHOT_CHECKSUM_DOMAIN: &[u8] = b"d-engine/snapshot-checksum\0";
+
+/// SHA-256 of a snapshot directory: every regular file at any depth, in sorted relative-path
+/// order. Each file contributes its relative path and its length ahead of its bytes, so renaming
+/// a file, moving it to another directory, or moving a byte across a file boundary changes the
+/// checksum. Symbolic links and other special entries are rejected rather than skipped.
 pub async fn compute_checksum_from_folder_path(folder_path: &Path) -> Result<[u8; 32]> {
-    let mut hasher = Sha256::new();
-    let mut entries = tokio::fs::read_dir(folder_path).await.map_err(StorageError::IoError)?;
+    let root = folder_path.to_path_buf();
+    tokio::task::spawn_blocking(move || checksum_of_tree(&root))
+        .await
+        .map_err(|e| StorageError::IoError(std::io::Error::other(e.to_string())))?
+        .map_err(|e| StorageError::IoError(e).into())
+}
+
+fn checksum_of_tree(root: &Path) -> std::io::Result<[u8; 32]> {
     let mut files = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
-        if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
-            files.push(entry);
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let path = entry.path();
+                let relative =
+                    path.strip_prefix(root).map_err(std::io::Error::other)?.to_path_buf();
+                files.push((relative, path));
+            } else {
+                return Err(std::io::Error::other(format!(
+                    "unsupported entry in snapshot directory: {}",
+                    entry.path().display()
+                )));
+            }
         }
     }
-    files.sort_by_key(|entry| entry.file_name());
-    for entry in files {
-        let data = tokio::fs::read(entry.path()).await.map_err(StorageError::IoError)?;
-        hasher.update(data);
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    hasher.update(SNAPSHOT_CHECKSUM_DOMAIN);
+    for (relative, path) in files {
+        // Components joined with '/', so the same tree hashes the same on every platform.
+        let mut name = Vec::new();
+        for (index, component) in relative.components().enumerate() {
+            if index > 0 {
+                name.push(b'/');
+            }
+            name.extend_from_slice(component.as_os_str().as_encoded_bytes());
+        }
+        let file = std::fs::File::open(&path)?;
+        let length = file.metadata()?.len();
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(&name);
+        hasher.update(length.to_be_bytes());
+        let copied = std::io::copy(&mut std::io::BufReader::new(file), &mut hasher)?;
+        if copied != length {
+            return Err(std::io::Error::other(format!(
+                "{} changed while it was being checksummed",
+                path.display()
+            )));
+        }
     }
     Ok(hasher.finalize().into())
 }
