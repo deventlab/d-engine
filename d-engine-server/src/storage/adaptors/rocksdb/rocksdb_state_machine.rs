@@ -176,14 +176,14 @@ impl RocksDBStateMachine {
     fn with_db<F, R>(
         &self,
         f: F,
-    ) -> Result<R, Error>
+    ) -> Result<R, StateMachineError>
     where
-        F: FnOnce(&DB) -> Result<R, Error>,
+        F: FnOnce(&DB) -> Result<R, StateMachineError>,
     {
         let guard = self.db.load(); // Guard — no Arc clone
         match guard.as_deref() {
             Some(db) => f(db),
-            None => Err(StorageError::NotServing("state machine stopped".into()).into()),
+            None => Err(StateMachineError::new("state machine stopped")),
         }
     }
 
@@ -192,31 +192,25 @@ impl RocksDBStateMachine {
     /// Costs 2 atomic ops (Arc increment + future decrement).  Only use when the handle
     /// must be moved into a closure or across an await point.  For all other cases prefer
     /// `with_db()` (zero Arc clone) or the inline Guard pattern.
-    fn load_db(&self) -> Result<Arc<DB>, Error> {
+    fn load_db(&self) -> Result<Arc<DB>, StateMachineError> {
         self.db
             .load_full()
-            .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
+            .ok_or_else(|| StateMachineError::new("state machine stopped"))
     }
 
-    fn load_state_machine_metadata(db: &DB) -> Result<(u64, u64), Error> {
+    fn load_state_machine_metadata(db: &DB) -> Result<(u64, u64), StateMachineError> {
         let cf = db
             .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
+            .ok_or_else(|| StateMachineError::new("State machine meta CF not found"))?;
 
-        let index = match db
-            .get_cf(&cf, LAST_APPLIED_INDEX_KEY)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
-        {
+        let index = match db.get_cf(&cf, LAST_APPLIED_INDEX_KEY).map_err(StateMachineError::new)? {
             Some(bytes) if bytes.len() == 8 => u64::from_be_bytes([
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]),
             _ => 0,
         };
 
-        let term = match db
-            .get_cf(&cf, LAST_APPLIED_TERM_KEY)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
-        {
+        let term = match db.get_cf(&cf, LAST_APPLIED_TERM_KEY).map_err(StateMachineError::new)? {
             Some(bytes) if bytes.len() == 8 => u64::from_be_bytes([
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]),
@@ -235,7 +229,7 @@ impl RocksDBStateMachine {
         &self,
         last_included: LogId,
         snapshot_dir: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<(), StateMachineError> {
         self.with_db(|db| Self::restore_from_cf_export(db, snapshot_dir))?;
 
         info!("Snapshot restore complete");
@@ -254,7 +248,7 @@ impl RocksDBStateMachine {
     fn restore_from_cf_export(
         db: &DB,
         snapshot_dir: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<(), StateMachineError> {
         let sm_meta = Self::load_cf_export_metadata(
             &snapshot_dir.join("sm_metadata.bin"),
             &snapshot_dir.join("sm"),
@@ -272,23 +266,20 @@ impl RocksDBStateMachine {
         // will be absent on restart. RocksDB does not support CF rename, so true atomicity
         // is not achievable here. Recovery: the node will restart with missing CFs, return
         // errors on reads, and wait for the leader to re-send the snapshot (issue #308).
-        db.drop_cf(STATE_MACHINE_CF).map_err(|e| StorageError::DbError(e.to_string()))?;
-        db.drop_cf(STATE_MACHINE_META_CF)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        db.drop_cf(STATE_MACHINE_CF).map_err(StateMachineError::new)?;
+        db.drop_cf(STATE_MACHINE_META_CF).map_err(StateMachineError::new)?;
 
         // create_column_family_with_import requires at least one SST file.
         // A CF with no files (e.g. sm_meta before its first flush) must use create_cf instead.
         if sm_meta.get_files().is_empty() {
-            db.create_cf(STATE_MACHINE_CF, &cf_opts)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            db.create_cf(STATE_MACHINE_CF, &cf_opts).map_err(StateMachineError::new)?;
         } else {
             db.create_column_family_with_import(&cf_opts, STATE_MACHINE_CF, &import_opts, &sm_meta)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+                .map_err(StateMachineError::new)?;
         }
 
         if sm_meta_meta.get_files().is_empty() {
-            db.create_cf(STATE_MACHINE_META_CF, &cf_opts)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            db.create_cf(STATE_MACHINE_META_CF, &cf_opts).map_err(StateMachineError::new)?;
         } else {
             db.create_column_family_with_import(
                 &cf_opts,
@@ -296,7 +287,7 @@ impl RocksDBStateMachine {
                 &import_opts,
                 &sm_meta_meta,
             )
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(StateMachineError::new)?;
         }
 
         Ok(())
@@ -319,10 +310,10 @@ impl RocksDBStateMachine {
     fn export_frozen_view(
         db: &DB,
         snapshot_dir: &std::path::Path,
-    ) -> Result<LogId, Error> {
+    ) -> Result<LogId, StateMachineError> {
         let name = snapshot_dir
             .file_name()
-            .ok_or_else(|| StorageError::DbError("snapshot dir has no name".to_string()))?
+            .ok_or_else(|| StateMachineError::new("snapshot dir has no name"))?
             .to_string_lossy();
         let checkpoint_dir = snapshot_dir.with_file_name(format!(".{name}.checkpoint"));
         if checkpoint_dir.exists() {
@@ -339,36 +330,37 @@ impl RocksDBStateMachine {
         db: &DB,
         checkpoint_dir: &std::path::Path,
         snapshot_dir: &std::path::Path,
-    ) -> Result<LogId, Error> {
-        let to_err = |e: rocksdb::Error| StorageError::DbError(e.to_string());
+    ) -> Result<LogId, StateMachineError> {
         rocksdb::checkpoint::Checkpoint::new(db)
             .and_then(|c| c.create_checkpoint(checkpoint_dir))
-            .map_err(to_err)?;
+            .map_err(StateMachineError::new)?;
 
         // Open the frozen copy with every column family it contains. Exporting needs a writable
         // handle; background compaction is off so that nothing rewrites the files being exported.
         let mut opts = Options::default();
         opts.set_disable_auto_compactions(true);
         opts.set_max_background_jobs(1);
-        let cf_names = DB::list_cf(&opts, checkpoint_dir).map_err(to_err)?;
-        let frozen = DB::open_cf(&opts, checkpoint_dir, &cf_names).map_err(to_err)?;
-        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&frozen).map_err(to_err)?;
+        let cf_names = DB::list_cf(&opts, checkpoint_dir).map_err(StateMachineError::new)?;
+        let frozen =
+            DB::open_cf(&opts, checkpoint_dir, &cf_names).map_err(StateMachineError::new)?;
+        let checkpoint =
+            rocksdb::checkpoint::Checkpoint::new(&frozen).map_err(StateMachineError::new)?;
 
         let cf_sm = frozen
             .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("SM CF not found".to_string()))?;
+            .ok_or_else(|| StateMachineError::new("SM CF not found"))?;
         let cf_sm_meta = frozen
             .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("SM meta CF not found".to_string()))?;
+            .ok_or_else(|| StateMachineError::new("SM meta CF not found"))?;
 
         // export_column_family() creates only the final subdirectory (e.g. "sm"); the parent
         // (snapshot_dir) already exists.
         let sm_export = checkpoint
             .export_column_family(&cf_sm, snapshot_dir.join("sm"))
-            .map_err(to_err)?;
+            .map_err(StateMachineError::new)?;
         let sm_meta_export = checkpoint
             .export_column_family(&cf_sm_meta, snapshot_dir.join("sm_meta"))
-            .map_err(to_err)?;
+            .map_err(StateMachineError::new)?;
         Self::save_cf_export_metadata(&sm_export, &snapshot_dir.join("sm_metadata.bin"))?;
         Self::save_cf_export_metadata(&sm_meta_export, &snapshot_dir.join("sm_meta_metadata.bin"))?;
         // The position is read from the frozen copy, the same view the data was exported from.
@@ -382,7 +374,7 @@ impl RocksDBStateMachine {
     fn save_cf_export_metadata(
         metadata: &ExportImportFilesMetaData,
         path: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<(), StateMachineError> {
         let files = metadata
             .get_files()
             .into_iter()
@@ -405,8 +397,8 @@ impl RocksDBStateMachine {
             files,
         };
 
-        let bytes = bincode::serialize(&meta).map_err(StorageError::BincodeError)?;
-        std::fs::write(path, bytes).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let bytes = bincode::serialize(&meta).map_err(StateMachineError::new)?;
+        std::fs::write(path, bytes).map_err(StateMachineError::new)?;
         Ok(())
     }
 
@@ -415,14 +407,13 @@ impl RocksDBStateMachine {
     fn load_cf_export_metadata(
         path: &std::path::Path,
         actual_dir: &std::path::Path,
-    ) -> Result<ExportImportFilesMetaData, Error> {
-        let bytes = std::fs::read(path).map_err(|e| StorageError::DbError(e.to_string()))?;
-        let meta: CfExportMeta =
-            bincode::deserialize(&bytes).map_err(StorageError::BincodeError)?;
+    ) -> Result<ExportImportFilesMetaData, StateMachineError> {
+        let bytes = std::fs::read(path).map_err(StateMachineError::new)?;
+        let meta: CfExportMeta = bincode::deserialize(&bytes).map_err(StateMachineError::new)?;
 
         let dir_str = actual_dir
             .to_str()
-            .ok_or_else(|| StorageError::DbError("Snapshot path is not valid UTF-8".to_string()))?
+            .ok_or_else(|| StateMachineError::new("Snapshot path is not valid UTF-8"))?
             .to_string();
 
         let live_files: Vec<LiveFile> = meta
@@ -445,20 +436,18 @@ impl RocksDBStateMachine {
 
         let mut export_metadata = ExportImportFilesMetaData::default();
         export_metadata.set_db_comparator_name(&meta.db_comparator_name);
-        export_metadata
-            .set_files(&live_files)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        export_metadata.set_files(&live_files).map_err(StateMachineError::new)?;
 
         Ok(export_metadata)
     }
 
-    pub(crate) fn map_snapshot_join_error(e: tokio::task::JoinError) -> StorageError {
+    pub(crate) fn map_snapshot_join_error(e: tokio::task::JoinError) -> StateMachineError {
         let msg = if e.is_panic() {
             format!("snapshot blocking task panicked: {e}")
         } else {
             format!("snapshot blocking task was cancelled: {e}")
         };
-        StorageError::DbError(msg)
+        StateMachineError::new(msg)
     }
 
     /// Scans all entries whose key starts with `prefix`.
@@ -469,7 +458,7 @@ impl RocksDBStateMachine {
     pub fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
+    ) -> Result<ScanResult, StateMachineError> {
         if prefix.is_empty() {
             let revision = self.last_applied_index.load(Ordering::SeqCst);
             return Ok(ScanResult {
@@ -487,16 +476,16 @@ impl RocksDBStateMachine {
 
         let guard = self.db.load();
         let Some(db) = guard.as_deref() else {
-            return Err(StorageError::NotServing("state machine stopped".into()).into());
+            return Err(StateMachineError::new("state machine stopped"));
         };
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("STATE_MACHINE_CF not found".into()))?;
+            .ok_or_else(|| StateMachineError::new("STATE_MACHINE_CF not found"))?;
         let iter = db.iterator_cf_opt(&cf, opts, IteratorMode::From(prefix, Direction::Forward));
 
         let mut entries = Vec::new();
         for item in iter {
-            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            let (k, v) = item.map_err(StateMachineError::new)?;
             if !k.starts_with(prefix) {
                 break;
             }
@@ -516,9 +505,9 @@ impl RocksDBStateMachine {
     }
 
     /// Flushes the WAL and both state machine column families to disk.
-    pub fn flush(&self) -> Result<(), Error> {
+    pub fn flush(&self) -> Result<(), StateMachineError> {
         self.with_db(|db| {
-            db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
+            db.flush_wal(true).map_err(StateMachineError::new)?;
 
             // db.flush() with no CF argument only flushes RocksDB's implicit
             // "default" column family, which this state machine never writes to —
@@ -527,13 +516,13 @@ impl RocksDBStateMachine {
             // in create_snapshot()'s pre-export flush.
             let cf_sm = db
                 .cf_handle(STATE_MACHINE_CF)
-                .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
-            let cf_sm_meta = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                StorageError::DbError("State machine meta CF not found".to_string())
-            })?;
+                .ok_or_else(|| StateMachineError::new("State machine CF not found"))?;
+            let cf_sm_meta = db
+                .cf_handle(STATE_MACHINE_META_CF)
+                .ok_or_else(|| StateMachineError::new("State machine meta CF not found"))?;
             let flush_opts = rocksdb::FlushOptions::default();
             db.flush_cfs_opt(&[&cf_sm, &cf_sm_meta], &flush_opts)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+                .map_err(StateMachineError::new)?;
             Ok(())
         })
         // last_applied is already durable as of apply_chunk() — no separate
@@ -584,7 +573,7 @@ impl StateMachine for RocksDBStateMachine {
                 first_err.get_or_insert(e);
             }
         };
-        record("flush", self.flush().map_err(StateMachineError::new));
+        record("flush", self.flush());
         if let Some(db) = self.db.load().as_deref() {
             db.cancel_all_background_work(true);
         }
@@ -608,17 +597,14 @@ impl StateMachine for RocksDBStateMachine {
         }
 
         self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine CF not found".to_string(),
-                )))
-            })?;
+            let cf = db
+                .cf_handle(STATE_MACHINE_CF)
+                .ok_or_else(|| StateMachineError::new("State machine CF not found"))?;
             match db.get_cf(&cf, key_buffer).map_err(StateMachineError::new)? {
                 Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
                 None => Ok(None),
             }
         })
-        .map_err(StateMachineError::new)
     }
 
     /// Thread-safe: called serially by the state machine worker
@@ -781,7 +767,7 @@ impl StateMachine for RocksDBStateMachine {
             self.is_serving.store(true, Ordering::SeqCst);
         }
 
-        result.map_err(StateMachineError::new)
+        result
     }
 
     async fn generate_snapshot_data(
@@ -796,15 +782,14 @@ impl StateMachine for RocksDBStateMachine {
         // run on tokio's blocking thread pool via spawn_blocking, not on an async worker thread.
         // This prevents snapshot disk I/O from starving the inbound event loop under concurrent
         // writes (#315).
-        let db = self.load_db().map_err(StateMachineError::new)?; // Arc<DB>: Send, safe to move into spawn_blocking
+        let db = self.load_db()?; // Arc<DB>: Send, safe to move into spawn_blocking
         let dir = new_snapshot_dir.clone();
-        let position = tokio::task::spawn_blocking(move || -> Result<LogId, Error> {
+        let position = tokio::task::spawn_blocking(move || -> Result<LogId, StateMachineError> {
             std::fs::create_dir_all(&dir)?;
             Self::export_frozen_view(&db, &dir)
         })
         .await
-        .map_err(|e| StateMachineError::new(Self::map_snapshot_join_error(e).to_string()))?
-        .map_err(StateMachineError::new)?;
+        .map_err(Self::map_snapshot_join_error)??;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(position)
@@ -814,7 +799,7 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         prefix: &[u8],
     ) -> Result<ScanResult, StateMachineError> {
-        self.scan_prefix(prefix).map_err(StateMachineError::new)
+        self.scan_prefix(prefix)
     }
 
     fn get_multi(
@@ -827,11 +812,9 @@ impl StateMachine for RocksDBStateMachine {
             ));
         }
         self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine CF not found".to_string(),
-                )))
-            })?;
+            let cf = db
+                .cf_handle(STATE_MACHINE_CF)
+                .ok_or_else(|| StateMachineError::new("State machine CF not found"))?;
 
             // Single-key reads don't need cross-key point-in-time consistency,
             // so skip snapshot creation to avoid RocksDB's internal snapshot-list lock.
@@ -839,7 +822,7 @@ impl StateMachine for RocksDBStateMachine {
                 return db
                     .get_cf(&cf, &keys[0])
                     .map(|v| vec![v.map(|b| Bytes::copy_from_slice(&b))])
-                    .map_err(|e| StorageError::DbError(e.to_string()).into());
+                    .map_err(StateMachineError::new);
             }
 
             // One snapshot covers the full batch: all keys read from the same point-in-time.
@@ -849,11 +832,10 @@ impl StateMachine for RocksDBStateMachine {
                 .map(|k| {
                     snap.get_cf(&cf, k)
                         .map(|v| v.map(|b| Bytes::copy_from_slice(&b)))
-                        .map_err(|e| StorageError::DbError(e.to_string()).into())
+                        .map_err(StateMachineError::new)
                 })
                 .collect()
         })
-        .map_err(StateMachineError::new)
     }
 }
 impl Drop for RocksDBStateMachine {

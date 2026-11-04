@@ -570,7 +570,7 @@ impl FileStateMachine {
     }
 
     /// Persists key-value data to disk
-    fn persist_data(&self) -> Result<(), Error> {
+    fn persist_data(&self) -> Result<(), StateMachineError> {
         // Collect data first to minimize lock time
         let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
@@ -597,7 +597,7 @@ impl FileStateMachine {
     }
 
     /// Persists key-value data to disk
-    async fn persist_data_async(&self) -> Result<(), Error> {
+    async fn persist_data_async(&self) -> Result<(), StateMachineError> {
         // Collect data under minimal lock scope
         let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
@@ -643,12 +643,12 @@ impl FileStateMachine {
     pub(crate) fn persist_last_applied(
         &self,
         last_applied: LogId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), StateMachineError> {
         self.update_last_applied(last_applied);
         self.persist_metadata()
     }
 
-    pub(crate) fn save_hard_state(&self) -> Result<(), Error> {
+    pub(crate) fn save_hard_state(&self) -> Result<(), StateMachineError> {
         let last_applied = self.last_applied();
         self.persist_last_applied(last_applied)?;
 
@@ -656,7 +656,7 @@ impl FileStateMachine {
         Ok(())
     }
 
-    pub(crate) fn flush(&self) -> Result<(), Error> {
+    pub(crate) fn flush(&self) -> Result<(), StateMachineError> {
         self.persist_data()?;
         self.persist_metadata()?;
         // self.clear_wal()?;
@@ -664,7 +664,7 @@ impl FileStateMachine {
     }
 
     /// Persists metadata to disk
-    fn persist_metadata(&self) -> Result<(), Error> {
+    fn persist_metadata(&self) -> Result<(), StateMachineError> {
         let metadata_path = self.data_dir.join("metadata.bin");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -682,7 +682,7 @@ impl FileStateMachine {
         Ok(())
     }
 
-    async fn persist_metadata_async(&self) -> Result<(), Error> {
+    async fn persist_metadata_async(&self) -> Result<(), StateMachineError> {
         let metadata_path = self.data_dir.join("metadata.bin");
         let mut file = OpenOptions::new()
             .write(true)
@@ -703,7 +703,7 @@ impl FileStateMachine {
 
     /// Clears the write-ahead log (called after successful persistence)
     #[allow(unused)]
-    fn clear_wal(&self) -> Result<(), Error> {
+    fn clear_wal(&self) -> Result<(), StateMachineError> {
         let wal_path = self.data_dir.join("wal.log");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -717,7 +717,7 @@ impl FileStateMachine {
     }
 
     /// Clears the write-ahead log (called after successful persistence)
-    async fn clear_wal_async(&self) -> Result<(), Error> {
+    async fn clear_wal_async(&self) -> Result<(), StateMachineError> {
         let wal_path = self.data_dir.join("wal.log");
         let mut file = OpenOptions::new()
             .write(true)
@@ -752,7 +752,7 @@ impl FileStateMachine {
     /// Checkpoint: snapshot full data + metadata to disk, then clear WAL.
     ///
     /// WAL is the primary crash-safety path; checkpoint bounds recovery replay time.
-    pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
+    pub(crate) async fn checkpoint(&self) -> Result<(), StateMachineError> {
         self.persist_data_async().await?;
         self.persist_metadata_async().await?;
         self.clear_wal_async().await?;
@@ -843,7 +843,7 @@ impl StateMachine for FileStateMachine {
         // `Drop` does not run when the engine stops if the developer still holds a shared
         // handle: persist everything a restart needs here.
         // No exclusive OS lock file to release.
-        self.save_hard_state().map_err(StateMachineError::new)
+        self.save_hard_state()
     }
 
     fn get(
@@ -1049,7 +1049,7 @@ impl StateMachine for FileStateMachine {
         self.wal_entries_since_checkpoint.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
         if self.should_checkpoint() {
-            self.checkpoint().await.map_err(StateMachineError::new)?;
+            self.checkpoint().await?;
         }
 
         Ok(results)
@@ -1170,9 +1170,9 @@ impl StateMachine for FileStateMachine {
         self.update_last_applied(incoming);
 
         // Persist to disk
-        self.persist_data_async().await.map_err(StateMachineError::new)?;
-        self.clear_wal_async().await.map_err(StateMachineError::new)?;
-        self.persist_metadata_async().await.map_err(StateMachineError::new)?;
+        self.persist_data_async().await?;
+        self.clear_wal_async().await?;
+        self.persist_metadata_async().await?;
 
         info!("Snapshot applied successfully");
 
