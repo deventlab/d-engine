@@ -20,7 +20,6 @@ use crate::MockStateMachineHandler;
 use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
 use crate::ScanResult;
-use crate::StateMachineError;
 use crate::client::ClientReadRequest;
 use crate::client::ClientResponsePayload;
 use crate::client::ErrorCode;
@@ -2303,7 +2302,7 @@ async fn test_scan_cmd_leader_propagates_sm_error() {
 
     let mut sm = mock_state_machine();
     sm.expect_scan_prefix()
-        .returning(|_prefix| Err(StateMachineError::new("scan failed")));
+        .returning(|_prefix| Err(std::io::Error::other("scan failed")));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
@@ -2325,18 +2324,16 @@ async fn test_scan_cmd_leader_propagates_sm_error() {
     assert_eq!(err.code(), Code::Internal);
 }
 
-/// A lease read that fails in the state machine must reach the client as an error. The data
-/// may be damaged, so the client gets the corruption code and decides what to do; it must not get
-/// an empty result that looks like "key not found".
+/// A lease read that fails in the state machine must reach the client as an error. A state
+/// machine reports a failing disk as an `io::Error`, and the client gets the storage I/O code; it
+/// must not get an empty result that looks like "key not found".
 #[tokio::test]
 async fn test_lease_read_reports_state_machine_failure_as_error() {
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler.expect_read_from_state_machine().times(1).returning(|_| {
-        Err(crate::StorageError::DataCorruption {
-            location: "sst".into(),
-        }
-        .into())
-    });
+    state_machine_handler
+        .expect_read_from_state_machine()
+        .times(1)
+        .returning(|_| Err(std::io::Error::other("disk failure").into()));
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_lease_read_reports_state_machine_failure_as_error")
@@ -2363,6 +2360,6 @@ async fn test_lease_read_reports_state_machine_failure_as_error() {
         .expect("answering the client is not a node failure");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(response.error, ErrorCode::DataCorruption);
+    assert_eq!(response.error, ErrorCode::StorageIoError);
     assert!(response.result.is_none());
 }

@@ -7,7 +7,7 @@
 ///
 /// Proof technique (same as embedded_client_fast_path_test.rs):
 ///   cmd_rx is dropped so any fallback to cmd_tx returns a Network/channel-closed error.
-///   A Business error proves SmError was returned directly.
+///   A Storage error proves SmError was returned directly.
 ///   An Ok(value) with cmd_rx dropped proves the fast path was taken.
 #[cfg(test)]
 mod read_handle_tests {
@@ -65,15 +65,13 @@ mod read_handle_tests {
 
     fn sm_unavailable() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::StateMachineError::new("stopped")));
+        sm.expect_get_multi().returning(|_| Err(std::io::Error::other("stopped")));
         sm
     }
 
     fn sm_with_error() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::StateMachineError::new("disk failure")));
+        sm.expect_get_multi().returning(|_| Err(std::io::Error::other("disk failure")));
         sm
     }
 
@@ -137,7 +135,7 @@ mod read_handle_tests {
         let (rh, handle) = make_handle(sm_unavailable(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
-            matches!(&result, Err(e) if e.code() == ErrorCode::Uncategorized),
+            matches!(&result, Err(e) if e.code() == ErrorCode::StorageIoError),
             "the state machine's error must reach the caller, got: {:?}",
             result
         );
@@ -199,7 +197,7 @@ mod read_handle_tests {
         let (rh, handle) = make_handle(sm_unavailable(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::LeaseRead, 1, TIMEOUT).await;
         assert!(
-            matches!(&result, Err(e) if e.code() == ErrorCode::Uncategorized),
+            matches!(&result, Err(e) if e.code() == ErrorCode::StorageIoError),
             "the state machine's error must reach the caller, got: {:?}",
             result
         );
@@ -209,16 +207,16 @@ mod read_handle_tests {
 
     // ── SmError — direct return, no cmd_tx fallback ───────────────────────────
 
-    /// sm.get() returns Err → SmError → Business error returned DIRECTLY.
+    /// sm.get() returns Err → SmError → Storage error returned DIRECTLY.
     /// cmd_rx dropped: if fallback were taken, error would be Network.
-    /// Business error proves SmError was returned without touching cmd_tx.
+    /// Storage error proves SmError was returned without touching cmd_tx.
     #[tokio::test]
     async fn test_sm_error_returned_directly_no_cmd_tx_fallback() {
         let (rh, handle) = make_handle(sm_with_error(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
-            matches!(result, Err(ClientApiError::Business { .. })),
-            "SmError must produce Business error (direct), not Network (fallback), got: {:?}",
+            matches!(result, Err(ClientApiError::Storage { .. })),
+            "SmError must produce Storage error (direct), not Network (fallback), got: {:?}",
             result
         );
         drop(rh);
@@ -232,14 +230,14 @@ mod read_handle_tests {
         let (rh, handle) = make_handle(sm_with_error(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         match result {
-            Err(ClientApiError::Business { code, message, .. }) => {
-                assert_eq!(code, ErrorCode::Uncategorized);
+            Err(ClientApiError::Storage { code, message }) => {
+                assert_eq!(code, ErrorCode::StorageIoError);
                 assert!(
                     !message.contains("disk failure"),
                     "engine detail leaked to the client: {message}"
                 );
             }
-            other => panic!("expected a Business error, got: {other:?}"),
+            other => panic!("expected a Storage error, got: {other:?}"),
         }
         drop(rh);
         handle.await.unwrap();

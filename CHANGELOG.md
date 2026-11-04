@@ -124,7 +124,7 @@ All notable changes to this project will be documented in this file.
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
-- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, methods return `StateMachineError`, and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, every method returns `std::io::Result` instead of `d_engine::Error` (as do the constructors of the built-in file and RocksDB state machines), and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 - **⚠️ The engine takes the state machine by value** (#400): `start_custom`, `start_node` and `run_custom` take `SM` instead of `Arc<SM>`, and `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
 

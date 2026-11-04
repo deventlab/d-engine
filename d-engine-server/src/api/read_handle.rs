@@ -128,12 +128,7 @@ pub(crate) fn read_failure(e: &Error) -> ClientApiError {
     error!(error = ?e, "state machine read failed");
     metrics::counter!("server.read.errors").increment(1);
 
-    ClientApiError::Business {
-        code: ErrorCode::Uncategorized,
-        message: "Read failed due to an internal error. Please retry or contact the administrator."
-            .to_string(),
-        required_action: None,
-    }
+    ErrorCode::for_read_failure(e).into()
 }
 
 // ── ReadHandle ──────────────────────────────────────────────────────

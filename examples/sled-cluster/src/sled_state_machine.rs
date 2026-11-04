@@ -15,11 +15,8 @@ use d_engine::ApplyEntry;
 use d_engine::ApplyResult;
 use d_engine::BatchOp;
 use d_engine::Command;
-use d_engine::Result;
 use d_engine::ScanResult;
 use d_engine::StateMachine;
-use d_engine::StateMachineError;
-use d_engine::StorageError;
 use d_engine::common::LogId;
 use d_engine::server_storage::SnapshotMetadata;
 use sled::Transactional;
@@ -86,7 +83,7 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    fn close(&self) -> std::result::Result<(), StateMachineError> {
+    fn close(&self) -> std::io::Result<()> {
         if self.db.load().is_none() {
             return Ok(());
         }
@@ -108,13 +105,13 @@ impl StateMachine for SledStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> std::result::Result<Option<Bytes>, StateMachineError> {
+    ) -> std::io::Result<Option<Bytes>> {
         match self.current_tree()?.get(key_buffer) {
             Ok(Some(v)) => Ok(Some(Bytes::copy_from_slice(&v))),
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
-                Err(StateMachineError::new(e))
+                Err(std::io::Error::other(e))
             }
         }
     }
@@ -122,7 +119,7 @@ impl StateMachine for SledStateMachine {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> std::result::Result<Vec<ApplyResult>, StateMachineError> {
+    ) -> std::io::Result<Vec<ApplyResult>> {
         trace!("Applying chunk: {} entries", chunk.len());
         let db = self.db()?;
 
@@ -153,7 +150,7 @@ impl StateMachine for SledStateMachine {
         let data_tree = self.current_tree()?;
         let meta_tree = db
             .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(StateMachineError::new)?;
+            .map_err(std::io::Error::other)?;
 
         let results = (&data_tree, &meta_tree)
             .transaction(|(data, meta)| {
@@ -227,7 +224,7 @@ impl StateMachine for SledStateMachine {
             })
             .map_err(|e: sled::transaction::TransactionError| {
                 error!("state_machine apply_chunk failed: {}", e);
-                StateMachineError::new(e)
+                std::io::Error::other(e)
             })?;
 
         self.update_last_applied(position);
@@ -238,7 +235,7 @@ impl StateMachine for SledStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-    ) -> std::result::Result<LogId, StateMachineError> {
+    ) -> std::io::Result<LogId> {
         // Known limits of this example: the tree is iterated while `apply_chunk` may run, so the
         // copy is not a point-in-time view, and the position below comes from memory, not from the
         // exported data. Reading it before the copy keeps it at or behind the data. A state machine
@@ -248,7 +245,7 @@ impl StateMachine for SledStateMachine {
 
         // 2. Create a new state machine database instance
         let new_db = init_sled_state_machine_db(&new_snapshot_dir)
-            .map_err(StateMachineError::new)?;
+            .map_err(std::io::Error::other)?;
 
         let exist_db_tree = self.current_tree()?;
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -260,7 +257,7 @@ impl StateMachine for SledStateMachine {
         // as log indices. The SM already reflects state at last_included.index, so
         // all current entries are valid snapshot content.
         for item in exist_db_tree.iter() {
-            let (k, v) = item.map_err(StateMachineError::new)?;
+            let (k, v) = item.map_err(std::io::Error::other)?;
 
             batch.insert(k, v);
             counter += 1;
@@ -268,17 +265,17 @@ impl StateMachine for SledStateMachine {
             if counter % 100 == 0 {
                 new_state_machine_tree
                     .apply_batch(batch)
-                    .map_err(StateMachineError::new)?;
+                    .map_err(std::io::Error::other)?;
                 batch = sled::Batch::default();
             }
         }
 
         new_state_machine_tree
             .apply_batch(batch)
-            .map_err(StateMachineError::new)?;
+            .map_err(std::io::Error::other)?;
 
         // Make sure flush into disk
-        new_db.flush().map_err(StateMachineError::new)?;
+        new_db.flush().map_err(std::io::Error::other)?;
 
         Ok(position)
     }
@@ -287,14 +284,14 @@ impl StateMachine for SledStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
-    ) -> std::result::Result<(), StateMachineError> {
+    ) -> std::io::Result<()> {
         // `StateMachineWorker` never runs this concurrently with `apply_chunk`, a snapshot
         // export or another install (#436).
 
         // The engine only calls this for a snapshot newer than `last_applied()`.
         let new_last_included = metadata
             .last_included
-            .ok_or_else(|| StateMachineError::new("Missing last_included in snapshot metadata"))?;
+            .ok_or_else(|| std::io::Error::other("Missing last_included in snapshot metadata"))?;
 
         // `decompressed_snapshot_path` is a temporary directory owned by the caller
         // (see `PreparedSnapshot`), not this state machine's own `self.path`. Opening a
@@ -340,12 +337,12 @@ impl StateMachine for SledStateMachine {
             Ok(())
         })
         .await
-        .map_err(|e| StateMachineError::new(format!("snapshot install task panicked: {e}")))?
-        .map_err(|e| StateMachineError::new(format!("failed to move snapshot into place: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("snapshot install task panicked: {e}")))?
+        .map_err(|e| std::io::Error::other(format!("failed to move snapshot into place: {e}")))?;
 
         debug!("Reopening state machine database at its permanent path");
         let db = init_sled_state_machine_db(&self.path)
-            .map_err(StateMachineError::new)?;
+            .map_err(std::io::Error::other)?;
         self.db.store(Some(Arc::new(db)));
 
         // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
@@ -368,11 +365,11 @@ impl StateMachine for SledStateMachine {
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> std::result::Result<ScanResult, StateMachineError> {
+    ) -> std::io::Result<ScanResult> {
         let tree = self.current_tree()?;
         let mut entries = Vec::new();
         for result in tree.scan_prefix(prefix) {
-            let (k, v) = result.map_err(StateMachineError::new)?;
+            let (k, v) = result.map_err(std::io::Error::other)?;
             entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
         }
         let revision = self.last_applied_index.load(Ordering::SeqCst);
@@ -384,7 +381,7 @@ impl SledStateMachine {
     pub fn new<P: AsRef<Path> + std::fmt::Debug>(
         path: P,
         node_id: u32,
-    ) -> Result<Self> {
+    ) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
         // Recovery from a crash mid-install (see `apply_snapshot_from_file`): if the
@@ -399,17 +396,16 @@ impl SledStateMachine {
                 ?backup_dir,
                 "Recovering from an interrupted snapshot install: restoring pre-install backup"
             );
-            std::fs::rename(&backup_dir, &db_dir)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            std::fs::rename(&backup_dir, &db_dir)?;
         }
 
         let db = Arc::new(
-            init_sled_state_machine_db(&path).map_err(|e| StorageError::DbError(e.to_string()))?,
+            init_sled_state_machine_db(&path).map_err(std::io::Error::other)?,
         );
 
         let state_machine_meta_tree = db
             .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(std::io::Error::other)?;
         let (last_applied_index, last_applied_term) =
             Self::load_state_machine_metadata(&state_machine_meta_tree)?;
 
@@ -432,35 +428,37 @@ impl SledStateMachine {
         Ok(sm)
     }
 
-    fn load_state_machine_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
+    fn load_state_machine_metadata(tree: &sled::Tree) -> std::io::Result<(u64, u64)> {
         let index = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
+            .map_err(std::io::Error::other)?
             .map(safe_vk_ivec)
-            .unwrap_or(Ok(0))?;
+            .unwrap_or(Ok(0))
+            .map_err(std::io::Error::other)?;
 
         let term = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
+            .map_err(std::io::Error::other)?
             .map(safe_vk_ivec)
-            .unwrap_or(Ok(0))?;
+            .unwrap_or(Ok(0))
+            .map_err(std::io::Error::other)?;
 
         Ok((index, term))
     }
 
     // Dynamically obtain the current Tree (lock-free cache optimization)
     #[inline]
-    fn current_tree(&self) -> std::result::Result<sled::Tree, StateMachineError> {
+    fn current_tree(&self) -> std::io::Result<sled::Tree> {
         self.db()?
             .open_tree(STATE_MACHINE_TREE)
-            .map_err(StateMachineError::new)
+            .map_err(std::io::Error::other)
     }
 
-    /// The live db, or `NotServing` once `close()` has released it.
-    fn db(&self) -> std::result::Result<Arc<sled::Db>, StateMachineError> {
+    /// The live db, or an error once `close()` has released it.
+    fn db(&self) -> std::io::Result<Arc<sled::Db>> {
         self.db
             .load_full()
-            .ok_or_else(|| StateMachineError::new("state machine stopped"))
+            .ok_or_else(|| std::io::Error::other("state machine stopped"))
     }
 
     pub(crate) fn update_last_applied(
@@ -475,28 +473,28 @@ impl SledStateMachine {
     pub(crate) fn persist_last_applied(
         &self,
         last_applied: LogId,
-    ) -> std::result::Result<(), StateMachineError> {
+    ) -> std::io::Result<()> {
         debug!(%self.node_id, ?last_applied, "persist_last_applied");
         let db = self.db()?;
         let tree = db
             .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(StateMachineError::new)?;
+            .map_err(std::io::Error::other)?;
         tree.insert(
             STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
             safe_kv(last_applied.index),
         )
-        .map_err(StateMachineError::new)?;
+        .map_err(std::io::Error::other)?;
         tree.insert(
             STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
             safe_kv(last_applied.term),
         )
-        .map_err(StateMachineError::new)?;
+        .map_err(std::io::Error::other)?;
 
-        tree.flush().map_err(StateMachineError::new)?;
+        tree.flush().map_err(std::io::Error::other)?;
         Ok(())
     }
 
-    pub(crate) fn save_hard_state(&self) -> std::result::Result<(), StateMachineError> {
+    pub(crate) fn save_hard_state(&self) -> std::io::Result<()> {
         let last_applied = self.last_applied();
         self.persist_last_applied(last_applied)?;
 
@@ -504,9 +502,9 @@ impl SledStateMachine {
         Ok(())
     }
 
-    pub(crate) fn flush(&self) -> std::result::Result<(), StateMachineError> {
+    pub(crate) fn flush(&self) -> std::io::Result<()> {
         let db = self.db()?;
-        let bytes = db.flush().map_err(StateMachineError::new)?;
+        let bytes = db.flush().map_err(std::io::Error::other)?;
         info!(
             "Successfully flushed State Machine, bytes flushed: {}",
             bytes
@@ -540,9 +538,9 @@ fn copy_dir_recursive(
 fn new_tree(
     db: &sled::Db,
     key: &str,
-) -> std::result::Result<sled::Tree, StateMachineError> {
+) -> std::io::Result<sled::Tree> {
     db.open_tree(key)
-        .map_err(StateMachineError::new)
+        .map_err(std::io::Error::other)
 }
 
 pub fn init_sled_state_machine_db(

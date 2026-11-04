@@ -12,14 +12,16 @@ d-engine supports **pluggable state machines** through the `StateMachine` trait.
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::{ApplyEntry, ApplyResult, Command, LogId, SnapshotMetadata, StateMachine, StateMachineError};
+use std::io;
+
 use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine::{ApplyEntry, ApplyResult, Command, LogId, StateMachine};
 
 struct CustomStateMachine {
-    // Your storage backend
+    // Your storage backend. Its calls return `io::Result`. If your storage library has its own
+    // error type, convert it where you call it: `.map_err(io::Error::other)?`.
     backend: Arc<dyn ApplicationStorage>,
-    last_applied: AtomicU64,
-    snapshot_meta: Mutex<Option<SnapshotMetadata>>
 }
 
 #[async_trait]
@@ -37,18 +39,18 @@ impl StateMachine for CustomStateMachine {
     // If you share your storage handle with the application (a cloneable state machine), the
     // state machine is not dropped when the engine stops, so do not rely on Drop alone.
     //
-    // fn close(&self) -> Result<(), StateMachineError> {
+    // fn close(&self) -> io::Result<()> {
     //     let flushed = self.backend.flush();
     //     self.backend.close(); // release lock file / DB handle
     //     flushed
     // }
 
-    fn get(&self, key_buffer: &[u8]) -> Result<Option<Vec<u8>>, StateMachineError> {
+    fn get(&self, key_buffer: &[u8]) -> io::Result<Option<Bytes>> {
         // Retrieve value by key
         self.backend.get(key_buffer)
     }
 
-    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>, StateMachineError> {
+    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> io::Result<Vec<ApplyResult>> {
         // The framework pre-decodes proto bytes — match on Command directly, no prost needed.
         let mut results = Vec::with_capacity(chunk.len());
         for entry in chunk {
@@ -92,8 +94,8 @@ impl StateMachine for CustomStateMachine {
         Ok(results)
     }
 
-
-    // Implement all required methods...
+    // The other required methods are `last_applied`, `apply_snapshot_from_file` and
+    // `generate_snapshot_data`; see the table in section 3.
 }
 
 ```
@@ -108,7 +110,9 @@ impl StateMachine for CustomStateMachine {
 - **Snapshot Install**: The engine decides whether a snapshot is installed. `apply_snapshot_from_file()` is called only for a snapshot newer than `last_applied()`, and the engine checks afterwards that `last_applied()` equals the snapshot boundary
 - **Restore On Open**: The engine never asks you to restore state. When your state machine is opened, `last_applied()` must return the last entry whose effects are durable (persist it together with the data it describes). You store nothing about snapshots: the engine records the snapshots it holds itself
 - **Concurrency Control**: Use appropriate locking for state mutations
-- **Resource Cleanup**: Implement `Drop` to ensure proper flush on shutdown
+- **Errors**: Every method returns `std::io::Result`. Report a failure with `io::Error::other("disk full")`, or convert your storage library's error with `.map_err(io::Error::other)?`; the original error stays attached for the log. The engine does not look at the error kind. A failed `apply_chunk()` or `apply_snapshot_from_file()` stops the node, which then recovers from its replicas, because a committed entry cannot be skipped. A failed `get()`, `get_multi()` or `scan_prefix()` fails only that read
+- **Reads During A Snapshot Install**: A read can run while `apply_snapshot_from_file()` replaces the state. It must see the old state, the new state, or fail; never a mix of the two
+- **Resource Cleanup**: Implement `close()` to flush and release locks and handles on shutdown (see above). Do not rely on `Drop` alone
 
 ## 3. StateMachine API Reference
 
@@ -116,6 +120,8 @@ impl StateMachine for CustomStateMachine {
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `close()`                    | Last step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. May be called more than once. Nothing is called after it starts. Default `Ok(())`. | Sync       | Medium      |
 | `get()`                      | Read value by key                                                                                                                                                                                                                                        | Sync       | High        |
+| `get_multi()`                | Read several keys from one consistent state. Default calls `get()` per key; override it if your storage can read a batch from one snapshot                                                                                                               | Sync       | Medium      |
+| `scan_prefix()`              | Return every key with the given prefix. Default returns an error; override it to support prefix scans (e.g. watch)                                                                                                                                       | Sync       | Optional    |
 | `apply_chunk()`              | Apply committed entries                                                                                                                                                                                                                                  | Async      | Critical    |
 | `last_applied()`             | Get last applied index                                                                                                                                                                                                                                   | Sync       | High        |
 | `apply_snapshot_from_file()` | Replace state with snapshot                                                                                                                                                                                                                              | Async      | Critical    |
@@ -125,81 +131,51 @@ impl StateMachine for CustomStateMachine {
 
 ### 4.1 Functional Tests
 
-Use the built-in test suite to validate correctness:
+Implement `StateMachineBuilder` once, then run the built-in suite against your state machine. It checks the contract described above, including that a restart finds the last applied entry together with its data:
 
 ```rust,ignore
-use d_engine::{StateMachine, Error};
-use tempfile::TempDir;
+use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+use d_engine::{Error, StateMachine};
 
-struct TestStateMachineBuilder {
-    temp_dir: TempDir,
-}
+struct MyStateMachineBuilder { /* e.g. a temporary directory */ }
 
-impl TestStateMachineBuilder {
-    async fn build(&self) -> Result<Arc<CustomStateMachine>, Error> {
-        let path = self.temp_dir.path().join("sm_test");
-        let sm = CustomStateMachine::new(path).await?;
-        Ok(Arc::new(sm))
+#[async_trait]
+impl StateMachineBuilder for MyStateMachineBuilder {
+    async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        // A state machine on new, empty storage (a new directory on every call)
+        Ok(Arc::new(CustomStateMachine::new().await?))
     }
+
+    async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        // The storage the last build() used, with whatever it holds now (a restart)
+        Ok(Arc::new(CustomStateMachine::open_existing().await?))
+    }
+
+    async fn cleanup(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    // Optional: override `build_from_crash_image()` to also test recovery after a crash.
+    // It returns `None` by default, and that test is skipped.
 }
 
 #[tokio::test]
 async fn test_custom_state_machine() -> Result<(), Error> {
-    let builder = TestStateMachineBuilder::new();
-    let sm = builder.build().await?;
-
-    // Test apply_chunk with sample entries
-    let entries = vec![create_test_entry(1, 1)];
-    sm.apply_chunk(&entries).await?;
-    assert_eq!(sm.last_applied().index, 1);
-
-    // Test snapshot operations
-    let temp_dir = TempDir::new()?;
-    let position = sm.generate_snapshot_data(temp_dir.path().to_path_buf()).await?;
-    assert_eq!(position.index, 1);
-
-    sm.close()?;
-    Ok(())
+    StateMachineTestSuite::run_all_tests(MyStateMachineBuilder::new()).await
 }
-
 ```
 
 ### 4.2 Performance Tests
 
-Use `run_performance_tests()` to detect performance regressions:
+Use `run_performance_tests()` with the same builder to detect performance regressions:
 
 ```rust,ignore
-use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored
 async fn test_performance() -> Result<(), Error> {
-    struct MyStateMachineBuilder { /* ... */ }
-
-    #[async_trait]
-    impl StateMachineBuilder for MyStateMachineBuilder {
-        async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-            // A state machine on new, empty storage (a new directory on every call)
-            Ok(Arc::new(MyStateMachine::new().await?))
-        }
-
-        async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
-            // The storage the last build() used, with whatever it holds now (a restart)
-            Ok(Arc::new(MyStateMachine::open_existing().await?))
-        }
-
-        async fn cleanup(&self) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-
-    let builder = MyStateMachineBuilder::new();
-
     // Runs smoke test (100 entries < 1s) and scalability test (O(N) complexity)
-    StateMachineTestSuite::run_performance_tests(builder).await?;
-    Ok(())
+    StateMachineTestSuite::run_performance_tests(MyStateMachineBuilder::new()).await
 }
-
 ```
 
 **Performance Thresholds:**
@@ -232,8 +208,8 @@ Running a standalone gRPC server instead of embedding? Use `StandaloneEngine::ru
 See complete implementations in:
 
 - `examples/three-nodes-standalone/src/main.rs` - Production cluster with RocksDB
-- `examples/sled-cluster/src/main.rs` - Sled state machine
-- `src/storage/adaptors/` - Built-in implementations
+- `examples/sled-cluster/src/sled_state_machine.rs` - Sled state machine
+- `d-engine-server/src/storage/adaptors/` - Built-in file and RocksDB implementations
 
 Enable RocksDB feature in your `Cargo.toml`:
 

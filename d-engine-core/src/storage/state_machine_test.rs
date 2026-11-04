@@ -18,7 +18,7 @@ use crate::storage::StateMachine;
 ///
 /// This suite provides comprehensive tests that can be used to validate
 /// any StateMachine implementation. Developers should implement the
-/// `StateMachineBuilder` trait and then call `run_all_state_machine_tests`
+/// `StateMachineBuilder` trait and then call `StateMachineTestSuite::run_all_tests`
 /// with their builder.
 pub struct StateMachineTestSuite;
 
@@ -1748,7 +1748,6 @@ mod default_scan_prefix_tests {
     use crate::ApplyEntry;
     use crate::storage::state_machine::ApplyResult;
     use crate::storage::state_machine::StateMachine;
-    use crate::storage::state_machine::StateMachineError;
 
     struct MinimalSm {
         running: AtomicBool,
@@ -1756,7 +1755,7 @@ mod default_scan_prefix_tests {
 
     #[async_trait]
     impl StateMachine for MinimalSm {
-        fn close(&self) -> Result<(), StateMachineError> {
+        fn close(&self) -> std::io::Result<()> {
             self.running.store(false, Ordering::SeqCst);
             Ok(())
         }
@@ -1764,14 +1763,14 @@ mod default_scan_prefix_tests {
         fn get(
             &self,
             _key_buffer: &[u8],
-        ) -> Result<Option<Bytes>, StateMachineError> {
+        ) -> std::io::Result<Option<Bytes>> {
             Ok(None)
         }
 
         async fn apply_chunk(
             &self,
             _chunk: &[ApplyEntry],
-        ) -> Result<Vec<ApplyResult>, StateMachineError> {
+        ) -> std::io::Result<Vec<ApplyResult>> {
             Ok(vec![])
         }
 
@@ -1783,14 +1782,14 @@ mod default_scan_prefix_tests {
             &self,
             _metadata: &SnapshotMetadata,
             _snapshot_path: std::path::PathBuf,
-        ) -> Result<(), StateMachineError> {
+        ) -> std::io::Result<()> {
             Ok(())
         }
 
         async fn generate_snapshot_data(
             &self,
             _new_snapshot_dir: std::path::PathBuf,
-        ) -> Result<LogId, StateMachineError> {
+        ) -> std::io::Result<LogId> {
             Ok(LogId::default())
         }
 
@@ -1813,8 +1812,8 @@ mod default_scan_prefix_tests {
             result.is_err(),
             "default scan_prefix must return Err; got Ok unexpectedly"
         );
-        // The error type is StateMachineError — check the Debug representation which
-        // includes the nested message (Display only shows the outermost variant).
+        // The error type is io::Error — check the Debug representation, which
+        // includes the message.
         let err_debug = format!("{:?}", result.unwrap_err());
         assert!(
             err_debug.contains("scan_prefix not supported"),
@@ -1851,7 +1850,6 @@ mod install_reader_suite_tests {
     use crate::Command;
     use crate::Error;
     use crate::storage::StateMachine;
-    use crate::storage::StateMachineError;
     use crate::storage::state_machine::ApplyResult;
 
     /// What survives a restart: shared by every state machine the builder creates.
@@ -1903,14 +1901,14 @@ mod install_reader_suite_tests {
         fn get(
             &self,
             key: &[u8],
-        ) -> Result<Option<Bytes>, StateMachineError> {
+        ) -> std::io::Result<Option<Bytes>> {
             Ok(self.durable.data.read().unwrap().get(key).cloned())
         }
 
         async fn apply_chunk(
             &self,
             chunk: &[ApplyEntry],
-        ) -> Result<Vec<ApplyResult>, StateMachineError> {
+        ) -> std::io::Result<Vec<ApplyResult>> {
             // Data and position change under one lock, like a database transaction.
             let mut data = self.durable.data.write().unwrap();
             for entry in chunk {
@@ -1938,7 +1936,7 @@ mod install_reader_suite_tests {
             }
         }
 
-        fn close(&self) -> Result<(), StateMachineError> {
+        fn close(&self) -> std::io::Result<()> {
             if self.position_on_close_only {
                 *self.durable.applied.write().unwrap() = *self.pending_position.read().unwrap();
             }
@@ -1948,7 +1946,7 @@ mod install_reader_suite_tests {
         async fn generate_snapshot_data(
             &self,
             new_snapshot_dir: PathBuf,
-        ) -> Result<LogId, StateMachineError> {
+        ) -> std::io::Result<LogId> {
             std::fs::create_dir_all(&new_snapshot_dir)?;
             // Right: copy the data and read the position under the same lock.
             let (lines, mut position) = {
@@ -1983,7 +1981,7 @@ mod install_reader_suite_tests {
             &self,
             _metadata: &SnapshotMetadata,
             snapshot_path: PathBuf,
-        ) -> Result<(), StateMachineError> {
+        ) -> std::io::Result<()> {
             let text = std::fs::read_to_string(snapshot_path.join("data.txt"))?;
             let new_data: HashMap<Bytes, Bytes> = text
                 .lines()

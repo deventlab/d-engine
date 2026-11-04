@@ -168,12 +168,12 @@ pub use d_engine_core::ScanResult;
 pub use d_engine_core::ScanResults;
 /// Snapshot-specific error type (internal to the engine).
 pub use d_engine_core::SnapshotError;
-/// Storage trait for implementing custom storage backends
+/// Your application's data, kept identical on every node.
 ///
-/// Implement this trait to create your own storage engine.
+/// d-engine hands each committed write to `apply_chunk`, in the same order on every node, and
+/// answers reads through `get`. Implement this trait to store the data in your own database
+/// instead of the built-in file or RocksDB state machines.
 pub use d_engine_core::StateMachine;
-/// The error a [`StateMachine`] returns for any failure.
-pub use d_engine_core::StateMachineError;
 /// Storage trait for implementing custom storage backends
 ///
 /// Implement this trait to create your own storage engine.

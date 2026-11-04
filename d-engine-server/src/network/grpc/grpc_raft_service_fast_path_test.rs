@@ -56,15 +56,13 @@ mod grpc_fast_path_tests {
 
     fn sm_unavailable() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::StateMachineError::new("stopped")));
+        sm.expect_get_multi().returning(|_| Err(std::io::Error::other("stopped")));
         sm
     }
 
     fn sm_with_error() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::StateMachineError::new("disk failure")));
+        sm.expect_get_multi().returning(|_| Err(std::io::Error::other("disk failure")));
         sm
     }
 

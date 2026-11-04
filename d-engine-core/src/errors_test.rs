@@ -73,15 +73,6 @@ fn test_network_error_signal_send_failed() {
 }
 
 #[test]
-fn test_storage_error_data_corruption() {
-    let err = StorageError::DataCorruption {
-        location: "raft_log_entry_42".to_string(),
-    };
-    let msg = err.to_string();
-    assert!(msg.contains("raft_log_entry_42"));
-}
-
-#[test]
 fn test_storage_error_path_error() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
     let err = StorageError::PathError {
@@ -491,15 +482,6 @@ fn test_is_fatal_explicit_fatal_marker() {
 }
 
 #[test]
-fn test_is_fatal_data_corruption() {
-    let err: Error = StorageError::DataCorruption {
-        location: "raft_log_entry_42".to_string(),
-    }
-    .into();
-    assert!(err.is_fatal());
-}
-
-#[test]
 fn test_is_fatal_snapshot_boundary_conflict() {
     // Same index, different term: the two sides disagree about what wrote this
     // index — corruption / wrong cluster, not a transient install failure.
@@ -548,32 +530,7 @@ fn test_is_not_fatal_replication_quorum_not_reached() {
 
 #[test]
 fn test_is_not_fatal_storage_log_storage() {
-    // I/O-level log storage errors are not fatal (unlike DataCorruption)
+    // I/O-level log storage errors are not fatal (unlike an explicit `Fatal`)
     let err: Error = StorageError::LogStorage("write failed".to_string()).into();
     assert!(!err.is_fatal());
-}
-
-/// `NotServing` is the state machine saying "not right now" (it is replacing its state or has
-/// been closed). Callers route around it or ask the client to retry, so it must not be confused
-/// with a real failure of the data.
-#[test]
-fn test_is_not_serving_is_true_only_for_not_serving() {
-    let not_serving: Error = StorageError::NotServing("restoring".to_string()).into();
-    assert!(not_serving.is_not_serving());
-
-    let failures: [Error; 4] = [
-        StorageError::DbError("disk failure".to_string()).into(),
-        StorageError::IoError(std::io::Error::other("disk failure")).into(),
-        StorageError::DataCorruption {
-            location: "sst".to_string(),
-        }
-        .into(),
-        Error::Fatal("boom".to_string()),
-    ];
-    for error in failures {
-        assert!(
-            !error.is_not_serving(),
-            "{error:?} is a failure, not 'not serving'"
-        );
-    }
 }

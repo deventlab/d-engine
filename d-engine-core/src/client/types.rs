@@ -15,7 +15,6 @@ use bytes::Bytes;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::error;
-use tracing::warn;
 
 // ReadConsistencyPolicy already exists as a native type in crate::config; re-export it
 // here so all client-facing types live in one module.
@@ -181,14 +180,10 @@ impl TryFrom<i32> for ErrorCode {
 impl ErrorCode {
     /// The code a client sees when the state machine fails a read.
     ///
-    /// `DataCorruption` is reported to the client, not escalated to a node shutdown: the read
-    /// failed and the stored data may be damaged, and the client application decides what to do.
+    /// A state machine reports every failure as an `io::Error`, so a failed read is a storage I/O
+    /// error; anything else is uncategorized.
     pub fn for_read_failure(e: &Error) -> Self {
         match e {
-            _ if e.is_not_serving() => Self::RetryRequired,
-            Error::System(SystemError::Storage(StorageError::DataCorruption { .. })) => {
-                Self::DataCorruption
-            }
             Error::System(SystemError::Storage(
                 StorageError::IoError(_) | StorageError::DbError(_),
             )) => Self::StorageIoError,
@@ -297,11 +292,7 @@ impl ClientResponse {
         match result {
             Ok(entries) => Self::read_results(entries),
             Err(e) => {
-                if e.is_not_serving() {
-                    warn!(error = ?e, "state machine cannot serve reads right now");
-                } else {
-                    error!(error = ?e, "state machine read failed");
-                }
+                error!(error = ?e, "state machine read failed");
                 Self::client_error(ErrorCode::for_read_failure(&e))
             }
         }

@@ -26,12 +26,22 @@ The trait went from 17 methods to 8, and the engine now owns snapshots. Go throu
 | `stop`, `close_storage` | Delete `stop`. Rename `close_storage` to `close`. |
 | `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async` | Delete. The engine never called them. |
 | `snapshot_metadata`, `persist_last_snapshot_metadata` | Delete. The engine records the snapshots it holds. |
-| Methods that return `d_engine::Error` | Return `StateMachineError` (below). |
+| Methods that return `d_engine::Error` | Return `std::io::Result` (see Errors below). |
 | `generate_snapshot_data(dir, last_included)` | Drop `last_included`. Return the position of the last entry the exported data contains. |
 | A snapshot checksum, or stale / duplicate / conflict checks in `apply_snapshot_from_file` | Delete. The engine does them and calls you only for a newer snapshot. |
 | `Arc<MyStateMachine>` passed to the engine | Pass `MyStateMachine` by value. |
 
-**Errors.** Report any failure with `StateMachineError::new("what went wrong")`; `?` converts an `io::Error`. A failed `apply_chunk` stops the node. A failed read fails only that read.
+**Errors.** Every method returns `std::io::Result`. You no longer build `d_engine::Error` or `StorageError`. `?` works on an `io::Error` as is; convert any other error with `io::Error::other`:
+
+```rust
+// before
+self.db.put(k, v).map_err(|e| StorageError::DbError(e.to_string()))?;
+
+// after
+self.db.put(k, v).map_err(io::Error::other)?;
+```
+
+The engine does not look at the error kind. A failed `apply_chunk` or `apply_snapshot_from_file` stops the node, which recovers from its replicas. A failed read fails only that read.
 
 **What your state machine must guarantee**
 
@@ -53,6 +63,7 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 ```
 
 - `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
+- `FileStateMachine::new` and `RocksDBStateMachine::new` return `std::io::Result<Self>` instead of `d_engine::Error`. Code that uses `?` keeps compiling; only code that matches on `d_engine::Error` variants from these constructors needs a change.
 - If you read your own storage directly (for example `DLmdb`), share the storage handles behind an `Arc` inside a `Clone` state machine; give the engine one clone and keep the other.
 - Embedded reads (`get_eventual`, lease reads) go through the ReadActor, as in standalone mode: one extra channel hop.
 - Existing snapshot archives have no `.meta` record, so a node reports no snapshot until it builds its next one. The snapshot directory may contain only regular files and directories.

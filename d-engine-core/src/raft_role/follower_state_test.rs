@@ -1890,17 +1890,10 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
 /// consistency. The client must get an error it can act on, not an empty "key not found" answer.
 #[tokio::test]
 async fn test_follower_eventual_read_reports_state_machine_failure_as_error() {
-    let cases: [(fn() -> Error, ErrorCode); 2] = [
-        (
-            || -> Error { crate::StorageError::DbError("disk failure".into()).into() },
-            ErrorCode::StorageIoError,
-        ),
-        // Transient: the state machine is replacing its state, retrying will succeed.
-        (
-            || -> Error { crate::StorageError::NotServing("restoring".into()).into() },
-            ErrorCode::RetryRequired,
-        ),
-    ];
+    let cases: [(fn() -> Error, ErrorCode); 1] = [(
+        || -> Error { crate::StorageError::DbError("disk failure".into()).into() },
+        ErrorCode::StorageIoError,
+    )];
 
     for (failure, expected) in cases {
         let (_graceful_tx, graceful_rx) = watch::channel(());

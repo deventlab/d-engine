@@ -17,7 +17,6 @@ use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
 use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
-use d_engine_core::StateMachineError;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 
@@ -70,7 +69,7 @@ impl StateMachine for SlowApplyProbe {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, StateMachineError> {
+    ) -> std::io::Result<Vec<ApplyResult>> {
         self.flags.apply_started.store(true, Ordering::SeqCst);
         let closed_at_start = self.flags.storage_closed.load(Ordering::SeqCst);
         tokio::time::sleep(self.apply_delay).await;
@@ -81,7 +80,7 @@ impl StateMachine for SlowApplyProbe {
         result
     }
 
-    fn close(&self) -> Result<(), StateMachineError> {
+    fn close(&self) -> std::io::Result<()> {
         self.flags.storage_closed.store(true, Ordering::SeqCst);
         std::thread::sleep(self.close_delay);
         self.inner.close()
@@ -91,7 +90,7 @@ impl StateMachine for SlowApplyProbe {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, StateMachineError> {
+    ) -> std::io::Result<Option<Bytes>> {
         self.note_read();
         self.inner.get(key_buffer)
     }
@@ -102,19 +101,19 @@ impl StateMachine for SlowApplyProbe {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<(), StateMachineError> {
+    ) -> std::io::Result<()> {
         self.inner.apply_snapshot_from_file(metadata, snapshot_path).await
     }
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-    ) -> Result<LogId, StateMachineError> {
+    ) -> std::io::Result<LogId> {
         self.inner.generate_snapshot_data(new_snapshot_dir).await
     }
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, StateMachineError> {
+    ) -> std::io::Result<ScanResult> {
         self.note_read();
         self.inner.scan_prefix(prefix)
     }

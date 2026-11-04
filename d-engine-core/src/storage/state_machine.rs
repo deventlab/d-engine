@@ -71,32 +71,6 @@ impl ApplyResult {
     }
 }
 
-/// A failure reported by a [`StateMachine`]. The message says what went wrong.
-///
-/// Return it for any failure: a full disk, an I/O error, data that failed a checksum. The engine
-/// does not need to know which: when applying entries or installing a snapshot fails, the node
-/// stops and recovers from its replicas; when a read fails, only that read fails.
-///
-/// Build one from a message, `StateMachineError::new("disk full")`, or from any error type that
-/// implements [`std::error::Error`]; an [`std::io::Error`] converts with `?`. The error chain is
-/// kept for the log.
-#[derive(Debug, thiserror::Error)]
-#[error("state machine error: {0}")]
-pub struct StateMachineError(#[source] Box<dyn std::error::Error + Send + Sync>);
-
-impl StateMachineError {
-    /// Wraps a message or an error.
-    pub fn new(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
-        Self(error.into())
-    }
-}
-
-impl From<std::io::Error> for StateMachineError {
-    fn from(error: std::io::Error) -> Self {
-        Self::new(error)
-    }
-}
-
 /// State machine trait for Raft consensus
 ///
 /// # Thread Safety Requirements
@@ -123,10 +97,15 @@ impl From<std::io::Error> for StateMachineError {
 ///
 /// # Errors
 ///
-/// Every method reports a failure with [`StateMachineError`]. A failure in `apply_chunk` stops the
-/// node, which then recovers from its replicas: an entry that was committed cannot be skipped, so
-/// the node must not go on without it. A failed `get`, `get_multi` or `scan_prefix` fails only that
-/// read.
+/// Every method reports a failure with a plain [`std::io::Error`]. The engine does not look at its
+/// kind: the message is for the log. Build one from a message, `io::Error::other("disk full")`, or
+/// wrap the error of the storage library you use, `.map_err(io::Error::other)`; the original error
+/// stays attached as its source.
+///
+/// What a failure does depends on the method. A failure in `apply_chunk` or
+/// `apply_snapshot_from_file` stops the node, which then recovers from its replicas: an entry that
+/// was committed cannot be skipped, so the node must not go on without it. A failed `get`,
+/// `get_multi` or `scan_prefix` fails only that read.
 ///
 /// # Reads while a snapshot is installed
 ///
@@ -157,7 +136,7 @@ pub trait StateMachine: Send + Sync + 'static {
     /// `last_applied` has to be persisted together with the data it describes.
     ///
     /// Default is a no-op, for implementations with nothing to persist or release.
-    fn close(&self) -> Result<(), StateMachineError> {
+    fn close(&self) -> std::io::Result<()> {
         Ok(())
     }
 
@@ -168,7 +147,7 @@ pub trait StateMachine: Send + Sync + 'static {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, StateMachineError>;
+    ) -> std::io::Result<Option<Bytes>>;
 
     /// Retrieves multiple values by key from the state machine in a single call.
     ///
@@ -199,7 +178,7 @@ pub trait StateMachine: Send + Sync + 'static {
     fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> Result<Vec<Option<Bytes>>, StateMachineError> {
+    ) -> std::io::Result<Vec<Option<Bytes>>> {
         keys.iter().map(|k| self.get(k)).collect()
     }
 
@@ -214,7 +193,7 @@ pub trait StateMachine: Send + Sync + 'static {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, StateMachineError>;
+    ) -> std::io::Result<Vec<ApplyResult>>;
 
     /// Gets the last applied log index and term.
     /// Sync operation as it reads from atomic variables.
@@ -236,7 +215,7 @@ pub trait StateMachine: Send + Sync + 'static {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<(), StateMachineError>;
+    ) -> std::io::Result<()>;
 
     /// Exports the state machine's current state into `new_snapshot_dir` and returns the position
     /// of the last applied entry that the exported state contains.
@@ -281,7 +260,7 @@ pub trait StateMachine: Send + Sync + 'static {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-    ) -> Result<LogId, StateMachineError>;
+    ) -> std::io::Result<LogId>;
 
     /// Returns all `(key, value)` pairs whose key starts with `prefix`, plus
     /// the `last_applied_index` at the time of the scan.
@@ -294,9 +273,10 @@ pub trait StateMachine: Send + Sync + 'static {
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, StateMachineError> {
+    ) -> std::io::Result<ScanResult> {
         let _ = prefix;
-        Err(StateMachineError::new(
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
             "scan_prefix not supported by this state machine",
         ))
     }

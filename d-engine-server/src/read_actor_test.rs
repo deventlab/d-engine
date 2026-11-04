@@ -18,8 +18,7 @@ fn make_sm_running() -> MockStateMachine {
 
 fn make_sm_unavailable() -> MockStateMachine {
     let mut sm = MockStateMachine::new();
-    sm.expect_get_multi()
-        .returning(|_| Err(d_engine_core::StateMachineError::new("stopped")));
+    sm.expect_get_multi().returning(|_| Err(std::io::Error::other("stopped")));
     sm
 }
 
@@ -285,8 +284,7 @@ async fn test_read_actor_eventual_multi_key_uses_get_multi() {
 #[tokio::test]
 async fn test_read_actor_sm_get_multi_error_returns_sm_error() {
     let mut sm = make_sm_running();
-    sm.expect_get_multi()
-        .returning(|_| Err(d_engine_core::StateMachineError::new("disk failure")));
+    sm.expect_get_multi().returning(|_| Err(std::io::Error::other("disk failure")));
 
     let (tx, rx) = mpsc::channel(8);
     let handle = tokio::spawn(run_read_actor(rx, valid_lease(), Arc::new(sm), 64));

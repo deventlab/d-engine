@@ -43,7 +43,6 @@ use super::new_reader_writer_pair;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockTypeConfig;
-use crate::StateMachineError;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::snapshot_config;
 
@@ -217,7 +216,7 @@ mod apply_chunk_test {
         if apply_chunk_error {
             state_machine
                 .expect_apply_chunk()
-                .returning(|_| Err(StateMachineError::new("Test error")));
+                .returning(|_| Err(std::io::Error::other("Test error")));
         } else {
             state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         }
@@ -336,7 +335,7 @@ mod apply_chunk_test {
         let (watch_tx, mut watch_rx) = tokio::sync::broadcast::channel(16);
         let mut sm = MockStateMachine::new();
         sm.expect_apply_chunk()
-            .returning(|_| Err(StateMachineError::new("batch failed")));
+            .returning(|_| Err(std::io::Error::other("batch failed")));
 
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
@@ -1082,7 +1081,7 @@ mod create_snapshot_tests {
                 fs::create_dir(&db_path).unwrap();
                 Ok(LogId { term: 1, index: 1 })
             } else {
-                Err(StateMachineError::new("Concurrency failure"))
+                Err(std::io::Error::other("Concurrency failure"))
             }
         });
 
@@ -1210,7 +1209,7 @@ mod create_snapshot_tests {
         // Setup failing snapshot generation
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_| Err(StateMachineError::new("test failure")));
+            .returning(|_| Err(std::io::Error::other("test failure")));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1280,7 +1279,7 @@ mod create_snapshot_tests {
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_| Err(StateMachineError::new("test error")));
+            .returning(|_| Err(std::io::Error::other("test error")));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1509,7 +1508,7 @@ mod create_snapshot_tests {
         sm.expect_generate_snapshot_data().returning(|path| {
             // Simulate a partial write before the failure (e.g. checkpoint killed mid-copy).
             fs::create_dir_all(&path).unwrap();
-            Err(StateMachineError::new("simulated crash"))
+            Err(std::io::Error::other("simulated crash"))
         });
 
         let config = snapshot_config(snapshot_dir.clone());
@@ -1548,7 +1547,7 @@ mod create_snapshot_tests {
             // `create_dir_all`, otherwise this test can't distinguish "cleaned up" from
             // "never checked".
             if path.exists() {
-                return Err(StateMachineError::new("mkdir: File exists"));
+                return Err(std::io::Error::other("mkdir: File exists"));
             }
             fs::create_dir_all(&path).unwrap();
             Ok(LogId { term: 1, index: 5 })
@@ -2923,7 +2922,7 @@ fn test_read_from_state_machine_returns_the_state_machine_error() {
     let mut state_machine = MockStateMachine::new();
     state_machine
         .expect_get_multi()
-        .returning(|_| Err(StateMachineError::new("disk failure")));
+        .returning(|_| Err(std::io::Error::other("disk failure")));
     let handler = handler_over(state_machine, temp_dir.path());
 
     let err = handler
@@ -2931,6 +2930,28 @@ fn test_read_from_state_machine_returns_the_state_machine_error() {
         .expect_err("a failing state machine must not look like an empty one");
 
     assert!(format!("{err:?}").contains("disk failure"), "got: {err:?}");
+}
+
+/// Business scenario: the disk under a node fails while a client reads. A state machine reports
+/// that as a plain `io::Error`; the client must receive the "storage I/O error" code and no
+/// payload, so it can tell a failing disk from a missing key.
+#[test]
+fn test_state_machine_io_error_reaches_client_as_storage_io_error() {
+    use crate::client::types::ClientResponse;
+    use crate::client::types::ErrorCode;
+
+    let temp_dir = tempdir().unwrap();
+    let mut state_machine = MockStateMachine::new();
+    state_machine
+        .expect_get_multi()
+        .returning(|_| Err(std::io::Error::other("disk failure")));
+    let handler = handler_over(state_machine, temp_dir.path());
+
+    let result = handler.read_from_state_machine(vec![bytes::Bytes::from_static(b"k")]);
+    let response = ClientResponse::from_read(result);
+
+    assert_eq!(response.error, ErrorCode::StorageIoError);
+    assert!(response.result.is_none());
 }
 
 /// Keys that do not exist are left out; the others keep the order they were asked in. All keys

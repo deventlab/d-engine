@@ -346,13 +346,8 @@ fn test_is_propose_failure_false_for_success() {
 
 // ── State machine read failures ──────────────────────────────────────────────
 
-fn read_failure_cases() -> [(crate::Error, ErrorCode); 5] {
+fn read_failure_cases() -> [(crate::Error, ErrorCode); 3] {
     [
-        // Transient: the state machine is replacing its state, a retry will succeed.
-        (
-            crate::StorageError::NotServing("restoring".into()).into(),
-            ErrorCode::RetryRequired,
-        ),
         (
             crate::StorageError::DbError("disk failure".into()).into(),
             ErrorCode::StorageIoError,
@@ -361,20 +356,12 @@ fn read_failure_cases() -> [(crate::Error, ErrorCode); 5] {
             crate::StorageError::IoError(std::io::Error::other("disk failure")).into(),
             ErrorCode::StorageIoError,
         ),
-        // The client is told the stored data may be damaged and decides what to do.
-        (
-            crate::StorageError::DataCorruption {
-                location: "sst".into(),
-            }
-            .into(),
-            ErrorCode::DataCorruption,
-        ),
         (crate::Error::Fatal("boom".into()), ErrorCode::Uncategorized),
     ]
 }
 
-/// Each failure class maps to one stable code, so clients can tell "retry", "storage problem",
-/// "data may be damaged" and "internal bug" apart.
+/// Each failure class maps to one stable code, so clients can tell a "storage problem"
+/// from an "internal bug".
 #[test]
 fn test_for_read_failure_maps_each_failure_class_to_its_code() {
     for (error, expected) in read_failure_cases() {
