@@ -584,7 +584,7 @@ impl StateMachine for RocksDBStateMachine {
                 first_err.get_or_insert(e);
             }
         };
-        record("flush", self.flush().map_err(Into::into));
+        record("flush", self.flush().map_err(StateMachineError::new));
         if let Some(db) = self.db.load().as_deref() {
             db.cancel_all_background_work(true);
         }
@@ -618,7 +618,7 @@ impl StateMachine for RocksDBStateMachine {
                 None => Ok(None),
             }
         })
-        .map_err(StateMachineError::from)
+        .map_err(StateMachineError::new)
     }
 
     /// Thread-safe: called serially by the state machine worker
@@ -781,7 +781,7 @@ impl StateMachine for RocksDBStateMachine {
             self.is_serving.store(true, Ordering::SeqCst);
         }
 
-        result.map_err(Into::into)
+        result.map_err(StateMachineError::new)
     }
 
     async fn generate_snapshot_data(
@@ -796,14 +796,15 @@ impl StateMachine for RocksDBStateMachine {
         // run on tokio's blocking thread pool via spawn_blocking, not on an async worker thread.
         // This prevents snapshot disk I/O from starving the inbound event loop under concurrent
         // writes (#315).
-        let db = self.load_db()?; // Arc<DB>: Send, safe to move into spawn_blocking
+        let db = self.load_db().map_err(StateMachineError::new)?; // Arc<DB>: Send, safe to move into spawn_blocking
         let dir = new_snapshot_dir.clone();
         let position = tokio::task::spawn_blocking(move || -> Result<LogId, Error> {
             std::fs::create_dir_all(&dir)?;
             Self::export_frozen_view(&db, &dir)
         })
         .await
-        .map_err(|e| StateMachineError::new(Self::map_snapshot_join_error(e).to_string()))??;
+        .map_err(|e| StateMachineError::new(Self::map_snapshot_join_error(e).to_string()))?
+        .map_err(StateMachineError::new)?;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(position)
@@ -813,7 +814,7 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         prefix: &[u8],
     ) -> Result<ScanResult, StateMachineError> {
-        self.scan_prefix(prefix).map_err(Into::into)
+        self.scan_prefix(prefix).map_err(StateMachineError::new)
     }
 
     fn get_multi(
@@ -852,7 +853,7 @@ impl StateMachine for RocksDBStateMachine {
                 })
                 .collect()
         })
-        .map_err(StateMachineError::from)
+        .map_err(StateMachineError::new)
     }
 }
 impl Drop for RocksDBStateMachine {

@@ -10,15 +10,37 @@
 
 - Remove calls to `put_with_ttl` and the `ttl_secs` field of `Command::Insert`. Implement key expiry in the layer above d-engine.
 - Delete the `[raft.state_machine.lease]` section from your config files.
-- Custom state machines: remove `lease_background_cleanup`, `start`, `is_running`, `len`, `is_empty` and `reset` from your `StateMachine` impl; the trait no longer declares them. `start` was called once when the node booted. Do that setup in your constructor (a state machine must be ready to serve as soon as it is built). The engine no longer asks whether the state machine is running: while a state machine installs a snapshot, a concurrent read must return the old state, the new state, or fail, never a mix. If you need an entry count, keep `len` as a plain method on your own type. The engine never called `reset`; if you used it in your own tests, wipe your storage directory or build a new state machine on an empty one instead. `StateMachineBuilder` (test support) now has `build()` return a state machine on new, empty storage and a new required method `reopen()` for restarts. **Every `StateMachine` method now returns `StateMachineError` instead of `d_engine::Error`** (#469): report any failure with `StateMachineError::new("what went wrong")`, or let `?` convert an `io::Error`; the engine stops the node when `apply_chunk` fails and fails only the read when a read fails. `StorageError::NotServing` is no longer part of the contract for a state machine.
+- Custom state machines: see [Upgrading to v0.3.0: your `StateMachine`](#upgrading-to-v030-your-statemachine).
 - Proto: `WriteCommand.Insert.ttl_secs` (field 3) is removed. Regenerate your client code.
 - The file state machine storage format changed. Start with a fresh data directory; old files are not supported.
 - RocksDB state machine: keys written with `put_with_ttl` under v0.2.x are kept forever after the upgrade. v0.3.0 neither reads the old `ttl_state` entry nor deletes expired keys. Before upgrading, either delete the keys you no longer want, or record their deadlines and have your own expiry layer delete them. Or start with a fresh data directory.
-- A read that fails in the state machine now returns an error code instead of an empty result: `StorageIoError`, `DataCorruption` (the stored data may be damaged), `RetryRequired` (the state machine is replacing its state; retry) or `Uncategorized`. Before, such a read looked like "key not found". Handle these errors in your client.
+- A read that fails in the state machine now returns an error to the client instead of an empty result (before, it looked like "key not found"). Handle it in your client.
 
-## Upgrading to v0.3.0: The Engine Owns the State Machine
+## Upgrading to v0.3.0: your `StateMachine`
 
-`start_custom`, `start_node` and `run_custom` (embedded and standalone) now take the state machine by value. The engine creates the `Arc` itself, so by the time `stop()` returns it has dropped the state machine and released whatever it held (a database handle, a lock file).
+The trait went from 17 methods to 8, and the engine now owns snapshots. Go through this list.
+
+| If you have | Do this |
+| --- | --- |
+| `start`, `is_running`, `len`, `is_empty`, `reset`, `entry_term`, `lease_background_cleanup` | Delete. Do `start`'s setup in your constructor. Keep `len` as a plain method if you need it. |
+| `stop`, `close_storage` | Delete `stop`. Rename `close_storage` to `close`. |
+| `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async` | Delete. The engine never called them. |
+| `snapshot_metadata`, `persist_last_snapshot_metadata` | Delete. The engine records the snapshots it holds. |
+| Methods that return `d_engine::Error` | Return `StateMachineError` (below). |
+| `generate_snapshot_data(dir, last_included)` | Drop `last_included`. Return the position of the last entry the exported data contains. |
+| A snapshot checksum, or stale / duplicate / conflict checks in `apply_snapshot_from_file` | Delete. The engine does them and calls you only for a newer snapshot. |
+| `Arc<MyStateMachine>` passed to the engine | Pass `MyStateMachine` by value. |
+
+**Errors.** Report any failure with `StateMachineError::new("what went wrong")`; `?` converts an `io::Error`. A failed `apply_chunk` stops the node. A failed read fails only that read.
+
+**What your state machine must guarantee**
+
+1. After a restart, `last_applied()` is the last entry whose effects are durable. Write it in the same transaction as the data.
+2. `generate_snapshot_data` creates the directory, exports a consistent view, and returns that view's position (not a separate counter: `apply_chunk` keeps running).
+3. While `apply_snapshot_from_file` runs, a read returns the old state, the new state, or an error, never a mix. Afterwards `last_applied()` equals `metadata.last_included`.
+4. `close()` persists and releases resources, and may be called twice. Do not rely on it for crash safety: it may not run if shutdown times out.
+
+**Engine API**
 
 ```rust
 // before
@@ -30,16 +52,12 @@ let sm = MyStateMachine::new()?;
 EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 ```
 
-- **`EmbeddedEngine<SE, SM>` and `EmbeddedClient<SE, SM>` no longer have type parameters.** Write `EmbeddedEngine` and `EmbeddedClient`. `DefaultEmbeddedEngine` and `DefaultEmbeddedClient` still exist and are now plain aliases of them.
-- **If you kept a clone of your `Arc<StateMachine>` to read local data directly** (for example `DLmdb` reading its own LMDB), you can no longer clone the instance the engine uses. Share a handle to your storage instead: put the handles (LMDB `Env`, sled `Db`, `Arc<rocksdb::DB>`) behind an `Arc` inside your state machine type, derive `Clone` on it, give the engine one clone and keep the other.
-- **Embedded reads (`get_eventual`, lease reads) are answered by the ReadActor**, as they already were in standalone mode, instead of reading the state machine on the caller's thread. Expect one extra channel hop per read.
-- **Snapshot checksums belong to the engine.** `generate_snapshot_data(dir)` now returns `Result<LogId>` and no longer takes `last_included`: write the snapshot into the directory you are given and return the position of the last applied entry the exported data contains, read from the same consistent view as the data (not from a separate counter, because `apply_chunk` keeps running). The engine labels the snapshot with it. The engine computes the checksum of that directory itself, and verifies it before it calls `apply_snapshot_from_file`, so you no longer compute or check a checksum. Delete that code (and any hashing dependency you added only for it).
-- **`apply_snapshot_from_file` returns `Result<()>` again, and you no longer classify snapshots.** The engine compares the snapshot's boundary with `last_applied()` first and calls you only for a newer snapshot, so delete your stale / duplicate / conflict handling and return `Ok(())` after installing. After your call the engine checks that `last_applied()` equals `metadata.last_included` and reports an error if it does not, so make sure you set it (durably) as part of the install.
-- **Eight methods left the trait:** `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async`, `snapshot_metadata` and `persist_last_snapshot_metadata`. The first six were never called by the engine, so deleting them from your `impl StateMachine` block changes no behaviour. The last two are replaced by the engine's own record of the snapshots it holds (see below). Keep any your own code still uses as plain methods on your type.
-- **Restore your position when you open the state machine.** The engine does not do it for you: after reopening, `last_applied()` must return the last entry whose effects are durable. You no longer store or return anything about snapshots; delete your snapshot-metadata storage and its loading code.
-- **The engine records the snapshots a node holds.** Next to each snapshot archive `snapshot-{index}-{term}.tar.gz` it writes `snapshot-{index}-{term}.meta` (boundary and checksum). After you upgrade, existing archives have no record, so the node reports no snapshot until it builds its next one; archives without a record that are older than the newest recorded snapshot are then removed.
-- **The snapshot directory must contain only regular files and directories.** The engine rejects symbolic links and other special entries instead of skipping them.
-- When `stop()` returns, the engine has dropped the state machine. If your state machine releases its resources in `Drop` (a database handle, a lock file), they are free at that point and the same data directory can be reopened.
+- `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
+- If you read your own storage directly (for example `DLmdb`), share the storage handles behind an `Arc` inside a `Clone` state machine; give the engine one clone and keep the other.
+- Embedded reads (`get_eventual`, lease reads) go through the ReadActor, as in standalone mode: one extra channel hop.
+- Existing snapshot archives have no `.meta` record, so a node reports no snapshot until it builds its next one. The snapshot directory may contain only regular files and directories.
+
+**Tests.** `StateMachineBuilder::build()` returns a state machine on new, empty storage. Implement the new `reopen()` to restart the same storage. `build_from_crash_image()` is optional and enables the crash-recovery test.
 
 ---
 
@@ -406,48 +424,6 @@ fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
 
 ---
 
-## 🚨 For v0.2.4 Users: `StateMachine` Lifecycle Changes in v0.3.0 (#455)
-
-### What Changed
-
-| Before (v0.2.4)                                                 | After (v0.3.0)                                                    |
-| --------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `fn stop(&self) -> Result<(), Error>` (required)                | **Removed**                                                       |
-| `fn close_storage(&self)` (default no-op)                       | **Renamed** `fn close(&self) -> Result<(), Error>` (default `Ok`) |
-| `[raft.storage]` accepted as an alias of `[raft.state_machine]` | Use `[raft.state_machine]`                                        |
-
-`stop()` was never called by d-engine. `close()` is now the one end-of-life hook. d-engine calls it once, as the last step of the
-state machine worker. When the worker drains cleanly, every committed entry has been applied by then; if
-`shutdown_apply_timeout_ms` expires first, shutdown continues and committed entries may remain unapplied until the next start.
-d-engine stops serving reads before it calls `close()` and calls nothing on the state machine afterwards, so you do not need to
-define what a closed state machine does. If the timeout expires, `close()` runs after the node has returned, or not at all if the
-process exits first: do not rely on it for crash safety, and persist `last_applied` together with the data it describes.
-Because you may keep your own `Arc` to the state machine, do not rely on `Drop` alone. `close()` returns an error if persisting
-fails: release your resources anyway and return the first error. The node logs it at ERROR level.
-
-### Migration Steps
-
-1. Delete your `fn stop(...)`.
-2. Rename `fn close_storage(&self)` to `fn close(&self) -> Result<(), Error>`.
-3. If your `stop()` persisted something that must survive a restart (for example lease state), do it in `close()`.
-4. `close()` must be synchronous and may be called more than once (a later call returns `Ok(())`). You no longer have to make operations return a "not serving" error after it.
-5. In config files, rename `[raft.storage]` to `[raft.state_machine]`.
-
-```rust
-// Before
-fn stop(&self) -> Result<(), Error> { self.persist_ttl()?; Ok(()) }
-fn close_storage(&self) { self.db.flush(); }
-
-// After
-fn close(&self) -> Result<(), Error> {
-    let persisted = self.persist_ttl();
-    self.db.flush();
-    persisted
-}
-```
-
----
-
 ## 🚨 For v0.2.3 Users: API Surface Changes in v0.2.4 (#326)
 
 ### What Changed
@@ -614,14 +590,6 @@ fn entry_term(&self, entry_id: u64) -> Option<u64> {
 ```
 
 Compilation will fail with "method not found in trait" if you forget to remove it.
-
----
-
-## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Now Receives Only Snapshots To Install (#436, #400)
-
-The signature is unchanged: it still returns `Result<()>`. What changed is who decides.
-
-In v0.2.4 every state machine had to decide whether a received snapshot should be installed. In v0.3.0 the engine decides before it calls you, so stale, duplicate and conflicting snapshots (older than `last_applied()`, equal to it, or the same index with a different term) never reach your code. If your implementation compared the snapshot's boundary with its own position, delete that code. After your call the engine checks that `last_applied()` equals `metadata.last_included`, and reports an error if it does not.
 
 ---
 

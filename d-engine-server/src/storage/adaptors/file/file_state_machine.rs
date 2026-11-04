@@ -768,11 +768,11 @@ impl FileStateMachine {
     /// Reads are served only while running. After `close()` the state machine may still be
     /// reachable through a handle the developer shares, and it must not answer from state that
     /// is no longer maintained.
-    fn ensure_serving(&self) -> Result<(), Error> {
+    fn ensure_serving(&self) -> Result<(), StateMachineError> {
         if self.running.load(Ordering::Acquire) {
             Ok(())
         } else {
-            Err(StorageError::NotServing("state machine stopped".into()).into())
+            Err(StateMachineError::new("state machine stopped"))
         }
     }
 
@@ -843,7 +843,7 @@ impl StateMachine for FileStateMachine {
         // `Drop` does not run when the engine stops if the developer still holds a shared
         // handle: persist everything a restart needs here.
         // No exclusive OS lock file to release.
-        self.save_hard_state().map_err(Into::into)
+        self.save_hard_state().map_err(StateMachineError::new)
     }
 
     fn get(
@@ -1049,7 +1049,7 @@ impl StateMachine for FileStateMachine {
         self.wal_entries_since_checkpoint.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
         if self.should_checkpoint() {
-            self.checkpoint().await?;
+            self.checkpoint().await.map_err(StateMachineError::new)?;
         }
 
         Ok(results)
@@ -1170,9 +1170,9 @@ impl StateMachine for FileStateMachine {
         self.update_last_applied(incoming);
 
         // Persist to disk
-        self.persist_data_async().await?;
-        self.clear_wal_async().await?;
-        self.persist_metadata_async().await?;
+        self.persist_data_async().await.map_err(StateMachineError::new)?;
+        self.clear_wal_async().await.map_err(StateMachineError::new)?;
+        self.persist_metadata_async().await.map_err(StateMachineError::new)?;
 
         info!("Snapshot applied successfully");
 

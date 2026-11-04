@@ -883,11 +883,3 @@ impl From<StateMachineError> for Error {
         )))
     }
 }
-
-impl From<Error> for StateMachineError {
-    /// Lets the state machines that ship with d-engine, which share helpers with the rest of the
-    /// engine, return their internal errors with `?`. The message is kept.
-    fn from(error: Error) -> Self {
-        StateMachineError::new(error.to_string())
-    }
-}
