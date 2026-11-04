@@ -50,15 +50,12 @@ pub(crate) struct ReadCmd {
 
 /// Error returned by the ReadActor to the caller.
 ///
-/// `LeaseInvalid` and `SmUnavailable` are recoverable: fall back to `cmd_tx`.
+/// `LeaseInvalid` is recoverable: fall back to `cmd_tx`.
 /// `SmError` is a hard failure; do NOT retry via cmd_tx.
 #[derive(Debug)]
 pub(crate) enum ReadActorError {
     /// Lease has been revoked or expired. Retry via cmd_tx.
     LeaseInvalid,
-    /// The state machine cannot serve reads right now: it is installing a snapshot or has been
-    /// closed. Retry via cmd_tx, which waits behind the install or reports the shutdown.
-    SmUnavailable,
     /// The state machine failed to read. Keeps the original error for logging and
     /// classification; it must not reach the client as is.
     SmError(Error),
@@ -126,11 +123,5 @@ where
         _ => return Err(ReadActorError::LeaseInvalid),
     }
 
-    sm.get_multi(&cmd.keys).map_err(|e| {
-        if e.is_not_serving() {
-            ReadActorError::SmUnavailable
-        } else {
-            ReadActorError::SmError(e)
-        }
-    })
+    sm.get_multi(&cmd.keys).map_err(|e| ReadActorError::SmError(e.into()))
 }

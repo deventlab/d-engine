@@ -2,7 +2,7 @@
 ///
 /// Routing rules under test:
 ///   Eventual/LeaseRead (any key count) → ReadActor fast path; fallback on
-/// LeaseInvalid/SmUnavailable   LinearizableRead                   → cmd_tx always
+/// LeaseInvalid                 LinearizableRead                   → cmd_tx always
 ///   SmError                            → error returned directly (no cmd_tx fallback)
 ///
 /// Proof technique (identical to read_handle_test.rs):
@@ -20,6 +20,7 @@ mod grpc_fast_path_tests {
     use d_engine_core::ReadLease;
     use d_engine_core::now_ms;
     use d_engine_proto::client::ClientReadRequest;
+    use d_engine_proto::client::ClientResponse;
     use d_engine_proto::client::ReadConsistencyPolicy as ProtoPolicy;
     use d_engine_proto::client::client_response::SuccessResult;
     use d_engine_proto::client::raft_client_service_server::RaftClientService;
@@ -56,14 +57,14 @@ mod grpc_fast_path_tests {
     fn sm_unavailable() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
         sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::StorageError::NotServing("stopped".into()).into()));
+            .returning(|_| Err(d_engine_core::StateMachineError::new("stopped")));
         sm
     }
 
     fn sm_with_error() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
         sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::Error::Fatal("disk failure".into())));
+            .returning(|_| Err(d_engine_core::StateMachineError::new("disk failure")));
         sm
     }
 
@@ -165,20 +166,18 @@ mod grpc_fast_path_tests {
         handle.await.unwrap();
     }
 
-    /// Eventual, SM unavailable → SmUnavailable → fallback to cmd_tx.
-    /// cmd_rx dropped: error proves fallback was triggered.
+    /// Eventual, SM fails: the client gets an internal error, not
+    /// the result of trying the Raft path, which would read the same state machine again.
+    /// cmd_rx dropped: a fallback would come back as a channel-closed error.
     #[tokio::test]
-    async fn test_eventual_sm_unavailable_falls_back_to_cmd_tx() {
+    async fn test_eventual_sm_failure_reaches_client_as_internal_error() {
         let (node, handle) = make_node(sm_unavailable(), valid_lease(), true).await;
 
         let result = node
             .handle_client_read(Request::new(req(b"k", ProtoPolicy::EventualConsistency)))
             .await;
 
-        assert!(
-            result.is_err(),
-            "SM unavailable must fall back to closed cmd_tx"
-        );
+        assert_read_fails_with_internal_error(result);
         drop(node);
         handle.await.unwrap();
     }
@@ -214,17 +213,14 @@ mod grpc_fast_path_tests {
         handle.await.unwrap();
     }
 
-    /// LeaseRead, SM unavailable (even valid lease) → SmUnavailable → fallback to cmd_tx.
+    /// LeaseRead with a valid lease, SM cannot serve: the client gets the state machine's error.
     #[tokio::test]
-    async fn test_lease_read_sm_unavailable_falls_back_to_cmd_tx() {
+    async fn test_lease_read_sm_failure_reaches_client_as_internal_error() {
         let (node, handle) = make_node(sm_unavailable(), valid_lease(), true).await;
 
         let result = node.handle_client_read(Request::new(req(b"k", ProtoPolicy::LeaseRead))).await;
 
-        assert!(
-            result.is_err(),
-            "SM unavailable must fall back to closed cmd_tx"
-        );
+        assert_read_fails_with_internal_error(result);
         drop(node);
         handle.await.unwrap();
     }
@@ -251,11 +247,23 @@ mod grpc_fast_path_tests {
         handle.await.unwrap();
     }
 
-    // ── Linearizable — always cmd_tx ─────────────────────────────────────────
+    // ── Read failure codes reach a remote client ─────────────────────────────
 
-    /// LinearizableRead must never touch ReadActor — always routed to cmd_tx.
-    /// No expect_get_multi() on SM: mockall panics if get_multi() is called (implicit safety net).
-    /// cmd_rx dropped: error proves cmd_tx was used (not fast path).
+    /// A state machine read failure answers a remote client with a plain internal error: no
+    /// retry through the Raft path (which would read the same state machine again), and no detail
+    /// of the failure.
+    fn assert_read_fails_with_internal_error(
+        result: Result<tonic::Response<ClientResponse>, tonic::Status>
+    ) {
+        let status = result.expect_err("a failed read must be an error");
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(
+            !status.message().contains("stopped") && !status.message().contains("channel closed"),
+            "unexpected message: {}",
+            status.message()
+        );
+    }
+
     #[tokio::test]
     async fn test_linearizable_always_uses_cmd_tx() {
         let sm = MockStateMachine::new();

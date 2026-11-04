@@ -9,6 +9,8 @@ use std::time::Duration;
 use config::ConfigError;
 use tokio::task::JoinError;
 
+use crate::StateMachineError;
+
 /// Unified result type used throughout `StateMachine`/`StorageEngine`/`LogStore`/`MetaStore`
 /// trait signatures — equivalent to `std::result::Result<T, Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -869,5 +871,23 @@ impl From<IdAllocationError> for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         StorageError::IoError(e).into()
+    }
+}
+
+impl From<StateMachineError> for Error {
+    /// A state machine failure reaches the engine as a state machine error with its message; the
+    /// engine never needs to look inside it.
+    fn from(error: StateMachineError) -> Self {
+        Error::System(SystemError::Storage(StorageError::StateMachineError(
+            error.to_string(),
+        )))
+    }
+}
+
+impl From<Error> for StateMachineError {
+    /// Lets the state machines that ship with d-engine, which share helpers with the rest of the
+    /// engine, return their internal errors with `?`. The message is kept.
+    fn from(error: Error) -> Self {
+        StateMachineError::new(error.to_string())
     }
 }

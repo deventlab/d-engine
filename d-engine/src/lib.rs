@@ -47,6 +47,8 @@ pub mod prelude {
     #[cfg(feature = "server")]
     pub use d_engine_server::StateMachine;
     #[cfg(feature = "server")]
+    pub use d_engine_server::StateMachineError;
+    #[cfg(feature = "server")]
     pub use d_engine_server::StorageEngine;
 }
 

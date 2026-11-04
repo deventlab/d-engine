@@ -40,11 +40,10 @@ use super::StateMachineWriterOps;
 #[cfg(feature = "watch")]
 use super::broadcast_watch_events;
 use super::new_reader_writer_pair;
-use crate::Error;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockTypeConfig;
-use crate::SnapshotError;
+use crate::StateMachineError;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::snapshot_config;
 
@@ -218,7 +217,7 @@ mod apply_chunk_test {
         if apply_chunk_error {
             state_machine
                 .expect_apply_chunk()
-                .returning(|_| Err(Error::Fatal("Test error".to_string())));
+                .returning(|_| Err(StateMachineError::new("Test error")));
         } else {
             state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         }
@@ -337,7 +336,7 @@ mod apply_chunk_test {
         let (watch_tx, mut watch_rx) = tokio::sync::broadcast::channel(16);
         let mut sm = MockStateMachine::new();
         sm.expect_apply_chunk()
-            .returning(|_| Err(Error::Fatal("batch failed".to_string())));
+            .returning(|_| Err(StateMachineError::new("batch failed")));
 
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
@@ -1083,7 +1082,7 @@ mod create_snapshot_tests {
                 fs::create_dir(&db_path).unwrap();
                 Ok(LogId { term: 1, index: 1 })
             } else {
-                Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
+                Err(StateMachineError::new("Concurrency failure"))
             }
         });
 
@@ -1211,7 +1210,7 @@ mod create_snapshot_tests {
         // Setup failing snapshot generation
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_| Err(SnapshotError::OperationFailed("test failure".into()).into()));
+            .returning(|_| Err(StateMachineError::new("test failure")));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1281,7 +1280,7 @@ mod create_snapshot_tests {
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_| Err(SnapshotError::OperationFailed("test error".into()).into()));
+            .returning(|_| Err(StateMachineError::new("test error")));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1510,7 +1509,7 @@ mod create_snapshot_tests {
         sm.expect_generate_snapshot_data().returning(|path| {
             // Simulate a partial write before the failure (e.g. checkpoint killed mid-copy).
             fs::create_dir_all(&path).unwrap();
-            Err(SnapshotError::OperationFailed("simulated crash".into()).into())
+            Err(StateMachineError::new("simulated crash"))
         });
 
         let config = snapshot_config(snapshot_dir.clone());
@@ -1549,7 +1548,7 @@ mod create_snapshot_tests {
             // `create_dir_all`, otherwise this test can't distinguish "cleaned up" from
             // "never checked".
             if path.exists() {
-                return Err(SnapshotError::OperationFailed("mkdir: File exists".into()).into());
+                return Err(StateMachineError::new("mkdir: File exists"));
             }
             fs::create_dir_all(&path).unwrap();
             Ok(LogId { term: 1, index: 5 })
@@ -2924,7 +2923,7 @@ fn test_read_from_state_machine_returns_the_state_machine_error() {
     let mut state_machine = MockStateMachine::new();
     state_machine
         .expect_get_multi()
-        .returning(|_| Err(crate::StorageError::DbError("disk failure".into()).into()));
+        .returning(|_| Err(StateMachineError::new("disk failure")));
     let handler = handler_over(state_machine, temp_dir.path());
 
     let err = handler

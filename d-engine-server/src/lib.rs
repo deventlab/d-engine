@@ -166,14 +166,14 @@ pub use d_engine_core::Result;
 pub use d_engine_core::ScanResult;
 /// Client-facing prefix scan result, returned by `EmbeddedClient::scan_prefix()`.
 pub use d_engine_core::ScanResults;
-/// Snapshot-specific error type. Return one from [`StateMachine::apply_snapshot_from_file`] to
-/// report a genuine install failure; stale, duplicate and conflicting snapshots never reach
-/// that method, because the engine rejects them first.
+/// Snapshot-specific error type (internal to the engine).
 pub use d_engine_core::SnapshotError;
 /// Storage trait for implementing custom storage backends
 ///
 /// Implement this trait to create your own storage engine.
 pub use d_engine_core::StateMachine;
+/// The error a [`StateMachine`] returns for any failure.
+pub use d_engine_core::StateMachineError;
 /// Storage trait for implementing custom storage backends
 ///
 /// Implement this trait to create your own storage engine.

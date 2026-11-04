@@ -19,6 +19,7 @@ use d_engine::Result;
 use d_engine::ScanResult;
 use d_engine::SnapshotError;
 use d_engine::StateMachine;
+use d_engine::StateMachineError;
 use d_engine::StorageError;
 use d_engine::common::LogId;
 use d_engine::server_storage::SnapshotMetadata;
@@ -86,7 +87,7 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    fn close(&self) -> Result<()> {
+    fn close(&self) -> std::result::Result<(), StateMachineError> {
         if self.db.load().is_none() {
             return Ok(());
         }
@@ -95,7 +96,7 @@ impl StateMachine for SledStateMachine {
         // failed. The lock is released once no other handle to the db is alive.
         let saved = self.save_hard_state();
         self.db.store(None);
-        saved
+        saved.map_err(Into::into)
     }
 
     fn last_applied(&self) -> LogId {
@@ -108,13 +109,13 @@ impl StateMachine for SledStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>> {
+    ) -> std::result::Result<Option<Bytes>, StateMachineError> {
         match self.current_tree()?.get(key_buffer) {
             Ok(Some(v)) => Ok(Some(Bytes::copy_from_slice(&v))),
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
-                Err(StorageError::DbError(e.to_string()).into())
+                Err(StateMachineError::new(e.to_string()))
             }
         }
     }
@@ -122,7 +123,7 @@ impl StateMachine for SledStateMachine {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>> {
+    ) -> std::result::Result<Vec<ApplyResult>, StateMachineError> {
         trace!("Applying chunk: {} entries", chunk.len());
         let db = self.db()?;
 
@@ -153,7 +154,7 @@ impl StateMachine for SledStateMachine {
         let data_tree = self.current_tree()?;
         let meta_tree = db
             .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(|e| StateMachineError::new(e.to_string()))?;
 
         let results = (&data_tree, &meta_tree)
             .transaction(|(data, meta)| {
@@ -227,7 +228,7 @@ impl StateMachine for SledStateMachine {
             })
             .map_err(|e: sled::transaction::TransactionError| {
                 error!("state_machine apply_chunk failed: {}", e);
-                StorageError::DbError(e.to_string())
+                StateMachineError::new(e.to_string())
             })?;
 
         self.update_last_applied(position);
@@ -238,7 +239,7 @@ impl StateMachine for SledStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-    ) -> Result<LogId> {
+    ) -> std::result::Result<LogId, StateMachineError> {
         // Known limits of this example: the tree is iterated while `apply_chunk` may run, so the
         // copy is not a point-in-time view, and the position below comes from memory, not from the
         // exported data. Reading it before the copy keeps it at or behind the data. A state machine
@@ -248,7 +249,7 @@ impl StateMachine for SledStateMachine {
 
         // 2. Create a new state machine database instance
         let new_db = init_sled_state_machine_db(&new_snapshot_dir)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(|e| StateMachineError::new(e.to_string()))?;
 
         let exist_db_tree = self.current_tree()?;
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -260,7 +261,7 @@ impl StateMachine for SledStateMachine {
         // as log indices. The SM already reflects state at last_included.index, so
         // all current entries are valid snapshot content.
         for item in exist_db_tree.iter() {
-            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            let (k, v) = item.map_err(|e| StateMachineError::new(e.to_string()))?;
 
             batch.insert(k, v);
             counter += 1;
@@ -268,17 +269,17 @@ impl StateMachine for SledStateMachine {
             if counter % 100 == 0 {
                 new_state_machine_tree
                     .apply_batch(batch)
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
+                    .map_err(|e| StateMachineError::new(e.to_string()))?;
                 batch = sled::Batch::default();
             }
         }
 
         new_state_machine_tree
             .apply_batch(batch)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(|e| StateMachineError::new(e.to_string()))?;
 
         // Make sure flush into disk
-        new_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        new_db.flush().map_err(|e| StateMachineError::new(e.to_string()))?;
 
         Ok(position)
     }
@@ -287,14 +288,14 @@ impl StateMachine for SledStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), StateMachineError> {
         // `StateMachineWorker` never runs this concurrently with `apply_chunk`, a snapshot
         // export or another install (#436).
 
         // The engine only calls this for a snapshot newer than `last_applied()`.
-        let new_last_included = metadata.last_included.ok_or_else(|| {
-            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
-        })?;
+        let new_last_included = metadata
+            .last_included
+            .ok_or_else(|| StateMachineError::new("Missing last_included in snapshot metadata"))?;
 
         // `decompressed_snapshot_path` is a temporary directory owned by the caller
         // (see `PreparedSnapshot`), not this state machine's own `self.path`. Opening a
@@ -340,12 +341,12 @@ impl StateMachine for SledStateMachine {
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::DbError(format!("snapshot install task panicked: {e}")))?
-        .map_err(|e| StorageError::DbError(format!("failed to move snapshot into place: {e}")))?;
+        .map_err(|e| StateMachineError::new(format!("snapshot install task panicked: {e}")))?
+        .map_err(|e| StateMachineError::new(format!("failed to move snapshot into place: {e}")))?;
 
         debug!("Reopening state machine database at its permanent path");
         let db = init_sled_state_machine_db(&self.path)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(|e| StateMachineError::new(e.to_string()))?;
         self.db.store(Some(Arc::new(db)));
 
         // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
@@ -368,11 +369,11 @@ impl StateMachine for SledStateMachine {
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult> {
+    ) -> std::result::Result<ScanResult, StateMachineError> {
         let tree = self.current_tree()?;
         let mut entries = Vec::new();
         for result in tree.scan_prefix(prefix) {
-            let (k, v) = result.map_err(|e| StorageError::DbError(e.to_string()))?;
+            let (k, v) = result.map_err(|e| StateMachineError::new(e.to_string()))?;
             entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
         }
         let revision = self.last_applied_index.load(Ordering::SeqCst);

@@ -12,7 +12,7 @@ d-engine supports **pluggable state machines** through the `StateMachine` trait.
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::{ApplyEntry, ApplyResult, Command, Error, LogId, SnapshotMetadata, StateMachine};
+use d_engine::{ApplyEntry, ApplyResult, Command, LogId, SnapshotMetadata, StateMachine, StateMachineError};
 use async_trait::async_trait;
 
 struct CustomStateMachine {
@@ -37,18 +37,18 @@ impl StateMachine for CustomStateMachine {
     // If you share your storage handle with the application (a cloneable state machine), the
     // state machine is not dropped when the engine stops, so do not rely on Drop alone.
     //
-    // fn close(&self) -> Result<(), Error> {
+    // fn close(&self) -> Result<(), StateMachineError> {
     //     let flushed = self.backend.flush();
     //     self.backend.close(); // release lock file / DB handle
     //     flushed
     // }
 
-    fn get(&self, key_buffer: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    fn get(&self, key_buffer: &[u8]) -> Result<Option<Vec<u8>>, StateMachineError> {
         // Retrieve value by key
         self.backend.get(key_buffer)
     }
 
-    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>, Error> {
+    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>, StateMachineError> {
         // The framework pre-decodes proto bytes — match on Command directly, no prost needed.
         let mut results = Vec::with_capacity(chunk.len());
         for entry in chunk {

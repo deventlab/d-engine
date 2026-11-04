@@ -26,7 +26,7 @@ All notable changes to this project will be documented in this file.
 
 - **`raft.state_machine.shutdown_apply_timeout_ms`** (#455, default `5000`): how long shutdown waits for the state machine worker to apply the entries already committed. On timeout it logs an error and shuts down anyway; a restart replays what was not applied.
 
-- **Crash-recovery test for state machines** (#400): `StateMachineTestSuite` checks that after a crash (no `close()`, no `Drop`) a restart reports a `last_applied` equal to the last entry whose effects are in the data. `StateMachineBuilder` has a new method `build_from_crash_image`, with a default implementation that returns `None`; implement it to open a copy of your storage as it is on disk, otherwise the crash test is skipped. `copy_storage_dir` copies a directory for that purpose.
+- **Crash-recovery test for state machines** (#400): `StateMachineTestSuite` now checks that a restart after a crash reports a position that matches the data. Implement `StateMachineBuilder::build_from_crash_image` to enable it.
 
 ### Fixed
 
@@ -58,17 +58,17 @@ All notable changes to this project will be documented in this file.
 
 - **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
 
-- **Snapshot checksum ignored files in sub-directories and file boundaries** (#400): see the snapshot checksum entry under Changed.
+- **RocksDB snapshot could be ahead of its data** (#400): a snapshot taken during writes could make a node skip entries after it installed it. Snapshots are now exported from one consistent copy.
 
-- **RocksDB snapshots could hold a position ahead of their data** (#400): a snapshot exported while writes continued took `sm` (data) and `sm_meta` (`last_applied`) from the live database one after the other, so a node installing it could report a position newer than its data and skip the entries in between for good. The export now takes a checkpoint of the database and exports both column families from that frozen copy, and the database is opened with `atomic_flush` so the two column families always reach disk together. A snapshot export is slower (about 100 ms on a small database, measured with a test database; measure on your data). The engine also labels every snapshot with the position the state machine reports for its exported data.
+- **File state machine reported an old position after a crash** (#400): recovery now restores `last_applied` together with the data.
 
-- **File state machine: `last_applied` after crash recovery** (#400): replaying the write-ahead log restored the data but did not move `last_applied`, and then cleared the log, so a restart reported the position of the last checkpoint and the engine applied entries again that the data already contained (a different result for compare-and-swap). Replay now advances `last_applied` to the last replayed record and writes data and position out before the log is cleared. The sled example and d-lmdb now commit the applied position in the same transaction as the data.
+- **Snapshot checksum now covers every file** (#400), including sub-directories. Delete snapshot archives made by older versions when you upgrade.
 
 ### Changed
 
 - **⚠️ Wire protocol is not compatible with v0.2.4**: `ClientResponse.metadata` moved from field 4 to 5 (field 4 is now `scan_data`); `HandleClientScan` returns `ClientResponse` (the `ScanResponse` message is now `ScanResults`); the `ChunkStatus` values are renumbered with `CHUNK_STATUS_UNSPECIFIED = 0`; `WriteCommand.Insert.ttl_secs` (field 3) is reserved; new RPC `PreVote`. Do not run v0.2.4 and v0.3.0 nodes or clients together. See `MIGRATION_GUIDE.md`.
 
-- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single end-of-life hook, may be called more than once, and also persists what must survive a restart (lease state). The engine stops its read path before calling it and calls nothing on the state machine afterwards, so a state machine no longer has to answer "not serving" once closed; `EmbeddedEngine::stop()` now stops the read actor before the state machine worker. It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
+- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
 
 - **State machine worker lifecycle** (#455): the `NodeBuilder` only assembles the worker; `Node::run()` starts it and stops it. `StateMachineWorker::new` no longer takes a shutdown signal.
 
@@ -84,6 +84,8 @@ All notable changes to this project will be documented in this file.
 - `[raft.read_actor]` replaces the previous flat `read_actor_channel_capacity` / `read_actor_max_drain` fields in `[raft]`. Update existing config files accordingly.
 
 - **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
+
+- **⚠️ `StateMachine::apply_snapshot_from_file` return type changed** (#436): Was `Result<()>`, now `Result<SnapshotApplyResult>`. The three outcomes (`Applied`/`IgnoredStale`/`IgnoredDuplicate`) are now explicit instead of every call looking identical on success. Custom `StateMachine` implementations must update the signature and return the matching variant. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
 - **⚠️ Learner initial-snapshot PULL path removed** (#436): `Transport::request_snapshot_from_leader` and `StateMachineHandler::apply_snapshot_stream_from_leader` are removed. New learners catch up via the leader's PUSH replication loop (AppendEntries / InstallSnapshot) instead of eagerly pulling a snapshot on startup. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
@@ -122,19 +124,13 @@ All notable changes to this project will be documented in this file.
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
-- **⚠️ `StateMachine::apply_snapshot_from_file` returns `Result<()>`; the engine decides which snapshots are installed** (#400): the engine compares the snapshot's boundary with `last_applied()` before it calls the state machine, so stale, duplicate and conflicting snapshots never reach it, and it checks afterwards that `last_applied()` equals the snapshot's boundary, reporting an error if not. Before, every state machine had to implement this decision itself, and one that did not (d-lmdb) would install a stale snapshot and roll its data back. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, methods return `StateMachineError`, and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
-- **⚠️ `StateMachine` no longer declares `snapshot_metadata` and `persist_last_snapshot_metadata`; the engine records the snapshots a node holds** (#400): the engine keeps `snapshot-{index}-{term}.meta` (boundary and checksum) next to each snapshot archive, written after the archive is complete and, on a follower, after the snapshot is installed. The snapshot trigger policy, the leader's snapshot push and the join response read it. Cleanup goes by these records and also removes archives without a record that are older than the newest recorded snapshot. Before, every state machine had to store and restore this metadata, and the file state machine, sled and d-lmdb did not do it correctly. Archives created before the upgrade have no record, so the node reports no snapshot until it builds its next one. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ The engine takes the state machine by value** (#400): `start_custom`, `start_node` and `run_custom` take `SM` instead of `Arc<SM>`, and `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
 
-- **⚠️ `StateMachine` no longer declares `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush` and `flush_async`** (#400): the engine never called them. Keep any you still need as methods on your own type. Your state machine must restore `last_applied` and its snapshot metadata when it is opened; the `StateMachine` docs now state this as a durability contract, and `StateMachineTestSuite` checks it. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
-
-- **⚠️ `StateMachine::generate_snapshot_data(dir)` returns `Result<LogId>`; the engine owns snapshot checksums** (#400): the method no longer takes the `last_included` argument and returns the position of the last entry its exported data contains, read from the same consistent view as the data. The engine labels the snapshot with it and rejects a position outside what the node applied while exporting. The engine computes the SHA-256 of the exported snapshot directory and verifies it before calling `apply_snapshot_from_file`, which now only ever receives a directory that matches the recorded checksum. A state machine neither returns nor checks a checksum. The checksum now covers every file at any depth together with its relative path and length; before, it covered only top-level files, so the data files RocksDB exports into sub-directories were not protected. Snapshot archives created before the upgrade fail verification, so remove old snapshot archives when upgrading. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
-
-- **⚠️ The engine takes the state machine by value** (#400): `EmbeddedEngine::start_custom`/`start_node`, `StandaloneEngine::run_custom`/`start_node` take `SM` instead of `Arc<SM>`; the `Arc` is created inside the engine. Nothing outside the engine holds the state machine, so `stop()` returns only after it is dropped and its resources are released. Embedded reads now go through the ReadActor like standalone reads (`EmbeddedReadHandle` is removed). `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
 
 ### Removed
-
-- **`StateMachine::reset` removed** (#400): the engine never called it; only tests used it. `StateMachineBuilder::build()` now returns a state machine on new, empty storage, and the new required method `reopen()` opens the storage the last `build()` used (a restart), so the suite no longer wipes a state machine before a test. `test_reset_operation` is removed from `StateMachineTestSuite`; `test_snapshot_operations` now takes the builder. See `MIGRATION_GUIDE.md`.
 
 - **TTL and per-key lease** (#464): d-engine now does consensus and replication only. Removed `put_with_ttl`, the `Lease` trait, `TtlLease`, the `[raft.state_machine.lease]` config section and `StateMachine::lease_background_cleanup`. `Command::Insert` no longer has `ttl_secs`. In the proto, `WriteCommand.Insert.ttl_secs` (field 3) is removed and the number is reserved. Key expiry is now the job of the layer above d-engine. The leader read lease (`LeaseRead`) is a different feature and is unchanged.
 

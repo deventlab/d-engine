@@ -1,7 +1,8 @@
 //! ReadHandle — read routing for standalone (gRPC) mode.
 //!
 //! Routes reads through the ReadActor channel for Eventual/LeaseRead fast path,
-//! falling back to `cmd_tx` (Raft readIndex) for LinearizableRead or on error.
+//! falling back to `cmd_tx` (Raft readIndex) for LinearizableRead, when a lease is no longer valid,
+//! or when the ReadActor cannot answer. A state machine read failure is returned to the caller.
 //!
 //! For embedded mode, use `EmbeddedReadHandle` which calls the SM directly
 //! without any channel overhead.
@@ -94,11 +95,6 @@ pub(crate) fn map_error_response(
             };
             not_leader_error(leader_id, leader_address, retry_after_ms)
         }
-        // A state machine read failure keeps its own code and its fixed message, as on the
-        // ReadActor fast path (`read_failure`).
-        ErrorCode::StorageIoError | ErrorCode::DataCorruption | ErrorCode::RetryRequired => {
-            ClientApiError::from(error)
-        }
         _ => server_error(format!("Error code: {error:?}")),
     }
 }
@@ -129,29 +125,14 @@ pub(crate) fn extract_read_payload(
 /// Turns a state machine read failure into a client error without internal detail.
 /// The original error goes to the log and to a counter, so operators still see the cause.
 pub(crate) fn read_failure(e: &Error) -> ClientApiError {
-    let code = ErrorCode::for_read_failure(e);
-    // The failure class a dashboard groups by.
-    let kind = match code {
-        ErrorCode::StorageIoError => "storage_io",
-        ErrorCode::DataCorruption => "data_corruption",
-        ErrorCode::RetryRequired => "not_serving",
-        _ => "other",
-    };
-    error!(error = ?e, kind, "state machine read failed");
-    metrics::counter!("server.read.errors", "kind" => kind).increment(1);
+    error!(error = ?e, "state machine read failed");
+    metrics::counter!("server.read.errors").increment(1);
 
-    match code {
-        // Fixed, friendly messages from the error code, e.g. "Storage I/O error"
-        ErrorCode::StorageIoError | ErrorCode::DataCorruption | ErrorCode::RetryRequired => {
-            ClientApiError::from(code)
-        }
-        _ => ClientApiError::Business {
-            code,
-            message:
-                "Read failed due to an internal error. Please retry or contact the administrator."
-                    .to_string(),
-            required_action: None,
-        },
+    ClientApiError::Business {
+        code: ErrorCode::Uncategorized,
+        message: "Read failed due to an internal error. Please retry or contact the administrator."
+            .to_string(),
+        required_action: None,
     }
 }
 
@@ -183,7 +164,7 @@ impl ReadHandle {
     /// # Routing rules
     /// | Policy         | Path                       | On failure            |
     /// |----------------|----------------------------|-----------------------|
-    /// | Eventual/Lease | ReadActor (fast path)      | fall through to cmd_tx|
+    /// | Eventual/Lease | ReadActor (fast path)      | cmd_tx only if the lease is invalid or the ReadActor cannot answer |
     /// | Linearizable   | cmd_tx always              | —                     |
     /// | SmError        | direct return              | no fallback           |
     ///
@@ -236,8 +217,8 @@ impl ReadHandle {
                 match tokio::time::timeout(timeout, reply_rx).await {
                     Ok(Ok(Ok(values))) => return Ok(values),
                     Ok(Ok(Err(ReadActorError::SmError(e)))) => return Err(read_failure(&e)),
-                    // LeaseInvalid / SmUnavailable → fall through to cmd_tx
-                    Ok(Ok(Err(ReadActorError::LeaseInvalid | ReadActorError::SmUnavailable))) => {}
+                    // LeaseInvalid → fall through to cmd_tx
+                    Ok(Ok(Err(ReadActorError::LeaseInvalid))) => {}
                     // ReadActor exited without replying → fall through
                     Ok(Err(_)) => {}
                     // ReadActor stalled beyond timeout → fall through to cmd_tx

@@ -545,7 +545,7 @@ async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
 // immediately, without waiting for every reference to the state machine to be dropped (a
 // handle the developer shares may outlive the engine).
 
-/// close() makes reads return a NotServing error, never an empty result.
+/// close() makes reads return an error, never an empty result.
 #[tokio::test]
 async fn test_close_prevents_reads() {
     let dir = TempDir::new().unwrap();
@@ -555,10 +555,9 @@ async fn test_close_prevents_reads() {
 
     sm.close().unwrap();
 
-    let err = sm.get(b"k").expect_err("get must fail after close");
     assert!(
-        format!("{err:?}").contains("NotServing"),
-        "a closed state machine must say NotServing, got: {err:?}"
+        sm.get(b"k").is_err(),
+        "a closed state machine must fail reads, not answer with an empty result"
     );
     assert!(
         sm.get_multi(&[Bytes::from_static(b"k")]).is_err(),
@@ -574,8 +573,7 @@ fn test_close_twice_is_safe() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
     sm.close().unwrap();
     sm.close().unwrap();
-    let err = sm.get(b"k").expect_err("still closed after the second close");
-    assert!(format!("{err:?}").contains("NotServing"), "got: {err:?}");
+    assert!(sm.get(b"k").is_err(), "still closed after the second close");
 }
 
 /// Drop after close() must not panic or double-flush.

@@ -1,7 +1,7 @@
 /// Unit tests for ReadHandle routing logic.
 ///
 /// ReadHandle is the single source of truth for read routing:
-///   Eventual/LeaseRead  → ReadActor fast path; fallback to cmd_tx on LeaseInvalid/SmUnavailable
+///   Eventual/LeaseRead  → ReadActor fast path; fallback to cmd_tx on LeaseInvalid only
 ///   LinearizableRead    → cmd_tx always
 ///   SmError             → returned directly, NO cmd_tx fallback
 ///
@@ -17,10 +17,8 @@ mod read_handle_tests {
     use bytes::Bytes;
     use d_engine_core::ClientApiError;
     use d_engine_core::ClientCmd;
-    use d_engine_core::Error;
     use d_engine_core::MockStateMachine;
     use d_engine_core::ReadLease;
-    use d_engine_core::StorageError;
     use d_engine_core::client::ClientResponse;
     use d_engine_core::client::ErrorCode;
     use d_engine_core::client::KvEntry;
@@ -68,13 +66,14 @@ mod read_handle_tests {
     fn sm_unavailable() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
         sm.expect_get_multi()
-            .returning(|_| Err(d_engine_core::StorageError::NotServing("stopped".into()).into()));
+            .returning(|_| Err(d_engine_core::StateMachineError::new("stopped")));
         sm
     }
 
     fn sm_with_error() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_get_multi().returning(|_| Err(Error::Fatal("disk failure".into())));
+        sm.expect_get_multi()
+            .returning(|_| Err(d_engine_core::StateMachineError::new("disk failure")));
         sm
     }
 
@@ -130,15 +129,16 @@ mod read_handle_tests {
         handle.await.unwrap();
     }
 
-    /// Eventual, SM unavailable → SmUnavailable → fallback to cmd_tx.
-    /// cmd_rx dropped: error is Network (channel-closed), proving cmd_tx fallback triggered.
+    /// Eventual read, SM cannot serve: the read fails with the state machine's own error. The Raft
+    /// path would read the same local state machine again, so it is not tried.
+    /// cmd_rx dropped: a fallback would show up as a Network (channel-closed) error.
     #[tokio::test]
-    async fn test_eventual_sm_unavailable_falls_back_to_cmd_tx() {
+    async fn test_eventual_sm_not_serving_fails_without_trying_cmd_tx() {
         let (rh, handle) = make_handle(sm_unavailable(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
-            matches!(result, Err(ClientApiError::Network { .. })),
-            "SmUnavailable must fall back to cmd_tx (Network error), got: {:?}",
+            matches!(&result, Err(e) if e.code() == ErrorCode::Uncategorized),
+            "the state machine's error must reach the caller, got: {:?}",
             result
         );
         drop(rh);
@@ -192,14 +192,15 @@ mod read_handle_tests {
         handle.await.unwrap();
     }
 
-    /// LeaseRead, SM unavailable (even with valid lease) → SmUnavailable → fallback to cmd_tx.
+    /// LeaseRead with a valid lease, SM cannot serve: the read fails with the state machine's own
+    /// error; only an invalid lease sends a read to the Raft path.
     #[tokio::test]
-    async fn test_lease_read_sm_unavailable_falls_back_to_cmd_tx() {
+    async fn test_lease_read_sm_not_serving_fails_without_trying_cmd_tx() {
         let (rh, handle) = make_handle(sm_unavailable(), valid_lease(), true).await;
         let result = rh.get(b"k", ReadConsistencyPolicy::LeaseRead, 1, TIMEOUT).await;
         assert!(
-            matches!(result, Err(ClientApiError::Network { .. })),
-            "SM unavailable must fall back to cmd_tx, got: {:?}",
+            matches!(&result, Err(e) if e.code() == ErrorCode::Uncategorized),
+            "the state machine's error must reach the caller, got: {:?}",
             result
         );
         drop(rh);
@@ -242,52 +243,6 @@ mod read_handle_tests {
         }
         drop(rh);
         handle.await.unwrap();
-    }
-
-    /// Storage failures keep a storage error code, so a client can tell a storage problem from
-    /// an internal bug, and the message stays free of engine detail.
-    #[tokio::test]
-    async fn test_sm_error_storage_failures_keep_their_storage_code() {
-        let cases: [(fn() -> Error, ErrorCode); 3] = [
-            (
-                || StorageError::DbError("rocksdb: secret detail".into()).into(),
-                ErrorCode::StorageIoError,
-            ),
-            (
-                || StorageError::IoError(std::io::Error::other("secret detail")).into(),
-                ErrorCode::StorageIoError,
-            ),
-            (
-                || {
-                    StorageError::DataCorruption {
-                        location: "secret detail".into(),
-                    }
-                    .into()
-                },
-                ErrorCode::DataCorruption,
-            ),
-        ];
-
-        for (make_error, expected) in cases {
-            let mut sm = MockStateMachine::new();
-            sm.expect_get_multi().returning(move |_| Err(make_error()));
-            let (rh, handle) = make_handle(sm, valid_lease(), true).await;
-
-            let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
-
-            match result {
-                Err(ClientApiError::Storage { code, message }) => {
-                    assert_eq!(code, expected);
-                    assert!(
-                        !message.contains("secret detail"),
-                        "detail leaked: {message}"
-                    );
-                }
-                other => panic!("expected a Storage error for {expected:?}, got: {other:?}"),
-            }
-            drop(rh);
-            handle.await.unwrap();
-        }
     }
 
     // ── Linearizable — always cmd_tx ─────────────────────────────────────────
@@ -767,24 +722,6 @@ mod error_helper_tests {
                 assert_eq!(retry_after_ms, Some(100));
             }
             _ => panic!("expected Network error"),
-        }
-    }
-
-    /// A read that goes through the Raft command channel (linearizable reads, eventual reads on a
-    /// follower, a fast-path read that fell back after `NotServing`) reports a state machine read
-    /// failure with one of these three codes.
-    ///
-    /// Purpose: the client must still be able to tell "retry" from "storage failure" from "the data
-    /// may be damaged", as it can on the fast path; mapping them to a generic error would hide it.
-    #[test]
-    fn test_map_error_response_keeps_each_read_failure_code_distinct() {
-        for code in [
-            ErrorCode::StorageIoError,
-            ErrorCode::DataCorruption,
-            ErrorCode::RetryRequired,
-        ] {
-            let err = map_error_response(code, None, None);
-            assert_eq!(err.code(), code, "{code:?} must reach the client unchanged");
         }
     }
 

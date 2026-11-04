@@ -15,9 +15,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
-use d_engine_core::Error;
 use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
+use d_engine_core::StateMachineError;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 
@@ -33,25 +33,25 @@ impl<SM> SharedStateMachine<SM> {
 
 #[async_trait]
 impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
-    fn close(&self) -> Result<(), Error> {
+    fn close(&self) -> Result<(), StateMachineError> {
         self.0.close()
     }
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> Result<Option<Bytes>, StateMachineError> {
         self.0.get(key_buffer)
     }
     fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> Result<Vec<Option<Bytes>>, Error> {
+    ) -> Result<Vec<Option<Bytes>>, StateMachineError> {
         self.0.get_multi(keys)
     }
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, Error> {
+    ) -> Result<Vec<ApplyResult>, StateMachineError> {
         self.0.apply_chunk(chunk).await
     }
     fn last_applied(&self) -> LogId {
@@ -61,19 +61,19 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<(), Error> {
+    ) -> Result<(), StateMachineError> {
         self.0.apply_snapshot_from_file(metadata, snapshot_path).await
     }
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-    ) -> Result<LogId, Error> {
+    ) -> Result<LogId, StateMachineError> {
         self.0.generate_snapshot_data(new_snapshot_dir).await
     }
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
+    ) -> Result<ScanResult, StateMachineError> {
         self.0.scan_prefix(prefix)
     }
 }

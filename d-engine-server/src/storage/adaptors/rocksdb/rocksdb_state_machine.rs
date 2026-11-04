@@ -12,8 +12,8 @@ use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
+use d_engine_core::StateMachineError;
 use d_engine_core::StorageError;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -568,7 +568,7 @@ impl RocksDBStateMachine {
 impl StateMachine for RocksDBStateMachine {
     /// Sequence: stop serving → flush → save hard state → cancel background
     /// work → drop the DB handle (releasing the LOCK). A second call finds no DB and does nothing.
-    fn close(&self) -> Result<(), Error> {
+    fn close(&self) -> Result<(), StateMachineError> {
         if self.db.load().is_none() {
             return Ok(());
         }
@@ -577,14 +577,14 @@ impl StateMachine for RocksDBStateMachine {
 
         // Every step runs even if an earlier one failed, so the LOCK is always released;
         // the first error is returned.
-        let mut first_err: Option<Error> = None;
-        let mut record = |step: &str, result: Result<(), Error>| {
+        let mut first_err: Option<StateMachineError> = None;
+        let mut record = |step: &str, result: Result<(), StateMachineError>| {
             if let Err(e) = result {
                 error!("close: {step} failed: {e:?}");
                 first_err.get_or_insert(e);
             }
         };
-        record("flush", self.flush());
+        record("flush", self.flush().map_err(Into::into));
         if let Some(db) = self.db.load().as_deref() {
             db.cancel_all_background_work(true);
         }
@@ -597,15 +597,14 @@ impl StateMachine for RocksDBStateMachine {
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> Result<Option<Bytes>, StateMachineError> {
         // Guard against reads during snapshot restoration
         // During apply_snapshot_from_file(), is_serving is set to false while the database
         // is being replaced. This prevents reads from accessing temporary or inconsistent state.
         if !self.is_serving.load(Ordering::SeqCst) {
-            return Err(StorageError::NotServing(
-                "State machine is restoring from snapshot".to_string(),
-            )
-            .into());
+            return Err(StateMachineError::new(
+                "State machine is restoring from snapshot",
+            ));
         }
 
         self.with_db(|db| {
@@ -614,11 +613,12 @@ impl StateMachine for RocksDBStateMachine {
                     "State machine CF not found".to_string(),
                 )))
             })?;
-            match db.get_cf(&cf, key_buffer).map_err(|e| StorageError::DbError(e.to_string()))? {
+            match db.get_cf(&cf, key_buffer).map_err(StateMachineError::new)? {
                 Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
                 None => Ok(None),
             }
         })
+        .map_err(StateMachineError::from)
     }
 
     /// Thread-safe: called serially by the state machine worker
@@ -626,20 +626,20 @@ impl StateMachine for RocksDBStateMachine {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, Error> {
+    ) -> Result<Vec<ApplyResult>, StateMachineError> {
         // Inline guard: db and cf must share a lifetime across the entire function body
         // (batch borrows cf, CAS reads borrow db). Using with_db() closure would require
         // moving the whole async function body into a sync closure — use Guard directly.
         let guard = self.db.load();
         let Some(db) = guard.as_deref() else {
-            return Err(StorageError::NotServing("state machine stopped".into()).into());
+            return Err(StateMachineError::new("state machine stopped"));
         };
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+            .ok_or_else(|| StateMachineError::new("State machine CF not found"))?;
         let meta_cf = db
             .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
+            .ok_or_else(|| StateMachineError::new("State machine meta CF not found"))?;
 
         let mut batch = WriteBatchWithIndex::new(0, true);
         let mut highest_index_entry: Option<LogId> = None;
@@ -683,7 +683,7 @@ impl StateMachine for RocksDBStateMachine {
                     // are visible, preventing stale-read linearizability violations.
                     let current_value = batch
                         .get_from_batch_and_db_cf(db, &cf, key, &ReadOptions::default())
-                        .map_err(|e| StorageError::DbError(format!("CAS read failed: {e}")))?;
+                        .map_err(|e| StateMachineError::new(format!("CAS read failed: {e}")))?;
 
                     let cas_success = match (current_value, expected) {
                         (Some(current), Some(exp)) => current == exp.as_ref(),
@@ -738,7 +738,7 @@ impl StateMachine for RocksDBStateMachine {
         let _t0 = std::time::Instant::now();
         SM_WRITE_OPTS
             .with(|opts| db.write_wbwi_opt(&batch, opts))
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+            .map_err(StateMachineError::new)?;
 
         if let Some(highest) = highest_index_entry {
             self.update_last_applied(highest);
@@ -758,10 +758,10 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<(), Error> {
-        let incoming = metadata.last_included.ok_or_else(|| {
-            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
-        })?;
+    ) -> Result<(), StateMachineError> {
+        let incoming = metadata
+            .last_included
+            .ok_or_else(|| StateMachineError::new("Missing last_included in snapshot metadata"))?;
 
         info!("Applying snapshot from: {:?}", snapshot_dir);
 
@@ -781,13 +781,13 @@ impl StateMachine for RocksDBStateMachine {
             self.is_serving.store(true, Ordering::SeqCst);
         }
 
-        result
+        result.map_err(Into::into)
     }
 
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-    ) -> Result<LogId, Error> {
+    ) -> Result<LogId, StateMachineError> {
         // Export only SM CFs: compact SST-only export, no Raft log data.
         // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
         // (new_snapshot_dir) must already exist before calling it.
@@ -803,7 +803,7 @@ impl StateMachine for RocksDBStateMachine {
             Self::export_frozen_view(&db, &dir)
         })
         .await
-        .map_err(Self::map_snapshot_join_error)??;
+        .map_err(|e| StateMachineError::new(Self::map_snapshot_join_error(e).to_string()))??;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(position)
@@ -812,19 +812,18 @@ impl StateMachine for RocksDBStateMachine {
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
-        self.scan_prefix(prefix)
+    ) -> Result<ScanResult, StateMachineError> {
+        self.scan_prefix(prefix).map_err(Into::into)
     }
 
     fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> Result<Vec<Option<Bytes>>, Error> {
+    ) -> Result<Vec<Option<Bytes>>, StateMachineError> {
         if !self.is_serving.load(Ordering::SeqCst) {
-            return Err(StorageError::NotServing(
-                "State machine is restoring from snapshot".to_string(),
-            )
-            .into());
+            return Err(StateMachineError::new(
+                "State machine is restoring from snapshot",
+            ));
         }
         self.with_db(|db| {
             let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
@@ -853,6 +852,7 @@ impl StateMachine for RocksDBStateMachine {
                 })
                 .collect()
         })
+        .map_err(StateMachineError::from)
     }
 }
 impl Drop for RocksDBStateMachine {

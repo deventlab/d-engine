@@ -19,7 +19,7 @@ use crate::storage::adaptors::file::FileStateMachine;
 
 // ── close() tests ─────────────────────────────────────────────────────────────
 
-/// close() must stop the SM from serving: reads answer NotServing afterwards.
+/// close() must stop the SM from serving: reads fail afterwards.
 /// FileStateMachine has no exclusive OS lock, so close() is a lifecycle
 /// signal and flushes state to disk.
 #[tokio::test]
@@ -33,14 +33,13 @@ async fn test_file_sm_close_stops_serving() {
 
     sm.close().unwrap();
 
-    let err = sm.get(b"k").expect_err("close must stop serving");
-    assert!(format!("{err:?}").contains("NotServing"), "got: {err:?}");
+    assert!(sm.get(b"k").is_err(), "close must stop serving");
 }
 
 /// Business scenario: the node shuts down while the developer still holds a clone of the state
 /// machine (for example an embedded client reading directly from it).
 ///
-/// Purpose: once closed, every read fails with NotServing instead of answering from state that is
+/// Purpose: once closed, every read fails instead of answering from state that is
 /// no longer maintained. Same contract as the RocksDB state machine.
 #[tokio::test]
 async fn test_file_sm_reads_fail_after_close() {
@@ -64,17 +63,15 @@ async fn test_file_sm_reads_fail_after_close() {
 
     sm.close().unwrap();
 
-    let not_serving = |err: d_engine_core::Error| format!("{err:?}").contains("NotServing");
-    assert!(not_serving(
-        sm.get(b"k").expect_err("get must fail after close")
-    ));
-    assert!(not_serving(
-        sm.get_multi(&[Bytes::from_static(b"k")])
-            .expect_err("get_multi must fail after close")
-    ));
-    assert!(not_serving(
-        sm.scan_prefix(b"k").expect_err("scan_prefix must fail after close")
-    ));
+    assert!(sm.get(b"k").is_err(), "get must fail after close");
+    assert!(
+        sm.get_multi(&[Bytes::from_static(b"k")]).is_err(),
+        "get_multi must fail after close"
+    );
+    assert!(
+        sm.scan_prefix(b"k").is_err(),
+        "scan_prefix must fail after close"
+    );
 }
 
 /// close() is idempotent (the worker and the `Drop` safety net may both close).
@@ -84,8 +81,7 @@ async fn test_file_sm_close_twice_is_safe() {
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
     sm.close().unwrap();
     sm.close().unwrap();
-    let err = sm.get(b"k").expect_err("still closed after the second close");
-    assert!(format!("{err:?}").contains("NotServing"), "got: {err:?}");
+    assert!(sm.get(b"k").is_err(), "still closed after the second close");
 }
 
 /// Builder for FileStateMachine test instances

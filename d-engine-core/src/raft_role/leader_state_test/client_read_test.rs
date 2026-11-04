@@ -20,6 +20,7 @@ use crate::MockStateMachineHandler;
 use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
 use crate::ScanResult;
+use crate::StateMachineError;
 use crate::client::ClientReadRequest;
 use crate::client::ClientResponsePayload;
 use crate::client::ErrorCode;
@@ -2298,16 +2299,11 @@ async fn test_scan_cmd_leader_delivers_result() {
 #[tokio::test]
 #[traced_test]
 async fn test_scan_cmd_leader_propagates_sm_error() {
-    use crate::Error;
-    use crate::StorageError;
     use crate::test_utils::mock_state_machine;
 
     let mut sm = mock_state_machine();
-    sm.expect_scan_prefix().returning(|_prefix| {
-        Err(Error::System(crate::SystemError::Storage(
-            StorageError::StateMachineError("scan failed".into()),
-        )))
-    });
+    sm.expect_scan_prefix()
+        .returning(|_prefix| Err(StateMachineError::new("scan failed")));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)

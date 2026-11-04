@@ -32,6 +32,9 @@ async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir)
 listen_address = "127.0.0.1:{}"
 single_node = true
 
+[raft]
+general_raft_timeout_duration_in_ms = 2000
+
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 2000
 "#,

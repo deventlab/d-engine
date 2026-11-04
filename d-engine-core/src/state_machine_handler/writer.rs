@@ -179,7 +179,7 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             }
         }
 
-        apply_result
+        apply_result.map_err(Into::into)
     }
 
     async fn install_prepared_snapshot(
@@ -285,7 +285,7 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             Ok(position) => position,
             Err(e) => {
                 let _ = tokio::fs::remove_dir_all(&temp_path).await;
-                return Err(e);
+                return Err(e.into());
             }
         };
         let after = self.state_machine.last_applied();
@@ -317,6 +317,6 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
     }
 
     fn close(&self) -> Result<()> {
-        self.state_machine.close()
+        self.state_machine.close().map_err(Into::into)
     }
 }

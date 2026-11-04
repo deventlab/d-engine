@@ -68,8 +68,8 @@ use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
+use d_engine_core::StateMachineError;
 use d_engine_core::StorageError;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -836,20 +836,20 @@ impl Drop for FileStateMachine {
 
 #[async_trait]
 impl StateMachine for FileStateMachine {
-    fn close(&self) -> Result<(), Error> {
+    fn close(&self) -> Result<(), StateMachineError> {
         if !self.running.swap(false, Ordering::SeqCst) {
             return Ok(()); // already closed
         }
         // `Drop` does not run when the engine stops if the developer still holds a shared
         // handle: persist everything a restart needs here.
         // No exclusive OS lock file to release.
-        self.save_hard_state()
+        self.save_hard_state().map_err(Into::into)
     }
 
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, Error> {
+    ) -> Result<Option<Bytes>, StateMachineError> {
         self.ensure_serving()?;
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
@@ -859,7 +859,7 @@ impl StateMachine for FileStateMachine {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, Error> {
+    ) -> Result<Vec<ApplyResult>, StateMachineError> {
         self.ensure_serving()?;
         let chunk_len = chunk.len();
         let mut results = Vec::with_capacity(chunk_len);
@@ -1066,10 +1066,10 @@ impl StateMachine for FileStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<(), Error> {
-        let incoming = metadata.last_included.ok_or_else(|| {
-            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
-        })?;
+    ) -> Result<(), StateMachineError> {
+        let incoming = metadata
+            .last_included
+            .ok_or_else(|| StateMachineError::new("Missing last_included in snapshot metadata"))?;
 
         info!("Applying snapshot from file: {:?}", snapshot_dir);
 
@@ -1182,7 +1182,7 @@ impl StateMachine for FileStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-    ) -> Result<LogId, Error> {
+    ) -> Result<LogId, StateMachineError> {
         // Create snapshot directory
         fs::create_dir_all(&new_snapshot_dir).await?;
 
@@ -1223,7 +1223,7 @@ impl StateMachine for FileStateMachine {
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
+    ) -> Result<ScanResult, StateMachineError> {
         self.ensure_serving()?;
         let data = self.data.read();
         let entries: Vec<(Bytes, Bytes)> = data
@@ -1238,7 +1238,7 @@ impl StateMachine for FileStateMachine {
     fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> d_engine_core::Result<Vec<Option<Bytes>>> {
+    ) -> Result<Vec<Option<Bytes>>, StateMachineError> {
         self.ensure_serving()?;
         // Hold read lock for the full batch so all keys come from the same consistent view.
         // apply_chunk holds the write lock; parking_lot RwLock ensures they don't interleave.

@@ -10,8 +10,6 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use mockall::automock;
 
 use crate::ApplyEntry;
-use crate::Error;
-use crate::StorageError;
 
 /// All `(key, value)` pairs returned by a prefix scan, plus the revision anchor.
 ///
@@ -73,6 +71,32 @@ impl ApplyResult {
     }
 }
 
+/// A failure reported by a [`StateMachine`]. The message says what went wrong.
+///
+/// Return it for any failure: a full disk, an I/O error, data that failed a checksum. The engine
+/// does not need to know which: when applying entries or installing a snapshot fails, the node
+/// stops and recovers from its replicas; when a read fails, only that read fails.
+///
+/// Build one from a message, `StateMachineError::new("disk full")`, or from any error type that
+/// implements [`std::error::Error`]; an [`std::io::Error`] converts with `?`. The error chain is
+/// kept for the log.
+#[derive(Debug, thiserror::Error)]
+#[error("state machine error: {0}")]
+pub struct StateMachineError(#[source] Box<dyn std::error::Error + Send + Sync>);
+
+impl StateMachineError {
+    /// Wraps a message or an error.
+    pub fn new(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self(error.into())
+    }
+}
+
+impl From<std::io::Error> for StateMachineError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(error)
+    }
+}
+
 /// State machine trait for Raft consensus
 ///
 /// # Thread Safety Requirements
@@ -97,16 +121,18 @@ impl ApplyResult {
 ///
 /// `StateMachineTestSuite` checks this rule; run it against your implementation.
 ///
-/// # `NotServing`
+/// # Errors
 ///
-/// While a state machine is replacing its state from a snapshot and cannot answer reads
-/// correctly, `get` and `get_multi` return `StorageError::NotServing`, for example
-/// `Err(StorageError::NotServing("installing a snapshot".into()).into())`.
+/// Every method reports a failure with [`StateMachineError`]. A failure in `apply_chunk` stops the
+/// node, which then recovers from its replicas: an entry that was committed cannot be skipped, so
+/// the node must not go on without it. A failed `get`, `get_multi` or `scan_prefix` fails only that
+/// read.
 ///
-/// It means "not now", not "the data is damaged". The engine answers that read through Raft
-/// instead, from the state machine after the install, so the client still gets a correct answer.
-/// A simple implementation keeps an `AtomicBool` that it clears just before it starts replacing
-/// its state and sets again when it has finished.
+/// # Reads while a snapshot is installed
+///
+/// A read can run while `apply_snapshot_from_file` replaces the state. It must return the old
+/// state, the new state, or fail with an error; it must never return a mix of the two, because
+/// that is a state that never existed.
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
@@ -131,19 +157,18 @@ pub trait StateMachine: Send + Sync + 'static {
     /// `last_applied` has to be persisted together with the data it describes.
     ///
     /// Default is a no-op, for implementations with nothing to persist or release.
-    fn close(&self) -> Result<(), Error> {
+    fn close(&self) -> Result<(), StateMachineError> {
         Ok(())
     }
 
     /// Retrieves a value by key from the state machine.
     ///
-    /// Called concurrently from the read path, so it must be thread-safe and cheap. Return
-    /// `StorageError::NotServing` while the state machine cannot answer (during a snapshot
-    /// install): the engine then routes the read through Raft.
+    /// Called concurrently from the read path, so it must be thread-safe and cheap. Return an
+    /// error if the value cannot be read; only this read fails.
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>, Error>;
+    ) -> Result<Option<Bytes>, StateMachineError>;
 
     /// Retrieves multiple values by key from the state machine in a single call.
     ///
@@ -174,7 +199,7 @@ pub trait StateMachine: Send + Sync + 'static {
     fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> Result<Vec<Option<Bytes>>, Error> {
+    ) -> Result<Vec<Option<Bytes>>, StateMachineError> {
         keys.iter().map(|k| self.get(k)).collect()
     }
 
@@ -189,7 +214,7 @@ pub trait StateMachine: Send + Sync + 'static {
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>, Error>;
+    ) -> Result<Vec<ApplyResult>, StateMachineError>;
 
     /// Gets the last applied log index and term.
     /// Sync operation as it reads from atomic variables.
@@ -202,16 +227,16 @@ pub trait StateMachine: Send + Sync + 'static {
     /// the archive into and whose checksum it has verified against `metadata`.
     ///
     /// The implementation must:
-    /// 1. Replace its state so that a concurrent reader sees the old state, the new state, or
-    ///    `NotServing` (see the trait documentation), never a mix. Either swap the state in one
-    ///    atomic step, or return `NotServing` from reads for as long as the replacement takes.
+    /// 1. Replace its state so that a concurrent reader sees the old state, the new state, or a
+    ///    failed read, never a mix (see "Reads while a snapshot is installed" in the trait
+    ///    documentation).
     /// 2. Set `last_applied()` to `metadata.last_included` and make that durable. The engine checks
     ///    this after the call and reports an error if it did not happen.
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<(), Error>;
+    ) -> Result<(), StateMachineError>;
 
     /// Exports the state machine's current state into `new_snapshot_dir` and returns the position
     /// of the last applied entry that the exported state contains.
@@ -219,8 +244,9 @@ pub trait StateMachine: Send + Sync + 'static {
     /// The engine checksums the directory itself, labels the snapshot with the returned position,
     /// and records the snapshot only once the final archive is durably built, so a crash
     /// mid-snapshot never leaves a record pointing at a missing archive; the state machine does
-    /// none of that. `new_snapshot_dir` exists and is empty. Put any regular files in it, with
-    /// names of your choice; the engine archives the whole directory and hands it back to
+    /// none of that. `new_snapshot_dir` does not exist yet: create it (`create_dir_all`), then put
+    /// any regular files in it, with names of your choice; the engine archives the whole directory
+    /// and hands it back to
     /// [`apply_snapshot_from_file`](Self::apply_snapshot_from_file) unchanged.
     ///
     /// # The position must describe the exported data
@@ -255,7 +281,7 @@ pub trait StateMachine: Send + Sync + 'static {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-    ) -> Result<LogId, Error>;
+    ) -> Result<LogId, StateMachineError>;
 
     /// Returns all `(key, value)` pairs whose key starts with `prefix`, plus
     /// the `last_applied_index` at the time of the scan.
@@ -268,12 +294,10 @@ pub trait StateMachine: Send + Sync + 'static {
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult, Error> {
+    ) -> Result<ScanResult, StateMachineError> {
         let _ = prefix;
-        Err(Error::System(crate::SystemError::Storage(
-            StorageError::StateMachineError(
-                "scan_prefix not supported by this state machine".into(),
-            ),
-        )))
+        Err(StateMachineError::new(
+            "scan_prefix not supported by this state machine",
+        ))
     }
 }
