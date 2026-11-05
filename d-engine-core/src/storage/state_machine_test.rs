@@ -77,6 +77,7 @@ impl StateMachineTestSuite {
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(&builder).await?;
         Self::test_reads_during_snapshot_install_see_old_new_or_fail(&builder).await?;
+        Self::test_get_multi_during_snapshot_install_never_mixes_old_and_new(&builder).await?;
         Self::test_snapshot_taken_during_writes_never_skips_entries_after_restart(&builder).await?;
         Self::test_restart_after_crash_finds_position_and_data_of_the_same_entry(&builder).await?;
 
@@ -373,6 +374,107 @@ impl StateMachineTestSuite {
                 "key {i} must hold the new value after the install"
             );
         }
+        Ok(())
+    }
+
+    /// A multi-key read that overlaps a snapshot install must come from one state.
+    ///
+    /// Scenario: the node holds `"old"` for every key and receives a snapshot in which every key
+    /// holds `"new"`. A client keeps asking for all the keys in one `get_multi` call while the
+    /// install replaces the state. Every key was written together, so a single answer that mixes
+    /// `"old"` and `"new"` shows a state that never existed.
+    ///
+    /// Expected: each answer is all `"old"`, all `"new"`, or an error.
+    pub async fn test_get_multi_during_snapshot_install_never_mixes_old_and_new<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        const KEYS: u64 = 50;
+        let key = |i: u64| Bytes::from(format!("key-{i}"));
+        let entries = |value: &'static [u8]| {
+            (1..=KEYS)
+                .map(|i| create_insert_entry(i, key(i), Bytes::from_static(value)))
+                .collect::<Vec<_>>()
+        };
+        let keys: Vec<Bytes> = (1..=KEYS).map(key).collect();
+
+        // 1. A snapshot of the state in which every key holds the new value.
+        let source = builder.build().await?;
+        source.apply_chunk(&entries(b"new")).await?;
+        let temp_dir = TempDir::new()?;
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        let last_included = source.generate_snapshot_data(snapshot_dir.clone()).await?;
+        drop(source);
+        let metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: Bytes::from(vec![0; 32]),
+        };
+
+        // 2. The node is behind: every key holds the old value.
+        let sm = builder.build().await?;
+        sm.apply_chunk(&entries(b"old")).await?;
+
+        // 3. Readers ask for all keys in one call, over and over, during the install.
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let violations = Arc::new(Mutex::new(Vec::<String>::new()));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (sm, keys, stop, reads, violations) = (
+                    sm.clone(),
+                    keys.clone(),
+                    stop.clone(),
+                    reads.clone(),
+                    violations.clone(),
+                );
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        // A failed read is allowed; it shows nothing wrong.
+                        if let Ok(values) = sm.get_multi(&keys) {
+                            let old =
+                                values.iter().filter(|v| v.as_deref() == Some(b"old")).count();
+                            let new =
+                                values.iter().filter(|v| v.as_deref() == Some(b"new")).count();
+                            if old != values.len() && new != values.len() {
+                                violations.lock().unwrap().push(format!(
+                                    "{old} old, {new} new, {} other out of {}",
+                                    values.len() - old - new,
+                                    values.len()
+                                ));
+                            }
+                        }
+                        reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        while reads.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let installed = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await;
+
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("a reader thread panicked");
+        }
+        installed?;
+
+        let violations = violations.lock().unwrap();
+        assert!(
+            violations.is_empty(),
+            "a get_multi during the snapshot install returned a mix of old and new values, for \
+             example: {:?} ({} reads, {} violations)",
+            &violations[..violations.len().min(3)],
+            reads.load(Ordering::Relaxed),
+            violations.len()
+        );
         Ok(())
     }
 

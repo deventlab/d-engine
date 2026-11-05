@@ -116,6 +116,24 @@ impl StateMachine for SledStateMachine {
         }
     }
 
+    fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> std::io::Result<Vec<Option<Bytes>>> {
+        // Open the tree once: it stays on the database it came from, so every key is read
+        // from the same database even if `apply_snapshot_from_file` swaps `self.db` midway.
+        let tree = self.current_tree()?;
+        keys.iter()
+            .map(|key| match tree.get(key) {
+                Ok(value) => Ok(value.map(|v| Bytes::copy_from_slice(&v))),
+                Err(e) => {
+                    error!("state_machine get_multi error: {}", e);
+                    Err(std::io::Error::other(e))
+                }
+            })
+            .collect()
+    }
+
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
