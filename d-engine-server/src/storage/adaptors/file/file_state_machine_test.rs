@@ -795,15 +795,18 @@ async fn test_wal_replay_restores_empty_value() {
     let data_dir = temp_dir.path().to_path_buf();
 
     let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
-    let entries = vec![insert_at(b"put_key", b"", 1), ApplyEntry {
-        index: 2,
-        term: 1,
-        command: Command::CompareAndSwap {
-            key: Bytes::from("cas_key"),
-            expected: None,
-            value: Bytes::new(),
+    let entries = vec![
+        insert_at(b"put_key", b"", 1),
+        ApplyEntry {
+            index: 2,
+            term: 1,
+            command: Command::CompareAndSwap {
+                key: Bytes::from("cas_key"),
+                expected: None,
+                value: Bytes::new(),
+            },
         },
-    }];
+    ];
     // Write to the WAL only (memory and state.data untouched), then simulate a crash.
     // The second entry is a successful CAS.
     sm.append_to_wal(&entries, &[false, true]).await.unwrap();

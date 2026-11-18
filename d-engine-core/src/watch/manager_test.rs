@@ -734,11 +734,14 @@ fn setup_watch_system_with_max(
 fn test_prefix_segments_decomposes_path_correctly() {
     let key = Bytes::from("/config/db/host");
     let segments = prefix_segments(&key);
-    assert_eq!(segments, vec![
-        Bytes::from("/"),
-        Bytes::from("/config/"),
-        Bytes::from("/config/db/"),
-    ]);
+    assert_eq!(
+        segments,
+        vec![
+            Bytes::from("/"),
+            Bytes::from("/config/"),
+            Bytes::from("/config/db/"),
+        ]
+    );
 }
 
 #[test]

@@ -62,11 +62,14 @@ impl ConnectionCache {
         let channel = self.create_channel(current_address.clone(), conn_type).await?;
 
         trace!(?key, "Cache updated: address: {}", current_address.clone());
-        self.cache.insert(key, CachedChannel {
-            channel: channel.clone(),
-            address: current_address,
-            last_used: Instant::now(),
-        });
+        self.cache.insert(
+            key,
+            CachedChannel {
+                channel: channel.clone(),
+                address: current_address,
+                last_used: Instant::now(),
+            },
+        );
 
         Ok(channel)
     }

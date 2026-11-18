@@ -572,12 +572,11 @@ async fn test_filter_conflicts_hole_inside_batch_leaves_no_hole() {
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(10, 1, vec![
-            entry(11, 1),
-            entry(12, 1),
-            entry(14, 1),
-            entry(15, 1),
-        ])
+        .filter_out_conflicts_and_append(
+            10,
+            1,
+            vec![entry(11, 1), entry(12, 1), entry(14, 1), entry(15, 1)],
+        )
         .await;
 
     assert_log_has_no_hole(&ctx);

@@ -560,10 +560,10 @@ fn write_tree(
 #[tokio::test]
 async fn test_folder_checksum_changes_when_a_nested_file_is_modified() {
     let dir = tempdir().unwrap();
-    write_tree(dir.path(), &[
-        ("meta.bin", b"meta"),
-        ("sm/000008.sst", b"table-data"),
-    ]);
+    write_tree(
+        dir.path(),
+        &[("meta.bin", b"meta"), ("sm/000008.sst", b"table-data")],
+    );
     let before = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
 
     std::fs::write(dir.path().join("sm/000008.sst"), b"table-dat!").unwrap();
@@ -580,10 +580,10 @@ async fn test_folder_checksum_changes_when_a_nested_file_is_modified() {
 #[tokio::test]
 async fn test_folder_checksum_changes_when_a_nested_file_is_added() {
     let dir = tempdir().unwrap();
-    write_tree(dir.path(), &[
-        ("meta.bin", b"meta"),
-        ("sm/000008.sst", b"table-data"),
-    ]);
+    write_tree(
+        dir.path(),
+        &[("meta.bin", b"meta"), ("sm/000008.sst", b"table-data")],
+    );
     let before = file_io::compute_checksum_from_folder_path(dir.path()).await.unwrap();
 
     write_tree(dir.path(), &[("sm/000009.sst", b"extra")]);
@@ -635,17 +635,15 @@ async fn test_folder_checksum_changes_when_a_file_is_renamed() {
 #[tokio::test]
 async fn test_folder_checksum_is_independent_of_creation_order() {
     let first = tempdir().unwrap();
-    write_tree(first.path(), &[
-        ("a.bin", b"1"),
-        ("sm/b.sst", b"2"),
-        ("sm/c.sst", b"3"),
-    ]);
+    write_tree(
+        first.path(),
+        &[("a.bin", b"1"), ("sm/b.sst", b"2"), ("sm/c.sst", b"3")],
+    );
     let second = tempdir().unwrap();
-    write_tree(second.path(), &[
-        ("sm/c.sst", b"3"),
-        ("sm/b.sst", b"2"),
-        ("a.bin", b"1"),
-    ]);
+    write_tree(
+        second.path(),
+        &[("sm/c.sst", b"3"), ("sm/b.sst", b"2"), ("a.bin", b"1")],
+    );
 
     let first_sum = file_io::compute_checksum_from_folder_path(first.path()).await.unwrap();
     let second_sum = file_io::compute_checksum_from_folder_path(second.path()).await.unwrap();

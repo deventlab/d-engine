@@ -957,20 +957,20 @@ fn plan(
 /// A follower that already has the whole old log gets only this round's entries.
 #[test]
 fn test_plan_interval_caught_up_peer_gets_only_new_entries() {
-    assert!(matches!(plan(11, 1, 100), PeerInterval::Send {
-        start: 11,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(11, 1, 100),
+        PeerInterval::Send { start: 11, end: 13 }
+    ));
 }
 
 /// A follower behind but within the cap gets the old entries it lacks plus this round's,
 /// as one run.
 #[test]
 fn test_plan_interval_lagging_within_cap_gets_old_and_new_entries() {
-    assert!(matches!(plan(8, 1, 100), PeerInterval::Send {
-        start: 8,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(8, 1, 100),
+        PeerInterval::Send { start: 8, end: 13 }
+    ));
 }
 
 /// When the cap stops the catch-up short of the old tail, this round's entries are left out.
@@ -978,10 +978,10 @@ fn test_plan_interval_lagging_within_cap_gets_old_and_new_entries() {
 #[test]
 fn test_plan_interval_cap_cuts_catchup_and_drops_new_entries() {
     // 1..=10 lacking, cap 4: catch-up 1..=4 only.
-    assert!(matches!(plan(1, 1, 4), PeerInterval::Send {
-        start: 1,
-        end: 4
-    }));
+    assert!(matches!(
+        plan(1, 1, 4),
+        PeerInterval::Send { start: 1, end: 4 }
+    ));
 }
 
 /// Boundary: the cap lands exactly on the old tail, so this round's entries are included;
@@ -989,24 +989,24 @@ fn test_plan_interval_cap_cuts_catchup_and_drops_new_entries() {
 #[test]
 fn test_plan_interval_cap_reaching_old_tail_exactly_includes_new_entries() {
     // next=7, cap=4 -> 7..=10 reaches old_last.
-    assert!(matches!(plan(7, 1, 4), PeerInterval::Send {
-        start: 7,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(7, 1, 4),
+        PeerInterval::Send { start: 7, end: 13 }
+    ));
     // next=6, cap=4 -> 6..=9 stops one short.
-    assert!(matches!(plan(6, 1, 4), PeerInterval::Send {
-        start: 6,
-        end: 9
-    }));
+    assert!(matches!(
+        plan(6, 1, 4),
+        PeerInterval::Send { start: 6, end: 9 }
+    ));
 }
 
 /// A follower whose next index falls inside this round's entries gets the rest of them.
 #[test]
 fn test_plan_interval_peer_inside_new_entries_gets_the_rest() {
-    assert!(matches!(plan(12, 1, 100), PeerInterval::Send {
-        start: 12,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(12, 1, 100),
+        PeerInterval::Send { start: 12, end: 13 }
+    ));
 }
 
 /// A recorded next index past the log end is clamped, and then there is nothing to send.
@@ -1031,10 +1031,10 @@ fn test_plan_interval_no_new_entries_and_caught_up_gets_nothing() {
 #[test]
 fn test_plan_interval_cap_zero_blocks_catchup_but_not_new_entries() {
     assert!(matches!(plan(5, 1, 0), PeerInterval::Nothing));
-    assert!(matches!(plan(11, 1, 0), PeerInterval::Send {
-        start: 11,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(11, 1, 0),
+        PeerInterval::Send { start: 11, end: 13 }
+    ));
 }
 
 /// A follower below the oldest kept entry can only be caught up by a snapshot, even when the
@@ -1048,19 +1048,19 @@ fn test_plan_interval_purged_peer_needs_snapshot_regardless_of_cap() {
 /// Boundary: next index equal to the oldest kept entry is still servable from the log.
 #[test]
 fn test_plan_interval_peer_at_first_index_is_not_purged() {
-    assert!(matches!(plan(5, 5, 100), PeerInterval::Send {
-        start: 5,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(5, 5, 100),
+        PeerInterval::Send { start: 5, end: 13 }
+    ));
 }
 
 /// A huge cap must not overflow when added to the start index.
 #[test]
 fn test_plan_interval_max_cap_does_not_overflow() {
-    assert!(matches!(plan(1, 1, u64::MAX), PeerInterval::Send {
-        start: 1,
-        end: 13
-    }));
+    assert!(matches!(
+        plan(1, 1, u64::MAX),
+        PeerInterval::Send { start: 1, end: 13 }
+    ));
 }
 
 /// Over every small combination, the chosen interval keeps the properties replication relies on:

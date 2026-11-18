@@ -166,9 +166,8 @@ impl StateMachine for SledStateMachine {
         // the entries applied before it in this chunk. sled may run the closure more than once on
         // a conflict, so it builds its results from scratch every time.
         let data_tree = self.current_tree()?;
-        let meta_tree = db
-            .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(std::io::Error::other)?;
+        let meta_tree =
+            db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
 
         let results = (&data_tree, &meta_tree)
             .transaction(|(data, meta)| {
@@ -262,8 +261,8 @@ impl StateMachine for SledStateMachine {
         let position = self.last_applied();
 
         // 2. Create a new state machine database instance
-        let new_db = init_sled_state_machine_db(&new_snapshot_dir)
-            .map_err(std::io::Error::other)?;
+        let new_db =
+            init_sled_state_machine_db(&new_snapshot_dir).map_err(std::io::Error::other)?;
 
         let exist_db_tree = self.current_tree()?;
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -281,16 +280,12 @@ impl StateMachine for SledStateMachine {
             counter += 1;
 
             if counter % 100 == 0 {
-                new_state_machine_tree
-                    .apply_batch(batch)
-                    .map_err(std::io::Error::other)?;
+                new_state_machine_tree.apply_batch(batch).map_err(std::io::Error::other)?;
                 batch = sled::Batch::default();
             }
         }
 
-        new_state_machine_tree
-            .apply_batch(batch)
-            .map_err(std::io::Error::other)?;
+        new_state_machine_tree.apply_batch(batch).map_err(std::io::Error::other)?;
 
         // Make sure flush into disk
         new_db.flush().map_err(std::io::Error::other)?;
@@ -359,8 +354,7 @@ impl StateMachine for SledStateMachine {
         .map_err(|e| std::io::Error::other(format!("failed to move snapshot into place: {e}")))?;
 
         debug!("Reopening state machine database at its permanent path");
-        let db = init_sled_state_machine_db(&self.path)
-            .map_err(std::io::Error::other)?;
+        let db = init_sled_state_machine_db(&self.path).map_err(std::io::Error::other)?;
         self.db.store(Some(Arc::new(db)));
 
         // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
@@ -417,13 +411,10 @@ impl SledStateMachine {
             std::fs::rename(&backup_dir, &db_dir)?;
         }
 
-        let db = Arc::new(
-            init_sled_state_machine_db(&path).map_err(std::io::Error::other)?,
-        );
+        let db = Arc::new(init_sled_state_machine_db(&path).map_err(std::io::Error::other)?);
 
-        let state_machine_meta_tree = db
-            .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(std::io::Error::other)?;
+        let state_machine_meta_tree =
+            db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
         let (last_applied_index, last_applied_term) =
             Self::load_state_machine_metadata(&state_machine_meta_tree)?;
 
@@ -467,9 +458,7 @@ impl SledStateMachine {
     // Dynamically obtain the current Tree (lock-free cache optimization)
     #[inline]
     fn current_tree(&self) -> std::io::Result<sled::Tree> {
-        self.db()?
-            .open_tree(STATE_MACHINE_TREE)
-            .map_err(std::io::Error::other)
+        self.db()?.open_tree(STATE_MACHINE_TREE).map_err(std::io::Error::other)
     }
 
     /// The live db, or an error once `close()` has released it.
@@ -494,9 +483,7 @@ impl SledStateMachine {
     ) -> std::io::Result<()> {
         debug!(%self.node_id, ?last_applied, "persist_last_applied");
         let db = self.db()?;
-        let tree = db
-            .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(std::io::Error::other)?;
+        let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
         tree.insert(
             STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
             safe_kv(last_applied.index),
@@ -557,8 +544,7 @@ fn new_tree(
     db: &sled::Db,
     key: &str,
 ) -> std::io::Result<sled::Tree> {
-    db.open_tree(key)
-        .map_err(std::io::Error::other)
+    db.open_tree(key).map_err(std::io::Error::other)
 }
 
 pub fn init_sled_state_machine_db(

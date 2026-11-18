@@ -26,8 +26,7 @@
 
 # Cargo executable
 CARGO ?= cargo
-# rustfmt.toml uses nightly-only options (group_imports, imports_granularity, ...); stable rustfmt ignores them.
-CARGO_FMT ?= cargo +nightly fmt
+CARGO_FMT ?= cargo fmt
 
 # On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
 # compilation of RocksDB dependencies, which fails under macOS 26 + Xcode 26
@@ -129,7 +128,6 @@ check-env:
 install-tools: check-env
 	@echo "$(BLUE)Installing Rust development components...$(NC)"
 	@rustup component add rustfmt clippy rust-src rust-analyzer 2>/dev/null || true
-	@rustup toolchain install nightly --profile minimal --component rustfmt 2>/dev/null || true
 	@if ! command -v cargo-nextest >/dev/null 2>&1; then \
 		echo "$(YELLOW)Installing cargo-nextest for fast parallel testing...$(NC)"; \
 		cargo install cargo-nextest --locked; \

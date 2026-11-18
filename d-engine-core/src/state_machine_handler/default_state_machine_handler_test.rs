@@ -2189,10 +2189,13 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_insert_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::Insert {
-            key: Bytes::from_static(b"key1"),
-            value: Bytes::from_static(b"value1"),
-        });
+        let entry = apply_entry(
+            1,
+            Command::Insert {
+                key: Bytes::from_static(b"key1"),
+                value: Bytes::from_static(b"value1"),
+            },
+        );
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2206,9 +2209,12 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_delete_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::Delete {
-            key: Bytes::from_static(b"key1"),
-        });
+        let entry = apply_entry(
+            1,
+            Command::Delete {
+                key: Bytes::from_static(b"key1"),
+            },
+        );
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2223,11 +2229,14 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_cas_success() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::CompareAndSwap {
-            key: Bytes::from_static(b"lock"),
-            expected: Some(Bytes::from_static(b"owner1")),
-            value: Bytes::from_static(b"owner2"),
-        });
+        let entry = apply_entry(
+            1,
+            Command::CompareAndSwap {
+                key: Bytes::from_static(b"lock"),
+                expected: Some(Bytes::from_static(b"owner1")),
+                value: Bytes::from_static(b"owner2"),
+            },
+        );
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2242,11 +2251,14 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_cas_failure_no_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::CompareAndSwap {
-            key: Bytes::from_static(b"lock"),
-            expected: Some(Bytes::from_static(b"wrong_owner")),
-            value: Bytes::from_static(b"owner2"),
-        });
+        let entry = apply_entry(
+            1,
+            Command::CompareAndSwap {
+                key: Bytes::from_static(b"lock"),
+                expected: Some(Bytes::from_static(b"wrong_owner")),
+                value: Bytes::from_static(b"owner2"),
+            },
+        );
 
         broadcast_watch_events(&[entry], &[failed(1)], &tx, None);
 
@@ -2262,21 +2274,30 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
         let entries = vec![
-            apply_entry(1, Command::CompareAndSwap {
-                key: Bytes::from_static(b"k1"),
-                expected: Some(Bytes::from_static(b"v0")),
-                value: Bytes::from_static(b"v1"),
-            }),
-            apply_entry(2, Command::CompareAndSwap {
-                key: Bytes::from_static(b"k2"),
-                expected: Some(Bytes::from_static(b"wrong")),
-                value: Bytes::from_static(b"v2"),
-            }),
-            apply_entry(3, Command::CompareAndSwap {
-                key: Bytes::from_static(b"k3"),
-                expected: None,
-                value: Bytes::from_static(b"v3"),
-            }),
+            apply_entry(
+                1,
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k1"),
+                    expected: Some(Bytes::from_static(b"v0")),
+                    value: Bytes::from_static(b"v1"),
+                },
+            ),
+            apply_entry(
+                2,
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k2"),
+                    expected: Some(Bytes::from_static(b"wrong")),
+                    value: Bytes::from_static(b"v2"),
+                },
+            ),
+            apply_entry(
+                3,
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k3"),
+                    expected: None,
+                    value: Bytes::from_static(b"v3"),
+                },
+            ),
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
@@ -2303,18 +2324,27 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
         let entries = vec![
-            apply_entry(1, Command::Insert {
-                key: Bytes::from_static(b"k1"),
-                value: Bytes::from_static(b"v1"),
-            }),
-            apply_entry(2, Command::CompareAndSwap {
-                key: Bytes::from_static(b"k2"),
-                expected: Some(Bytes::from_static(b"wrong")),
-                value: Bytes::from_static(b"v2"),
-            }),
-            apply_entry(3, Command::Delete {
-                key: Bytes::from_static(b"k3"),
-            }),
+            apply_entry(
+                1,
+                Command::Insert {
+                    key: Bytes::from_static(b"k1"),
+                    value: Bytes::from_static(b"v1"),
+                },
+            ),
+            apply_entry(
+                2,
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k2"),
+                    expected: Some(Bytes::from_static(b"wrong")),
+                    value: Bytes::from_static(b"v2"),
+                },
+            ),
+            apply_entry(
+                3,
+                Command::Delete {
+                    key: Bytes::from_static(b"k3"),
+                },
+            ),
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
@@ -2337,16 +2367,22 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
         let entries = vec![
-            apply_entry(10, Command::CompareAndSwap {
-                key: Bytes::from_static(b"key-a"),
-                expected: Some(Bytes::from_static(b"old")),
-                value: Bytes::from_static(b"new-a"),
-            }),
-            apply_entry(11, Command::CompareAndSwap {
-                key: Bytes::from_static(b"key-b"),
-                expected: Some(Bytes::from_static(b"old")),
-                value: Bytes::from_static(b"new-b"),
-            }),
+            apply_entry(
+                10,
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"key-a"),
+                    expected: Some(Bytes::from_static(b"old")),
+                    value: Bytes::from_static(b"new-a"),
+                },
+            ),
+            apply_entry(
+                11,
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"key-b"),
+                    expected: Some(Bytes::from_static(b"old")),
+                    value: Bytes::from_static(b"new-b"),
+                },
+            ),
         ];
         let results = vec![failed(10), succeeded(11)];
 
@@ -2391,18 +2427,21 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_batch_insert_ops_each_produce_put_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::Batch {
-            ops: vec![
-                BatchOp::Insert {
-                    key: Bytes::from_static(b"k1"),
-                    value: Bytes::from_static(b"v1"),
-                },
-                BatchOp::Insert {
-                    key: Bytes::from_static(b"k2"),
-                    value: Bytes::from_static(b"v2"),
-                },
-            ],
-        });
+        let entry = apply_entry(
+            1,
+            Command::Batch {
+                ops: vec![
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k1"),
+                        value: Bytes::from_static(b"v1"),
+                    },
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k2"),
+                        value: Bytes::from_static(b"v2"),
+                    },
+                ],
+            },
+        );
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2438,16 +2477,19 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_batch_delete_ops_each_produce_delete_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::Batch {
-            ops: vec![
-                BatchOp::Delete {
-                    key: Bytes::from_static(b"k1"),
-                },
-                BatchOp::Delete {
-                    key: Bytes::from_static(b"k2"),
-                },
-            ],
-        });
+        let entry = apply_entry(
+            1,
+            Command::Batch {
+                ops: vec![
+                    BatchOp::Delete {
+                        key: Bytes::from_static(b"k1"),
+                    },
+                    BatchOp::Delete {
+                        key: Bytes::from_static(b"k2"),
+                    },
+                ],
+            },
+        );
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2482,21 +2524,24 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_batch_mixed_ops_events_preserve_order() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(1, Command::Batch {
-            ops: vec![
-                BatchOp::Insert {
-                    key: Bytes::from_static(b"k1"),
-                    value: Bytes::from_static(b"v1"),
-                },
-                BatchOp::Delete {
-                    key: Bytes::from_static(b"k2"),
-                },
-                BatchOp::Insert {
-                    key: Bytes::from_static(b"k3"),
-                    value: Bytes::from_static(b"v3"),
-                },
-            ],
-        });
+        let entry = apply_entry(
+            1,
+            Command::Batch {
+                ops: vec![
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k1"),
+                        value: Bytes::from_static(b"v1"),
+                    },
+                    BatchOp::Delete {
+                        key: Bytes::from_static(b"k2"),
+                    },
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k3"),
+                        value: Bytes::from_static(b"v3"),
+                    },
+                ],
+            },
+        );
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2979,14 +3024,20 @@ fn test_read_from_state_machine_skips_missing_keys_and_reads_one_view() {
 
     let keys: Vec<_> = entries.iter().map(|e| e.key.clone()).collect();
     let values: Vec<_> = entries.iter().map(|e| e.value.clone()).collect();
-    assert_eq!(keys, vec![
-        bytes::Bytes::from_static(b"k1"),
-        bytes::Bytes::from_static(b"k3")
-    ]);
-    assert_eq!(values, vec![
-        bytes::Bytes::from_static(b"a"),
-        bytes::Bytes::from_static(b"c")
-    ]);
+    assert_eq!(
+        keys,
+        vec![
+            bytes::Bytes::from_static(b"k1"),
+            bytes::Bytes::from_static(b"k3")
+        ]
+    );
+    assert_eq!(
+        values,
+        vec![
+            bytes::Bytes::from_static(b"a"),
+            bytes::Bytes::from_static(b"c")
+        ]
+    );
 }
 
 fn writer_with_mock_state_machine(
@@ -3265,10 +3316,13 @@ async fn received_snapshot(
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("data.bin"), b"content").unwrap();
     let checksum = crate::file_io::compute_checksum_from_folder_path(&dir).await.unwrap();
-    (dir, SnapshotMetadata {
-        last_included,
-        checksum: Bytes::copy_from_slice(&checksum),
-    })
+    (
+        dir,
+        SnapshotMetadata {
+            last_included,
+            checksum: Bytes::copy_from_slice(&checksum),
+        },
+    )
 }
 
 /// Node B has applied up to log 100 and receives a delayed snapshot that ends at log 50.
@@ -3292,12 +3346,15 @@ async fn test_install_prepared_snapshot_older_than_applied_is_ignored_without_ca
 
     let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
 
-    assert_eq!(result, crate::SnapshotApplyResult::IgnoredStale {
-        current: LogId {
-            index: 100,
-            term: 3
+    assert_eq!(
+        result,
+        crate::SnapshotApplyResult::IgnoredStale {
+            current: LogId {
+                index: 100,
+                term: 3
+            }
         }
-    });
+    );
 }
 
 /// B receives the snapshot it already has (same index, same term).
@@ -3325,12 +3382,15 @@ async fn test_install_prepared_snapshot_same_boundary_is_ignored_without_calling
 
     let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
 
-    assert_eq!(result, crate::SnapshotApplyResult::IgnoredDuplicate {
-        current: LogId {
-            index: 100,
-            term: 3
+    assert_eq!(
+        result,
+        crate::SnapshotApplyResult::IgnoredDuplicate {
+            current: LogId {
+                index: 100,
+                term: 3
+            }
         }
-    });
+    );
 }
 
 /// B is at log 100 of term 3; the snapshot says log 100 belongs to term 4.
@@ -3451,12 +3511,15 @@ async fn test_install_prepared_snapshot_newer_is_installed_once() {
 
     let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
 
-    assert_eq!(result, crate::SnapshotApplyResult::Applied {
-        last_included: LogId {
-            index: 500,
-            term: 3
+    assert_eq!(
+        result,
+        crate::SnapshotApplyResult::Applied {
+            last_included: LogId {
+                index: 500,
+                term: 3
+            }
         }
-    });
+    );
 }
 
 /// The state machine installs the data but forgets to move its position: it still reports log 100
@@ -3582,9 +3645,10 @@ mod snapshot_catalog_behavior_tests {
 
         assert_eq!(handler.get_latest_snapshot_metadata(), Some(metadata));
         assert!(archive.exists());
-        assert_eq!(files_with_extension(temp_dir.path(), "meta"), vec![
-            "snapshot-10-2.meta"
-        ]);
+        assert_eq!(
+            files_with_extension(temp_dir.path(), "meta"),
+            vec!["snapshot-10-2.meta"]
+        );
     }
 
     /// Leader A restarts. Its state machine still reports no snapshot.
@@ -3635,9 +3699,10 @@ mod snapshot_catalog_behavior_tests {
         writer.install_prepared_snapshot(metadata.clone(), dir).await.unwrap();
 
         assert_eq!(handler.get_latest_snapshot_metadata(), Some(metadata));
-        assert_eq!(files_with_extension(temp_dir.path(), "meta"), vec![
-            "snapshot-5-2.meta"
-        ]);
+        assert_eq!(
+            files_with_extension(temp_dir.path(), "meta"),
+            vec!["snapshot-5-2.meta"]
+        );
     }
 
     /// A snapshot that is rejected (here: corrupted in transit) is never reported as the latest.
@@ -3892,12 +3957,14 @@ mod snapshot_catalog_behavior_tests {
             take_snapshot(&handler, &writer).await;
         }
 
-        assert_eq!(files_with_extension(temp_dir.path(), "gz"), vec![
-            "snapshot-30-2.tar.gz"
-        ]);
-        assert_eq!(files_with_extension(temp_dir.path(), "meta"), vec![
-            "snapshot-30-2.meta"
-        ]);
+        assert_eq!(
+            files_with_extension(temp_dir.path(), "gz"),
+            vec!["snapshot-30-2.tar.gz"]
+        );
+        assert_eq!(
+            files_with_extension(temp_dir.path(), "meta"),
+            vec!["snapshot-30-2.meta"]
+        );
         assert_eq!(
             handler.get_latest_snapshot_metadata().and_then(|m| m.last_included),
             Some(LogId { index: 30, term: 2 })

@@ -345,13 +345,16 @@ where
                 };
 
                 if !entries_are_contiguous_in_range(&head, start, head_end) {
-                    peer_entries.insert(id, PeerEntriesResult::CorruptGap {
-                        start,
-                        end: head_end,
-                        first_seen: head.first().map(|e| e.index),
-                        last_seen: head.last().map(|e| e.index),
-                        count: head.len(),
-                    });
+                    peer_entries.insert(
+                        id,
+                        PeerEntriesResult::CorruptGap {
+                            start,
+                            end: head_end,
+                            first_seen: head.first().map(|e| e.index),
+                            last_seen: head.last().map(|e| e.index),
+                            count: head.len(),
+                        },
+                    );
                     continue;
                 }
 
@@ -663,17 +666,20 @@ where
             entries.len()
         );
 
-        Ok((peer_id, BuildAppendOutcome::Append {
-            request: AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index: prev_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
+        Ok((
+            peer_id,
+            BuildAppendOutcome::Append {
+                request: AppendEntriesRequest {
+                    term: data.current_term,
+                    leader_id: self.my_id,
+                    prev_log_index: prev_index,
+                    prev_log_term,
+                    entries,
+                    leader_commit_index: data.commit_index,
+                },
+                effective_next_index: next_index,
             },
-            effective_next_index: next_index,
-        }))
+        ))
     }
 }
 

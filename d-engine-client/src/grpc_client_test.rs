@@ -1811,19 +1811,22 @@ mod batch_tests {
         };
         let ops: Vec<batch_op::Op> =
             batch.ops.into_iter().map(|o| o.op.expect("op must be set")).collect();
-        assert_eq!(ops, vec![
-            batch_op::Op::Insert(Insert {
-                key: Bytes::from("a"),
-                value: Bytes::from("1"),
-            }),
-            batch_op::Op::Delete(Delete {
-                key: Bytes::from("b"),
-            }),
-            batch_op::Op::Insert(Insert {
-                key: Bytes::from("c"),
-                value: Bytes::new(),
-            }),
-        ]);
+        assert_eq!(
+            ops,
+            vec![
+                batch_op::Op::Insert(Insert {
+                    key: Bytes::from("a"),
+                    value: Bytes::from("1"),
+                }),
+                batch_op::Op::Delete(Delete {
+                    key: Bytes::from("b"),
+                }),
+                batch_op::Op::Insert(Insert {
+                    key: Bytes::from("c"),
+                    value: Bytes::new(),
+                }),
+            ]
+        );
     }
 
     /// An empty batch is rejected by the client itself: the caller gets
