@@ -1329,17 +1329,19 @@ fn test_send_become_follower_and_replay_events() {
 #[tokio::test]
 async fn test_candidate_steps_down_for_install_snapshot_from_legitimate_leader() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_candidate_snapshot_step_down", graceful_rx, None);
+    let mut context =
+        mock_raft_context("/tmp/test_candidate_snapshot_step_down", graceful_rx, None);
 
     // Whether the snapshot is applied here or by the Follower after the step-down is not the
     // point of this test, so a call to the state machine handler is tolerated, not required.
     let mut sm_handler = MockStateMachineHandler::new();
-    sm_handler
-        .expect_prepare_snapshot_stream()
-        .times(0..=1)
-        .returning(|_first_chunk, _remaining, _ack_tx, _config| {
-            Err(Error::Fatal("snapshot content is not the subject of this test".into()))
-        });
+    sm_handler.expect_prepare_snapshot_stream().times(0..=1).returning(
+        |_first_chunk, _remaining, _ack_tx, _config| {
+            Err(Error::Fatal(
+                "snapshot content is not the subject of this test".into(),
+            ))
+        },
+    );
     context.handlers.state_machine_handler = Arc::new(sm_handler);
 
     let term = 2;

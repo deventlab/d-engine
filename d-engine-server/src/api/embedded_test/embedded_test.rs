@@ -8,8 +8,8 @@ mod embedded_engine_tests {
     use crate::api::EmbeddedEngine;
     use crate::storage::FileStateMachine;
     use crate::storage::FileStorageEngine;
-    use crate::test_utils::SharedStateMachine;
     use crate::test_utils::ListenAddressEnv;
+    use crate::test_utils::SharedStateMachine;
     use crate::test_utils::free_listen_address;
     use crate::test_utils::test_node_config;
 
