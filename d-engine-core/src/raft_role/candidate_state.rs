@@ -445,23 +445,17 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
             }
 
-            InboundEvent::InstallSnapshotChunk(_streaming, sender) => {
-                sender
-                    .send(Err(Status::permission_denied("Not Follower or Learner.")))
-                    .map_err(|e| {
-                        error!("Failed to send: {:?}", e);
-                        NetworkError::SingalSendFailed(format!("{:?}", e))
-                    })?;
+            InboundEvent::InstallSnapshotChunk(streaming, sender) => {
+                // The leader's term is in the first chunk, and the stream must reach the
+                // Follower untouched. Step down and let the Follower check the term: it rejects
+                // a stale leader's snapshot without installing it or changing the term.
+                self.send_become_follower_event(&internal_event_tx)?;
 
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Follower or Learner",
-                    context: format!(
-                        "Candidate node {} receives InboundEvent::InstallSnapshotChunk",
-                        ctx.node_id
-                    ),
-                }
-                .into());
+                info!("Candidate will not process a snapshot push, it should let Follower do it.");
+                self.send_replay_inbound_event(
+                    &internal_event_tx,
+                    InboundEvent::InstallSnapshotChunk(streaming, sender),
+                )?;
             }
 
             InboundEvent::JoinCluster(_join_request, sender) => {
