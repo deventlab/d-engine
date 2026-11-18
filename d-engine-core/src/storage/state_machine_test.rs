@@ -380,6 +380,203 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
+    /// Opt-in (not part of `run_all_tests`): only for state machines that implement `scan_prefix`.
+    ///
+    /// A prefix scan that overlaps a snapshot install must return entries of one state and a
+    /// `revision` that is not newer than that state.
+    ///
+    /// Scenario: a service registry client re-syncs its watch with a prefix scan. The node holds
+    /// `"old"` values applied up to index 50 and receives a snapshot holding `"new"` values
+    /// applied up to index 150. The client drops every watch event whose revision is
+    /// `<= revision`. `"old"` data with revision 150 makes it drop changes it never saw: they are
+    /// lost for good. `"new"` data with revision 50 is harmless: events above 50 only overwrite
+    /// values with newer ones. Entries that mix `"old"` and `"new"` show a state that never
+    /// existed.
+    ///
+    /// Expected: each scan is all `"old"` with revision <= 50, all `"new"` with revision <= 150,
+    /// or an error.
+    pub async fn test_scan_prefix_revision_not_newer_than_data_during_snapshot_install<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        const KEYS: u64 = 50;
+        const OLD_REVISION: u64 = 50;
+        const NEW_REVISION: u64 = 150;
+        let key = |i: u64| Bytes::from(format!("/services/{i}"));
+        let entries = |first_index: u64, value: &'static [u8]| {
+            (1..=KEYS)
+                .map(|i| {
+                    create_insert_entry(first_index + i - 1, key(i), Bytes::from_static(value))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // 1. A snapshot of the state applied up to index 150, every key holding "new".
+        let source = builder.build().await?;
+        source.apply_chunk(&entries(NEW_REVISION - KEYS + 1, b"new")).await?;
+        let temp_dir = TempDir::new()?;
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        let last_included = source.generate_snapshot_data(snapshot_dir.clone()).await?;
+        drop(source);
+        assert_eq!(
+            last_included.index, NEW_REVISION,
+            "the exported position must be index 150"
+        );
+        let metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: Bytes::from(vec![0; 32]),
+        };
+
+        // 2. The node is behind: every key holds "old", applied up to index 50.
+        let sm = builder.build().await?;
+        sm.apply_chunk(&entries(OLD_REVISION - KEYS + 1, b"old")).await?;
+
+        // 3. Readers scan the prefix over and over during the install.
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let violations = Arc::new(Mutex::new(Vec::<String>::new()));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (sm, stop, reads, violations) =
+                    (sm.clone(), stop.clone(), reads.clone(), violations.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        // A failed scan is allowed; it shows nothing wrong.
+                        if let Ok(scan) = sm.scan_prefix(b"/services/") {
+                            let old = scan.entries.iter().filter(|(_, v)| v == "old").count();
+                            let new = scan.entries.iter().filter(|(_, v)| v == "new").count();
+                            let all_old =
+                                old == scan.entries.len() && scan.revision <= OLD_REVISION;
+                            let all_new =
+                                new == scan.entries.len() && scan.revision <= NEW_REVISION;
+                            if !all_old && !all_new {
+                                violations.lock().unwrap().push(format!(
+                                    "{old} old, {new} new out of {}, revision {}",
+                                    scan.entries.len(),
+                                    scan.revision
+                                ));
+                            }
+                        }
+                        reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        while reads.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let installed = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await;
+
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("a reader thread panicked");
+        }
+        installed?;
+
+        let violations = violations.lock().unwrap();
+        assert!(
+            violations.is_empty(),
+            "a scan_prefix during the snapshot install mixed old and new entries or returned a \
+             revision newer than its entries, for example: {:?} ({} reads, {} violations)",
+            &violations[..violations.len().min(3)],
+            reads.load(Ordering::Relaxed),
+            violations.len()
+        );
+        Ok(())
+    }
+
+    /// Opt-in (not part of `run_all_tests`): only for state machines that implement `scan_prefix`.
+    ///
+    /// A prefix scan that overlaps `apply_chunk` must never return a `revision` newer than the
+    /// entries it returns.
+    ///
+    /// Scenario: a service registry client re-syncs its watch with a prefix scan while the node
+    /// keeps applying registrations. Entry `i` registers `/services/{i}`, so a scan that contains
+    /// `n` services shows the state after entry `n`. The client drops every buffered watch event
+    /// whose revision is `<= revision`. A scan that returns `n` services with a revision above `n`
+    /// makes the client drop the events for the services it did not get: they are lost for good.
+    /// A revision below `n` only replays events the client already has, which is harmless.
+    ///
+    /// Expected: every successful scan has `revision <= number of services returned`.
+    pub async fn test_scan_prefix_revision_not_newer_than_data_during_apply<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        const ENTRIES: u64 = 1000;
+
+        let sm = builder.build().await?;
+
+        // Readers scan the prefix over and over while entries are applied one at a time.
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let violations = Arc::new(Mutex::new(Vec::<String>::new()));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (sm, stop, reads, violations) =
+                    (sm.clone(), stop.clone(), reads.clone(), violations.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        // A failed scan is allowed; it shows nothing wrong.
+                        if let Ok(scan) = sm.scan_prefix(b"/services/") {
+                            let services = scan.entries.len() as u64;
+                            if scan.revision > services {
+                                violations.lock().unwrap().push(format!(
+                                    "{services} services with revision {}",
+                                    scan.revision
+                                ));
+                            }
+                        }
+                        reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        while reads.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let mut applied = Ok(());
+        for i in 1..=ENTRIES {
+            let entry = create_insert_entry(
+                i,
+                Bytes::from(format!("/services/{i:06}")),
+                Bytes::from_static(b"up"),
+            );
+            if let Err(e) = sm.apply_chunk(&[entry]).await {
+                applied = Err(e);
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("a reader thread panicked");
+        }
+        applied?;
+
+        let violations = violations.lock().unwrap();
+        assert!(
+            violations.is_empty(),
+            "a scan_prefix during apply_chunk returned a revision newer than its entries, for \
+             example: {:?} ({} reads, {} violations)",
+            &violations[..violations.len().min(3)],
+            reads.load(Ordering::Relaxed),
+            violations.len()
+        );
+        Ok(())
+    }
+
     /// A multi-key read that overlaps a snapshot install must come from one state.
     ///
     /// Scenario: the node holds `"old"` for every key and receives a snapshot in which every key

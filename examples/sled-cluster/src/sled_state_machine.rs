@@ -378,13 +378,15 @@ impl StateMachine for SledStateMachine {
         &self,
         prefix: &[u8],
     ) -> std::io::Result<ScanResult> {
+        // Read the position before the data: `apply_chunk` commits data before it advances the
+        // position, so `revision` never names a state newer than the entries returned.
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
         let tree = self.current_tree()?;
         let mut entries = Vec::new();
         for result in tree.scan_prefix(prefix) {
             let (k, v) = result.map_err(std::io::Error::other)?;
             entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
         }
-        let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
     }
 }

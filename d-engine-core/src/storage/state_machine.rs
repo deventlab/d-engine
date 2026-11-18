@@ -77,7 +77,8 @@ impl ApplyResult {
 ///
 /// **CRITICAL**: Implementations MUST be thread-safe.
 ///
-/// - Read methods (`get()`) may be called concurrently
+/// - Read methods (`get()`, `get_multi()`, `scan_prefix()`) may be called concurrently, including
+///   while `apply_snapshot_from_file` runs (see "Reads while a snapshot is installed")
 /// - Write methods should use internal synchronization
 /// - No assumptions about caller's threading model
 ///
@@ -112,6 +113,16 @@ impl ApplyResult {
 /// A read can run while `apply_snapshot_from_file` replaces the state. It must return the old
 /// state, the new state, or fail with an error; it must never return a mix of the two, because
 /// that is a state that never existed.
+///
+/// This applies to everything one read returns, not only to its values:
+///
+/// - `get_multi`: all values come from the same state.
+/// - `scan_prefix`: the entries come from one state, and `revision` is never newer than that
+///   state. A reconnecting watch client drops events `<= revision`, so a `revision` newer than the
+///   entries makes it skip changes it never saw. An older `revision` is harmless: the events above
+///   it only overwrite values with newer ones.
+///
+/// Update the data before `last_applied`, and in `scan_prefix` read `last_applied` before the data.
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
@@ -166,10 +177,11 @@ pub trait StateMachine: Send + Sync + 'static {
     ///
     /// # Default implementation
     ///
-    /// Calls `get()` sequentially. Correct when the caller holds no write locks, but
-    /// does not guarantee snapshot isolation under concurrent writes. Override in
-    /// implementations that support it (RocksDB `db.snapshot()`, FileStateMachine
-    /// read-lock held for the full batch).
+    /// Calls `get()` sequentially. It guarantees neither snapshot isolation under concurrent
+    /// writes nor a single state while `apply_snapshot_from_file` replaces the state: a `get()`
+    /// that reloads the database handle on each call can read some keys from the old database and
+    /// some from the new one. Override it unless your `get()` reads from one fixed view (RocksDB
+    /// `db.snapshot()`, FileStateMachine read-lock held for the full batch).
     ///
     /// # Position contract
     ///
@@ -264,6 +276,9 @@ pub trait StateMachine: Send + Sync + 'static {
 
     /// Returns all `(key, value)` pairs whose key starts with `prefix`, plus
     /// the `last_applied_index` at the time of the scan.
+    ///
+    /// `revision` must never be newer than `entries`, also while a snapshot is installed (see
+    /// "Reads while a snapshot is installed"): read `last_applied` before you read the data.
     ///
     /// Clients use `revision` as the filter anchor when draining watch events
     /// after reconnection: skip events where `event.revision <= revision`.

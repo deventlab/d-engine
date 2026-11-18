@@ -138,6 +138,25 @@ async fn test_file_state_machine_suite() {
         .expect("FileStateMachine should pass all tests");
 }
 
+#[tokio::test]
+async fn test_file_state_machine_scan_prefix_revision_not_newer_than_data_during_snapshot_install()
+{
+    StateMachineTestSuite::test_scan_prefix_revision_not_newer_than_data_during_snapshot_install(
+        &FileStateMachineBuilder::new(),
+    )
+    .await
+    .expect("scan_prefix must not mix states or return a revision newer than its entries");
+}
+
+#[tokio::test]
+async fn test_file_state_machine_scan_prefix_revision_not_newer_than_data_during_apply() {
+    StateMachineTestSuite::test_scan_prefix_revision_not_newer_than_data_during_apply(
+        &FileStateMachineBuilder::new(),
+    )
+    .await
+    .expect("scan_prefix must not return a revision newer than its entries");
+}
+
 // TODO: test_apply_chunk_scalability uses wall-clock I/O time ratio to detect O(N²) complexity,
 // which is unreliable in CI due to disk I/O spikes. Needs redesign (e.g., measure pure in-memory
 // ops separately from WAL writes) before re-enabling.

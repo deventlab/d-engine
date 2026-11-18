@@ -1226,13 +1226,13 @@ impl StateMachine for FileStateMachine {
         prefix: &[u8],
     ) -> io::Result<ScanResult> {
         self.ensure_serving()?;
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
         let data = self.data.read();
         let entries: Vec<(Bytes, Bytes)> = data
             .iter()
             .filter(|(k, _)| k.starts_with(prefix))
             .map(|(k, (v, _))| (k.clone(), v.clone()))
             .collect();
-        let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
     }
 

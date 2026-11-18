@@ -448,13 +448,16 @@ impl RocksDBStateMachine {
     ///
     /// Uses `set_iterate_upper_bound(prefix_successor)` so RocksDB stops at the
     /// block level — O(results), not O(total keys). No `prefix_extractor` needed.
-    /// `revision` in the result equals `last_applied_index` — the watch-filter anchor.
+    ///
+    /// `revision` is the watch-filter anchor and must never be newer than the entries returned.
+    /// Writers commit data before they advance `last_applied_index`, so it is read *before* the
+    /// iterator is created: the iterator then sees at least the state `revision` names.
     pub fn scan_prefix(
         &self,
         prefix: &[u8],
     ) -> io::Result<ScanResult> {
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
         if prefix.is_empty() {
-            let revision = self.last_applied_index.load(Ordering::SeqCst);
             return Ok(ScanResult {
                 entries: vec![],
                 revision,
@@ -486,7 +489,6 @@ impl RocksDBStateMachine {
             entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
         }
 
-        let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
     }
 

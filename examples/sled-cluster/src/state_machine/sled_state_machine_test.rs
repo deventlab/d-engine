@@ -81,6 +81,26 @@ async fn test_standard_suite() {
     StateMachineTestSuite::run_all_tests(SledBuilder::new()).await.unwrap();
 }
 
+/// `scan_prefix` is optional in the trait, so the suite runs this check separately.
+#[tokio::test]
+async fn test_scan_prefix_revision_not_newer_than_data_during_snapshot_install() {
+    StateMachineTestSuite::test_scan_prefix_revision_not_newer_than_data_during_snapshot_install(
+        &SledBuilder::new(),
+    )
+    .await
+    .unwrap();
+}
+
+/// `scan_prefix` is optional in the trait, so the suite runs this check separately.
+#[tokio::test]
+async fn test_scan_prefix_revision_not_newer_than_data_during_apply() {
+    StateMachineTestSuite::test_scan_prefix_revision_not_newer_than_data_during_apply(
+        &SledBuilder::new(),
+    )
+    .await
+    .unwrap();
+}
+
 /// Optional performance regression check (excluded from normal CI).
 #[tokio::test]
 #[ignore]
