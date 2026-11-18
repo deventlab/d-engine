@@ -131,6 +131,37 @@ async fn test_start_fails_without_components() {
     assert!(result.is_err());
 }
 
+/// A node whose RPC port is already taken must fail to start, not start without its RPC server.
+///
+/// Scenario: a node restarts while another process holds its listen port. If `start()` still
+/// returned `Ok`, the node would run without an RPC server: the leader could never reach it, so it
+/// would never catch up, while its owner believes it is a healthy cluster member.
+#[tokio::test]
+async fn test_start_fails_when_listen_address_is_taken() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let temp_dir = tempdir().unwrap();
+
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    config.cluster.listen_address = taken.local_addr().unwrap();
+
+    let file_sm = FileStateMachine::new(temp_dir.path().join("sm")).await.expect("create file sm");
+    let result = NodeBuilder::<MockStorageEngine, FileStateMachine>::from_node_config(
+        temp_dir.path().to_str().unwrap(),
+        config,
+        shutdown_rx,
+    )
+    .state_machine(file_sm)
+    .storage_engine(Arc::new(MockStorageEngine::new()))
+    .start()
+    .await;
+
+    assert!(
+        result.is_err(),
+        "start() must fail when the RPC listen address is already in use"
+    );
+}
+
 // Test helper function: create a temporary configuration file
 fn create_temp_config(content: &str) -> (PathBuf, String) {
     let dir = tempdir().unwrap();

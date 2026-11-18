@@ -8,6 +8,8 @@ mod standalone_server_tests {
     use tokio::sync::watch;
 
     use crate::api::StandaloneEngine;
+    use crate::test_utils::ListenAddressEnv;
+    use crate::test_utils::free_listen_address;
 
     // ── run(data_dir, shutdown_rx) tests ─────────────────────────────────────
 
@@ -15,6 +17,7 @@ mod standalone_server_tests {
     #[tokio::test]
     #[serial]
     async fn test_run_creates_missing_directory() {
+        let _port = ListenAddressEnv::set();
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().join("auto-created");
         assert!(!data_dir.exists());
@@ -39,6 +42,7 @@ mod standalone_server_tests {
     #[tokio::test]
     #[serial(tmp_db)]
     async fn test_run_tmp_path_accepted() {
+        let _port = ListenAddressEnv::set();
         let tmp_path = std::path::PathBuf::from("/tmp/d-engine-standalone-test");
         let _ = std::fs::remove_dir_all(&tmp_path);
 
@@ -75,8 +79,9 @@ mod standalone_server_tests {
         std::fs::write(
             &config_path,
             format!(
-                "[cluster]\ndata_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
-                config_data_dir.display()
+                "[cluster]\ndata_dir = \"{}\"\nlisten_address = \"{}\"\n",
+                config_data_dir.display(),
+                free_listen_address()
             ),
         )
         .expect("write config");
@@ -130,12 +135,12 @@ mod standalone_server_tests {
             &config_path,
             format!(
                 concat!(
-                    "[cluster]\nnode_id = 1\ndata_dir = \"{}\"\n\n",
-                    "[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n\n",
+                    "[cluster]\nnode_id = 1\ndata_dir = \"{}\"\nlisten_address = \"{}\"\n\n",
                     "[raft]\nheartbeat_idle_flush_interval_ms = 500\n",
                     "election_timeout_min_ms = 1500\nelection_timeout_max_ms = 3000\n"
                 ),
-                data_dir.display()
+                data_dir.display(),
+                free_listen_address()
             ),
         )
         .expect("write config");
@@ -183,7 +188,10 @@ mod standalone_server_tests {
 
         std::fs::write(
             &config_path,
-            "[cluster]\nnode_id = 1\n\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
+            format!(
+                "[cluster]\nnode_id = 1\nlisten_address = \"{}\"\n",
+                free_listen_address()
+            ),
         )
         .expect("write config");
 
@@ -218,7 +226,10 @@ mod standalone_server_tests {
 
         std::fs::write(
             &config_path,
-            "[cluster]\nnode_id = 1\n\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
+            format!(
+                "[cluster]\nnode_id = 1\nlisten_address = \"{}\"\n",
+                free_listen_address()
+            ),
         )
         .expect("write config");
 
@@ -257,10 +268,11 @@ mod start_node_tests {
     use crate::RocksDBStateMachine;
     use crate::RocksDBStorageEngine;
     use crate::api::StandaloneEngine;
+    use crate::test_utils::free_listen_address;
 
     /// Build a minimal valid `RaftNodeConfig`.
     fn make_config(node_id: u32) -> d_engine_core::RaftNodeConfig {
-        let listen_addr: SocketAddr = "127.0.0.1:19732".parse().unwrap();
+        let listen_addr: SocketAddr = free_listen_address();
         d_engine_core::RaftNodeConfig {
             cluster: ClusterConfig {
                 node_id,
@@ -417,6 +429,8 @@ mod run_custom_tests {
     use crate::RocksDBStateMachine;
     use crate::RocksDBStorageEngine;
     use crate::api::StandaloneEngine;
+    use crate::test_utils::ListenAddressEnv;
+    use crate::test_utils::free_listen_address;
 
     /// Create a RocksDB storage engine and state machine.
     fn create_rocksdb_se_and_sm(
@@ -446,13 +460,14 @@ mod run_custom_tests {
             &config_path,
             format!(
                 concat!(
-                    "[cluster]\nnode_id = {node_id}\ndata_dir = \"{data_dir}\"\n\n",
-                    "[cluster.rpc]\nlisten_addr = \"127.0.0.1:19733\"\n\n",
+                    "[cluster]\nnode_id = {node_id}\ndata_dir = \"{data_dir}\"\n",
+                    "listen_address = \"{listen_address}\"\n\n",
                     "[raft]\nheartbeat_idle_flush_interval_ms = 500\n",
                     "election_timeout_min_ms = 1500\nelection_timeout_max_ms = 3000\n"
                 ),
                 node_id = node_id,
                 data_dir = data_dir.display(),
+                listen_address = free_listen_address(),
             ),
         )
         .expect("write config");
@@ -506,6 +521,7 @@ mod run_custom_tests {
     #[tokio::test]
     #[serial]
     async fn test_run_custom_without_config_path_uses_defaults() {
+        let _port = ListenAddressEnv::set();
         // CONFIG_PATH must be cleared so RaftNodeConfig::new() doesn't pick up
         // an env-configured file and fail.
         unsafe { std::env::remove_var("CONFIG_PATH") };
@@ -587,15 +603,14 @@ mod unified_db_tests {
     use tokio::sync::watch;
 
     use crate::api::StandaloneEngine;
+    use crate::test_utils::free_listen_address;
 
     fn make_config(unified: bool) -> String {
         format!(
             r#"
 [cluster]
 node_id = 1
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
+listen_address = "{}"
 
 [raft]
 heartbeat_idle_flush_interval_ms = 500
@@ -604,7 +619,8 @@ election_timeout_max_ms = 3000
 
 [storage]
 unified_db = {unified}
-"#
+"#,
+            free_listen_address()
         )
     }
 

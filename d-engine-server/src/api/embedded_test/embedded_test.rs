@@ -9,6 +9,9 @@ mod embedded_engine_tests {
     use crate::storage::FileStateMachine;
     use crate::storage::FileStorageEngine;
     use crate::test_utils::SharedStateMachine;
+    use crate::test_utils::ListenAddressEnv;
+    use crate::test_utils::free_listen_address;
+    use crate::test_utils::test_node_config;
 
     type TestEngine = EmbeddedEngine;
 
@@ -38,7 +41,7 @@ mod embedded_engine_tests {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -64,7 +67,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_timeout() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -84,7 +87,7 @@ mod embedded_engine_tests {
     async fn test_leader_change_notifier_basic() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -118,7 +121,7 @@ mod embedded_engine_tests {
     async fn test_ready_and_wait_ready_sequence() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -147,7 +150,7 @@ mod embedded_engine_tests {
     async fn test_client_available_after_wait_ready() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -173,7 +176,7 @@ mod embedded_engine_tests {
     async fn test_multiple_leader_change_notifier_subscribers() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -210,7 +213,7 @@ mod embedded_engine_tests {
     async fn test_engine_stop_cleans_up() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -223,7 +226,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_race_condition_already_elected() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -258,7 +261,7 @@ mod embedded_engine_tests {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+            TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
                 .await
                 .expect("Failed to start engine"),
         );
@@ -304,7 +307,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_check_current_value_first() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -347,6 +350,7 @@ mod embedded_engine_tests {
         #[tokio::test]
         #[serial(tmp_db)]
         async fn test_start_with_tmp_path_accepted() {
+            let _port = ListenAddressEnv::set();
             let tmp_dir = tempfile::Builder::new()
                 .tempdir_in("/tmp")
                 .expect("Failed to create temp dir in /tmp");
@@ -367,6 +371,7 @@ mod embedded_engine_tests {
         #[tokio::test]
         #[serial]
         async fn test_start_creates_directory_if_not_exists() {
+            let _port = ListenAddressEnv::set();
             let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
             let data_dir = temp_dir.path().join("new-subdir").join("db");
 
@@ -403,16 +408,15 @@ mod embedded_engine_tests {
 [cluster]
 node_id = 1
 data_dir = "{}"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
+listen_address = "{}"
 
 [raft]
 heartbeat_idle_flush_interval_ms = 500
 election_timeout_min_ms = 1500
 election_timeout_max_ms = 3000
 "#,
-                data_dir.display()
+                data_dir.display(),
+                free_listen_address()
             );
             std::fs::write(&config_path, config_content).expect("Failed to write config");
 
@@ -451,13 +455,10 @@ election_timeout_max_ms = 3000
                 .tempdir_in("/tmp")
                 .expect("Failed to create temp dir in /tmp");
 
-            let config_content = r#"
-[cluster]
-node_id = 1
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#;
+            let config_content = format!(
+                "[cluster]\nnode_id = 1\nlisten_address = \"{}\"\n",
+                free_listen_address()
+            );
             std::fs::write(&config_path, config_content).expect("Failed to write config");
 
             let result =
@@ -477,7 +478,7 @@ listen_addr = "127.0.0.1:0"
         async fn test_drop_without_stop_warning() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+            let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
                 .await
                 .expect("Failed to start engine");
 
@@ -494,6 +495,7 @@ listen_addr = "127.0.0.1:0"
         #[tokio::test]
         #[serial(tmp_db)]
         async fn test_stop_releases_sm_lock_immediately() {
+            let _port = ListenAddressEnv::set();
             let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
             let data_dir = temp_dir.path().join("d-engine-lock-release-test");
 
@@ -528,9 +530,9 @@ listen_addr = "127.0.0.1:0"
         use super::*;
 
         /// Build a minimal valid `RaftNodeConfig` backed by a temp directory.
-        /// Uses a fixed high port; tests are serialized to avoid conflicts.
+        /// Listens on a free port, so tests running in parallel processes do not collide.
         fn make_config(node_id: u32) -> d_engine_core::RaftNodeConfig {
-            let listen_addr: SocketAddr = "127.0.0.1:19731".parse().unwrap();
+            let listen_addr: SocketAddr = free_listen_address();
             d_engine_core::RaftNodeConfig {
                 cluster: ClusterConfig {
                     node_id,
@@ -662,7 +664,7 @@ listen_addr = "127.0.0.1:0"
         async fn test_watch_registers_successfully() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+            let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
                 .await
                 .expect("Failed to start engine");
 
@@ -742,7 +744,7 @@ listen_addr = "127.0.0.1:0"
                 // temp_dir dropped here — underlying paths are now invalid
             };
 
-            let engine = TestEngine::start_custom(data_dir.path(), storage, sm, None)
+            let engine = TestEngine::start_node(data_dir.path(), storage, sm, test_node_config())
                 .await
                 .expect("Failed to start engine");
 
@@ -801,7 +803,10 @@ listen_addr = "127.0.0.1:0"
             let config_path = temp_dir.path().join("test.toml");
             std::fs::write(
                 &config_path,
-                "[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n",
+                format!(
+                    "[cluster]\nlisten_address = \"{}\"\n\n[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n",
+                    free_listen_address()
+                ),
             )
             .unwrap();
 
@@ -883,7 +888,7 @@ listen_addr = "127.0.0.1:0"
     async fn test_is_leader_single_node() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -923,7 +928,7 @@ listen_addr = "127.0.0.1:0"
     async fn test_leader_info_before_election() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -974,7 +979,7 @@ listen_addr = "127.0.0.1:0"
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+            TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
                 .await
                 .expect("Failed to start engine"),
         );
@@ -1057,7 +1062,7 @@ listen_addr = "127.0.0.1:0"
     async fn test_leader_info_consistency() {
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -1099,7 +1104,7 @@ listen_addr = "127.0.0.1:0"
         let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
+        let engine = TestEngine::start_node(temp_dir.path(), storage, sm, test_node_config())
             .await
             .expect("Failed to start engine");
 
@@ -1132,6 +1137,7 @@ mod unified_db_tests {
     use d_engine_core::ClientApi;
 
     use crate::api::EmbeddedEngine;
+    use crate::test_utils::free_listen_address;
 
     fn make_config(
         data_dir: &std::path::Path,
@@ -1142,9 +1148,7 @@ mod unified_db_tests {
 [cluster]
 node_id = 1
 data_dir = "{}"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
+listen_address = "{}"
 
 [raft]
 heartbeat_idle_flush_interval_ms = 500
@@ -1154,7 +1158,8 @@ election_timeout_max_ms = 3000
 [storage]
 unified_db = {unified}
 "#,
-            data_dir.display()
+            data_dir.display(),
+            free_listen_address()
         )
     }
 

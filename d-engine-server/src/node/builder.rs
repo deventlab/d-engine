@@ -642,18 +642,24 @@ where
 
     /// Starts the gRPC server for cluster communication.
     ///
+    /// `incoming` is the already-bound listener: the caller binds it first so that a taken port
+    /// fails `start()` instead of leaving a node without its RPC server.
+    ///
     /// # Panics
-    /// Panics if node hasn't been built or address binding fails
-    async fn start_rpc_server(self) -> Self {
+    /// Panics if node hasn't been built
+    async fn start_rpc_server(
+        self,
+        incoming: tonic::transport::server::TcpIncoming,
+    ) -> Self {
         debug!("1. --- start RPC server --- ");
         if let Some(ref node) = self.node {
             let node_clone = node.clone();
             let shutdown = self.shutdown_signal.clone();
-            let listen_address = self.node_config.cluster.listen_address;
+
             let node_config = self.node_config.clone();
             let handle = tokio::spawn(async move {
                 if let Err(e) =
-                    grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
+                    grpc::start_rpc_server(node_clone, incoming, node_config, shutdown).await
                 {
                     eprintln!("RPC server stops. {e:?}");
                     error!("RPC server stops. {:?}", e);
@@ -678,7 +684,8 @@ where
     /// An `Arc<Node>` ready for operation
     ///
     /// # Errors
-    /// Returns an error if any initialization step fails
+    ///  Returns an error if any initialization step fails, including when the RPC listen address
+    /// cannot be bound (for example because another process already holds the port)
     ///
     /// # Example
     /// ```ignore
@@ -688,8 +695,18 @@ where
     ///     .start().await?;
     /// ```
     pub async fn start(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
+        // Bind before anything is built or spawned: a taken port must fail `start()`, not leave
+        // a node running without its RPC server.
+        let listen_address = self.node_config.cluster.listen_address;
+        let incoming = tonic::transport::server::TcpIncoming::bind(listen_address)
+            .map_err(|e| {
+                SystemError::NodeStartFailed(format!(
+                    "failed to bind RPC listen address {listen_address}: {e}"
+                ))
+            })?
+            .with_nodelay(Some(self.node_config.network.tcp_nodelay));
         let builder = self.build().await?;
-        let builder = builder.start_rpc_server().await;
+        let builder = builder.start_rpc_server(incoming).await;
         builder.node.ok_or_else(|| {
             SystemError::NodeStartFailed("Node build failed unexpectedly".to_string()).into()
         })

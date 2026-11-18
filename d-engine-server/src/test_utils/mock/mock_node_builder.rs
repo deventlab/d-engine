@@ -428,11 +428,13 @@ impl MockBuilder {
         });
         let node_clone = node.clone();
         let listen_address = node_config_arc.cluster.listen_address;
+        let incoming = tonic::transport::server::TcpIncoming::bind(listen_address)
+            .unwrap_or_else(|e| panic!("failed to bind RPC listen address {listen_address}: {e}"))
+            .with_nodelay(Some(node_config_arc.network.tcp_nodelay));
         let node_config = node_config_arc.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                grpc::start_rpc_server(node_clone, listen_address, (*node_config).clone(), shutdown)
-                    .await
+                grpc::start_rpc_server(node_clone, incoming, (*node_config).clone(), shutdown).await
             {
                 eprintln!("RPC server stops. {e:?}");
                 error!("RPC server stops. {e:?}");

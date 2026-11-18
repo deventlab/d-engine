@@ -23,6 +23,7 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use crate::api::EmbeddedEngine;
 use crate::storage::FileStateMachine;
 use crate::storage::FileStorageEngine;
+use crate::test_utils::test_node_config;
 
 /// A file state machine whose `apply_chunk` is slow (so commits are still being applied when the
 /// engine is stopped) and which records whether storage was closed while applying.
@@ -142,7 +143,7 @@ async fn test_stop_closes_state_machine_storage_only_after_in_flight_applies_fin
         flags: Arc::clone(&flags),
     };
 
-    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
+    let engine = EmbeddedEngine::start_node(temp_dir.path(), storage, probe, test_node_config())
         .await
         .expect("start engine");
     engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
@@ -193,7 +194,7 @@ async fn test_stop_drops_state_machine_before_returning() {
         flags: Arc::clone(&flags),
     };
 
-    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
+    let engine = EmbeddedEngine::start_node(temp_dir.path(), storage, probe, test_node_config())
         .await
         .expect("start engine");
     engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
@@ -238,7 +239,7 @@ async fn test_stop_sends_no_reads_to_the_state_machine_once_it_is_closing() {
         flags: Arc::clone(&flags),
     };
 
-    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
+    let engine = EmbeddedEngine::start_node(temp_dir.path(), storage, probe, test_node_config())
         .await
         .expect("start engine");
     engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
