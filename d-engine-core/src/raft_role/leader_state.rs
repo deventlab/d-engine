@@ -610,8 +610,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         new_match_id: u64,
     ) -> Result<()> {
         // Pipeline responses can arrive out of order; only advance, never retreat.
-        let current = self.match_index.get(&node_id).copied().unwrap_or(0);
-        if new_match_id > current {
+        // A peer without a record is stored even at 0: "confirmed nothing yet" must be
+        // tracked, not left absent.
+        let current = self.match_index.get(&node_id).copied();
+        if current.is_none_or(|c| new_match_id > c) {
             self.match_index.insert(node_id, new_match_id);
             self.peer_metrics(node_id).match_index.set(new_match_id as f64);
         }
@@ -3095,15 +3097,15 @@ impl<T: TypeConfig> LeaderState<T> {
         let replication_targets = &self.cluster_metadata.replication_targets;
         let learner_role = d_engine_proto::common::NodeRole::Learner as i32;
 
-        // Only voter peers (non-Learner) contribute to the commit quorum.
-        let mut matched_ids = Vec::with_capacity(self.match_index.len() + 1);
+        // Every voter peer (non-Learner) counts in the commit quorum. A voter with no progress
+        // record has confirmed nothing yet and counts as 0; leaving it out would let fewer
+        // than a majority commit.
+        let mut matched_ids = Vec::with_capacity(replication_targets.len() + 1);
         matched_ids.extend(
-            self.match_index
+            replication_targets
                 .iter()
-                .filter(|(id, _)| {
-                    replication_targets.iter().any(|n| n.id == **id && n.role != learner_role)
-                })
-                .map(|(_, idx)| *idx),
+                .filter(|n| n.role != learner_role)
+                .map(|n| self.match_index.get(&n.id).copied().unwrap_or(0)),
         );
 
         let majority =

@@ -826,9 +826,13 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
 ///
 /// **Scenario**:
 /// - 3-node cluster (leader + 2 peers)
-/// - Leader appends entry 1, but peers have NOT ACKed yet (match_index=[0,0])
+/// - Leader appends entry 1, but peers have NOT ACKed yet and have no progress record at all —
+///   the state right after the leader takes office
 /// - LogFlushed(1) arrives → leader durable=1, but quorum=[1,0,0] not satisfied (need 2/3)
 /// - Commit must stay at 0 until at least one peer ACKs
+///
+/// The quorum mock applies the real median rule to whatever the leader passes in, so this test
+/// fails if silent voters are dropped from the quorum input: [1] alone would commit (#400).
 #[tokio::test]
 async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -836,19 +840,24 @@ async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_durable_index().returning(|| 1); // Leader durable
-    // Quorum NOT satisfied: majority of [leader=1, peer2=0, peer3=0] → None
-    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    // Median of the peers plus the leader's durable index (1); commits only past commit_index.
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, commit_index, mut ids| {
+            ids.push(1);
+            ids.sort_unstable_by(|a, b| b.cmp(a));
+            let majority = ids[ids.len() / 2];
+            (majority > commit_index).then_some(majority)
+        });
 
-    let (mut state, ctx) = setup_multi_voter(
+    let (mut state, ctx) = leader_with_peers(
         "/tmp/test_multi_voter_log_flushed_quorum_insufficient",
         graceful_rx,
+        vec![2, 3],
+        vec![],
         raft_log,
     )
     .await;
-
-    // Peers have NOT ACKed yet (match_index remains at 0 for both)
-    state.update_match_index(2, 0).unwrap();
-    state.update_match_index(3, 0).unwrap();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
@@ -869,5 +878,241 @@ async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
     assert!(
         internal_event_rx.try_recv().is_err(),
         "no internal event expected when quorum not satisfied"
+    );
+}
+
+// ── update_match_index: every peer gets a record, records only advance ───────
+
+/// Builds a leader whose cluster has the given follower voters and learners.
+async fn leader_with_peers(
+    path: &str,
+    graceful_rx: watch::Receiver<()>,
+    voters: Vec<u32>,
+    learners: Vec<u32>,
+    raft_log: MockRaftLog,
+) -> (
+    LeaderState<MockTypeConfig>,
+    crate::raft_context::RaftContext<MockTypeConfig>,
+) {
+    let mut ctx = mock_raft_context(path, graceful_rx, None);
+
+    let voter_metas: Vec<NodeMeta> = voters.iter().map(|&id| voter_meta(id)).collect();
+    let mut peer_metas = voter_metas.clone();
+    peer_metas.extend(learners.iter().map(|&id| NodeMeta {
+        id,
+        address: "".into(),
+        status: NodeStatus::Active as i32,
+        role: d_engine_proto::common::NodeRole::Learner as i32,
+    }));
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(move || voter_metas.clone());
+    membership.expect_replication_peers().returning(move || peer_metas.clone());
+    ctx.membership = Arc::new(membership);
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+    assert_eq!(state.cluster_metadata.total_voters, voters.len() + 1);
+
+    (state, ctx)
+}
+
+/// A peer with no record gets one even when the value is 0.
+///
+/// Purpose: 0 means "this follower has confirmed nothing yet". It is a real value and must be
+/// stored, otherwise the leader cannot tell "confirmed nothing" from "not a peer at all". The
+/// "only advance" guard used to compare against an implicit 0 and dropped the first 0 (#400).
+#[tokio::test]
+async fn test_update_match_index_untracked_peer_stores_zero() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut state, _ctx) = leader_with_peers(
+        "/tmp/test_update_match_index_untracked_peer_stores_zero",
+        graceful_rx,
+        vec![2, 3],
+        vec![],
+        MockRaftLog::new(),
+    )
+    .await;
+    assert_eq!(state.match_index(2), None, "precondition: no record yet");
+
+    state.update_match_index(2, 0).unwrap();
+
+    assert_eq!(
+        state.match_index(2),
+        Some(0),
+        "the first 0 must be stored as a record"
+    );
+}
+
+/// A 0 record does not hold a peer back, and a late 0 never resets real progress.
+///
+/// Purpose: storing the initial 0 must not weaken "only advance". Scenario: the leader takes
+/// office (record 0), follower 2 confirms index 5, then a delayed reply that still reports 0
+/// arrives. Progress must be 5 throughout, or the leader would resend entries 1..5 and
+/// undercount follower 2 in the commit quorum.
+#[tokio::test]
+async fn test_update_match_index_zero_record_advances_and_never_resets() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut state, _ctx) = leader_with_peers(
+        "/tmp/test_update_match_index_zero_record_advances",
+        graceful_rx,
+        vec![2, 3],
+        vec![],
+        MockRaftLog::new(),
+    )
+    .await;
+
+    state.update_match_index(2, 0).unwrap();
+    state.update_match_index(2, 5).unwrap();
+    assert_eq!(
+        state.match_index(2),
+        Some(5),
+        "a 0 record must advance to 5"
+    );
+
+    state.update_match_index(2, 0).unwrap();
+    assert_eq!(
+        state.match_index(2),
+        Some(5),
+        "a late 0 must not reset confirmed progress"
+    );
+}
+
+// ── majority_matched_index: who is in the quorum input ───────────────────────
+
+/// Mock raft log that records the peer progress handed to the quorum calculation.
+fn capturing_raft_log() -> (MockRaftLog, Arc<std::sync::Mutex<Option<Vec<u64>>>>) {
+    let captured = Arc::new(std::sync::Mutex::new(None::<Vec<u64>>));
+    let captured_clone = captured.clone();
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_calculate_majority_matched_index().returning(move |_, _, ids| {
+        *captured_clone.lock().unwrap() = Some(ids);
+        None
+    });
+    (raft_log, captured)
+}
+
+/// The quorum input the leader computed, sorted ascending.
+fn quorum_input(
+    state: &LeaderState<MockTypeConfig>,
+    ctx: &crate::raft_context::RaftContext<MockTypeConfig>,
+    captured: &Arc<std::sync::Mutex<Option<Vec<u64>>>>,
+) -> Vec<u64> {
+    state.majority_matched_index(ctx.raft_log());
+    let mut ids = captured.lock().unwrap().take().expect("quorum must be computed");
+    ids.sort_unstable();
+    ids
+}
+
+/// A voter that has not confirmed any entry still counts in the commit quorum, as 0.
+///
+/// Scenario: node 1 has just become leader of a 3-voter cluster (1, 2, 3). Its own log is
+/// durable up to index 9, but neither follower has confirmed anything yet — one of them may
+/// even have answered with a log conflict. The quorum must see [9, 0, 0], whose median is 0,
+/// so nothing commits. If voters without a progress record are left out, the leader's own 9
+/// is the only value and it commits index 9 alone; a later leader can then overwrite that
+/// "committed" entry (#400).
+///
+/// `init_peers_next_index_and_match_index` is deliberately not called: the quorum must not
+/// depend on whether a voter already has a progress record.
+#[tokio::test]
+async fn test_majority_matched_index_counts_unacked_voters_as_zero() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, captured) = capturing_raft_log();
+    let (state, ctx) = leader_with_peers(
+        "/tmp/test_majority_matched_index_unacked_voters",
+        graceful_rx,
+        vec![2, 3],
+        vec![],
+        raft_log,
+    )
+    .await;
+
+    assert_eq!(
+        quorum_input(&state, &ctx, &captured),
+        vec![0, 0],
+        "both follower voters must be in the quorum input as 0 before their first ACK"
+    );
+}
+
+/// In a 5-voter cluster, one confirmed follower plus the leader is not a majority.
+///
+/// Scenario: leader 1, followers 2..5. Only follower 2 has confirmed index 9. The quorum must
+/// see [9 (leader), 9, 0, 0, 0], whose median is 0. If the three silent voters are left out,
+/// the input is [9, 9] and two of five nodes commit index 9 — the same bug as the 3-voter
+/// case, but reachable even after the first ACK.
+#[tokio::test]
+async fn test_majority_matched_index_five_voters_one_ack_counts_silent_voters() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, captured) = capturing_raft_log();
+    let (mut state, ctx) = leader_with_peers(
+        "/tmp/test_majority_matched_index_five_voters_one_ack",
+        graceful_rx,
+        vec![2, 3, 4, 5],
+        vec![],
+        raft_log,
+    )
+    .await;
+    state.update_match_index(2, 9).unwrap();
+
+    assert_eq!(
+        quorum_input(&state, &ctx, &captured),
+        vec![0, 0, 0, 9],
+        "every follower voter must be in the quorum input, silent ones as 0"
+    );
+}
+
+/// A learner without a progress record is not turned into a 0 vote.
+///
+/// Purpose: "missing record counts as 0" applies to voters only. Scenario: leader 1, voter 2,
+/// learner 3, nobody has confirmed anything. The quorum input must be [0] (voter 2 only). If
+/// the learner were counted as 0 too, the quorum would grow by a non-voting member and a
+/// legal commit would need one more ACK than Raft requires.
+#[tokio::test]
+async fn test_majority_matched_index_untracked_learner_not_counted() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, captured) = capturing_raft_log();
+    let (state, ctx) = leader_with_peers(
+        "/tmp/test_majority_matched_index_untracked_learner",
+        graceful_rx,
+        vec![2],
+        vec![3],
+        raft_log,
+    )
+    .await;
+
+    assert_eq!(
+        quorum_input(&state, &ctx, &captured),
+        vec![0],
+        "only voter 2 may appear in the quorum input"
+    );
+}
+
+/// Progress left over from a node that is no longer a replication target does not vote.
+///
+/// Purpose: the quorum is defined by the current membership, not by whatever keys the
+/// progress map happens to hold. Scenario: voters 2 and 3; the map still holds index 9 for
+/// node 4, which has left the cluster, and voter 2 has confirmed 5. The input must be [0, 5]:
+/// node 4's 9 must not appear, and voter 3 counts as 0.
+#[tokio::test]
+async fn test_majority_matched_index_ignores_progress_of_removed_node() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, captured) = capturing_raft_log();
+    let (mut state, ctx) = leader_with_peers(
+        "/tmp/test_majority_matched_index_removed_node",
+        graceful_rx,
+        vec![2, 3],
+        vec![],
+        raft_log,
+    )
+    .await;
+    state.update_match_index(4, 9).unwrap();
+    state.update_match_index(2, 5).unwrap();
+
+    assert_eq!(
+        quorum_input(&state, &ctx, &captured),
+        vec![0, 5],
+        "only current voters may appear in the quorum input"
     );
 }
