@@ -121,11 +121,25 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("New leader elected: node {}", new_leader_info.leader_id);
 
     // Find the engine whose node_id matches the new leader
-    let new_leader_client = engines
+    let new_leader_engine = engines
         .iter()
         .find(|e| e.node_id() == new_leader_info.leader_id)
-        .expect("New leader engine not found")
-        .client();
+        .expect("New leader engine not found");
+
+    // A follower reports the new leader as soon as it hears from it, before that leader has
+    // committed its no-op entry; until then the leader rejects linearizable reads. The leader
+    // itself reports only after its no-op commits, so wait for its own notification.
+    let ready = wait_for_new_leader(
+        vec![new_leader_engine.leader_change_notifier()],
+        initial_leader_id,
+        Duration::from_secs(120),
+    )
+    .await;
+    assert_eq!(
+        ready.leader_id, new_leader_info.leader_id,
+        "leadership moved again while waiting for the new leader to become ready"
+    );
+    let new_leader_client = new_leader_engine.client();
 
     // Phase 3: Verify lock state consistency
     info!("Phase 3: Verify lock state consistency");
