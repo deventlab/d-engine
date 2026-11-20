@@ -90,7 +90,7 @@ async fn test_generate_new_entries_with_single_command() {
     raft_log_mut
         .expect_pre_allocate_id_range()
         .returning(move |count| (last_id_before + 1)..=(last_id_before + count));
-    raft_log_mut.expect_insert_batch().returning(|_| Ok(()));
+    raft_log_mut.expect_append_entries().returning(|_| Ok(()));
 
     // Arrange: One command
     let commands = client_command_to_entry_payloads(vec![WriteCommand::delete(

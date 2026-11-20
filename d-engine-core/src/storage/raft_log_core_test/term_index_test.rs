@@ -52,7 +52,7 @@ async fn test_first_index_for_term() {
             payload: None,
         },
     ];
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     assert_eq!(ctx.raft_log.first_index_for_term(1), Some(1));
     assert_eq!(ctx.raft_log.first_index_for_term(2), Some(3));
@@ -71,7 +71,7 @@ async fn test_first_index_for_term() {
             payload: None,
         },
     ];
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
     assert_eq!(ctx.raft_log.first_index_for_term(4), Some(8));
     assert_eq!(ctx.raft_log.first_index_for_term(5), Some(9));
 
@@ -121,7 +121,7 @@ async fn test_last_index_for_term() {
             payload: None,
         },
     ];
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     assert_eq!(ctx.raft_log.last_index_for_term(1), Some(2));
     assert_eq!(ctx.raft_log.last_index_for_term(2), Some(4));
@@ -140,7 +140,7 @@ async fn test_last_index_for_term() {
             payload: None,
         },
     ];
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
     assert_eq!(ctx.raft_log.last_index_for_term(5), Some(9));
 
     ctx.raft_log.reset().await.unwrap();
@@ -174,7 +174,7 @@ async fn test_term_index_functions_with_purged_logs() {
             payload: None,
         },
     ];
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     ctx.raft_log
         .purge_logs_up_to(d_engine_proto::common::LogId { index: 2, term: 2 })
@@ -203,7 +203,7 @@ async fn test_term_index_sequential_multi_term_insertion() {
         for i in 1u64..=10 {
             let index = (term - 1) * 10 + i;
             ctx.raft_log
-                .insert_batch(vec![Entry {
+                .append_entries(vec![Entry {
                     index,
                     term,
                     payload: None,
@@ -248,7 +248,7 @@ async fn test_term_indexes_rebuilt_correctly_after_restart() {
             payload: None,
         })
         .collect();
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
     ctx.raft_log.flush().await.unwrap();
 
     // Simulate process restart: new RaftLogCore loads from same storage.
@@ -284,7 +284,7 @@ async fn test_term_index_performance_large_dataset() {
             payload: None,
         });
     }
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     let start = tokio::time::Instant::now();
     for term in 1..=10 {

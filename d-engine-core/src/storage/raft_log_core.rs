@@ -288,14 +288,6 @@ where
         Ok(())
     }
 
-    async fn insert_batch(
-        &self,
-        logs: Vec<Entry>,
-    ) -> Result<()> {
-        self.append_entries(logs).await?;
-        Ok(())
-    }
-
     async fn filter_out_conflicts_and_append(
         &self,
         prev_log_index: u64,

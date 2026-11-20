@@ -148,7 +148,7 @@ pub async fn insert_single_entry<L: RaftLog>(
         term,
         payload: None,
     };
-    raft_log.insert_batch(vec![entry]).await.expect("insert should succeed");
+    raft_log.append_entries(vec![entry]).await.expect("insert should succeed");
 }
 
 /// Generate mock insert command payload bytes
@@ -175,7 +175,7 @@ pub async fn simulate_insert_command<L: RaftLog>(
         };
         entries.push(entry);
     }
-    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.append_entries(entries).await.unwrap();
     raft_log.flush().await.unwrap();
 }
 
@@ -198,7 +198,7 @@ pub async fn simulate_delete_command<L: RaftLog>(
         };
         entries.push(entry);
     }
-    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.append_entries(entries).await.unwrap();
     raft_log.flush().await.unwrap();
 }
 

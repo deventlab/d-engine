@@ -1066,9 +1066,10 @@ async fn test_majority_matched_index_five_voters_one_ack_counts_silent_voters() 
 /// A learner without a progress record is not turned into a 0 vote.
 ///
 /// Purpose: "missing record counts as 0" applies to voters only. Scenario: leader 1, voter 2,
-/// learner 3, nobody has confirmed anything. The quorum input must be [0] (voter 2 only). If
-/// the learner were counted as 0 too, the quorum would grow by a non-voting member and a
-/// legal commit would need one more ACK than Raft requires.
+/// learner 3, nobody has confirmed anything. The quorum input must be [0] (voter 2 only). Any
+/// learner value in the input moves the median: as 0 it makes a legal commit wait for one more
+/// ACK than Raft requires; once the learner has caught up, it lets the leader commit an entry
+/// voter 2 does not hold.
 #[tokio::test]
 async fn test_majority_matched_index_untracked_learner_not_counted() {
     let (_graceful_tx, graceful_rx) = watch::channel(());

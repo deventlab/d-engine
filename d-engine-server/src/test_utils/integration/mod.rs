@@ -280,7 +280,7 @@ pub(crate) async fn insert_raft_log(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries).await {
+    if let Err(e) = raft_log.append_entries(entries).await {
         panic!("error:{e:?}");
     }
 }
@@ -356,7 +356,7 @@ pub async fn simulate_insert_command(
         };
         entries.push(log);
     }
-    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.append_entries(entries).await.unwrap();
     raft_log.flush().await.unwrap();
 }
 
@@ -390,7 +390,7 @@ pub async fn simulate_delete_command(
         };
         entries.push(log);
     }
-    if let Err(e) = raft_log.insert_batch(entries).await {
+    if let Err(e) = raft_log.append_entries(entries).await {
         panic!("error: {e:?}");
     }
 }

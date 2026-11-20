@@ -584,11 +584,11 @@ where
 
         if !entries.is_empty() {
             trace!(
-                "RaftLog insert_batch: {}..={}",
+                "RaftLog append_entries: {}..={}",
                 entries[0].index,
                 entries.last().unwrap().index
             );
-            raft_log.insert_batch(entries.clone()).await?;
+            raft_log.append_entries(entries.clone()).await?;
         }
 
         Ok(entries)
