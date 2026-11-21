@@ -2324,6 +2324,63 @@ async fn test_scan_cmd_leader_propagates_sm_error() {
     assert_eq!(err.code(), Code::Internal);
 }
 
+/// An empty prefix would return the whole keyspace in one response. The leader rejects it as an
+/// invalid request before it touches the state machine; the mock allows no `scan_prefix` call, so
+/// the test fails if the state machine is asked instead of the request being refused.
+#[tokio::test]
+#[traced_test]
+async fn test_scan_cmd_leader_rejects_empty_prefix_without_reading_state_machine() {
+    let mut sm = mock_state_machine();
+    sm.expect_scan_prefix().times(0);
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_scan_cmd_leader_rejects_empty_prefix")
+        .with_state_machine(sm)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Scan(Bytes::new(), resp_tx), &context);
+
+    let response = resp_rx.recv().await.expect("channel not closed").expect("a typed response");
+    assert_eq!(response.error, ErrorCode::InvalidRequest);
+    assert!(response.result.is_none(), "a rejected scan must carry no entries");
+}
+
+/// The shortest non-empty prefix is a valid request: the rejection applies to the empty prefix
+/// only, and a one-byte prefix still reaches the state machine with exactly those bytes.
+#[tokio::test]
+#[traced_test]
+async fn test_scan_cmd_leader_passes_one_byte_prefix_to_state_machine() {
+    let mut sm = mock_state_machine();
+    sm.expect_scan_prefix()
+        .withf(|prefix| prefix == b"/")
+        .times(1)
+        .returning(|_| {
+            Ok(ScanResult {
+                entries: vec![],
+                revision: 7,
+            })
+        });
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_scan_cmd_leader_one_byte_prefix")
+        .with_state_machine(sm)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Scan(Bytes::from("/"), resp_tx), &context);
+
+    let response = resp_rx.recv().await.expect("channel not closed").expect("scan succeeded");
+    assert_eq!(response.error, ErrorCode::Success);
+    assert!(matches!(response.result, Some(ClientResponsePayload::Scan(ref r)) if r.revision == 7));
+}
+
 /// A lease read that fails in the state machine must reach the client as an error. A state
 /// machine reports a failing disk as an `io::Error`, and the client gets the storage I/O code; it
 /// must not get an empty result that looks like "key not found".

@@ -1067,11 +1067,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
             ClientCmd::Scan(prefix, sender) => {
-                let response = ctx
-                    .state_machine()
-                    .scan_prefix(&prefix)
-                    .map(|sr| ClientResponse::scan_results(sr.entries, sr.revision))
-                    .map_err(|e| Status::internal(e.to_string()));
+                let response = if prefix.is_empty() {
+                    // An empty prefix would scan the whole keyspace in one response.
+                    Ok(ClientResponse::client_error(ErrorCode::InvalidRequest))
+                } else {
+                    ctx.state_machine()
+                        .scan_prefix(&prefix)
+                        .map(|sr| ClientResponse::scan_results(sr.entries, sr.revision))
+                        .map_err(|e| Status::internal(e.to_string()))
+                };
                 let _ = sender.send(response);
             }
         }
