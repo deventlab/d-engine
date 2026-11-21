@@ -170,41 +170,6 @@ pub trait RaftLog: Send + Sync + 'static {
     ) -> Result<Vec<Entry>>;
 
     // =========================================================================
-    // INDEX ALLOCATION (Thread-safe, atomic)
-    // =========================================================================
-
-    /// Pre-allocates the next log index atomically.
-    ///
-    /// # Returns
-    /// - Next available index
-    ///
-    /// # Safety Invariants
-    /// - MUST be thread-safe (atomic increment)
-    /// - MUST return unique, monotonically increasing values
-    /// - Each call MUST return a different value across all threads
-    /// - Used by leader to assign indexes to client proposals
-    fn pre_allocate_raft_logs_next_index(&self) -> u64;
-
-    /// Pre-allocates a contiguous range of log indices atomically.
-    ///
-    /// # Arguments
-    /// - `count`: Number of indices to allocate
-    ///
-    /// # Returns
-    /// - Inclusive range [start, end] where (end - start + 1) == count
-    /// - Empty range (u64::MAX..=u64::MAX) if count == 0
-    ///
-    /// # Safety Invariants
-    /// - MUST be atomic across all threads
-    /// - MUST NOT return overlapping ranges
-    /// - MUST prevent overflow (panic if allocation would exceed u64::MAX)
-    /// - Used for batch proposal optimization
-    fn pre_allocate_id_range(
-        &self,
-        count: u64,
-    ) -> RangeInclusive<u64>;
-
-    // =========================================================================
     // WRITE OPERATIONS (CRITICAL: Durability and Atomicity Required)
     // =========================================================================
 
@@ -258,6 +223,35 @@ pub trait RaftLog: Send + Sync + 'static {
         prev_log_term: u64,
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>>;
+
+    /// Removes every entry with index `>= from_index`, and returns only once the removal is
+    /// on disk.
+    ///
+    /// Called before installing a leader's snapshot whose boundary disagrees with the local log:
+    /// the entries after that boundary belong to a history the leader does not share. Afterwards
+    /// `last_log_id()`, `entry_term()`, the per-term indexes and the next allocated index all
+    /// describe the shorter log, and `durable_index()` covers no removed entry. If nothing is
+    /// left after the purge boundary, `last_log_id()` returns that boundary. A `from_index` past
+    /// the last entry removes nothing.
+    ///
+    /// Unlike `filter_out_conflicts_and_append`, this appends nothing, so no later fsync of new
+    /// entries carries the removal to disk; it syncs the removal itself.
+    ///
+    /// # Contract
+    /// - Durable on return: after `Ok(())`, a crash never brings a removed entry back.
+    /// - A crash during the call leaves a contiguous prefix of the old log that still holds
+    ///   every entry below `from_index`.
+    /// - `from_index` is above the purge boundary: entries up to it are committed and covered
+    ///   by a snapshot.
+    ///
+    /// # Errors
+    /// - A fatal error if `from_index` is at or below the purge boundary; nothing is changed.
+    /// - A fatal error if the log is poisoned or the storage engine fails to remove or sync;
+    ///   the log is then poisoned and the node stops.
+    async fn truncate_from(
+        &self,
+        from_log_index: u64,
+    ) -> Result<()>;
 
     /// Returns the highest index a majority of voters hold durably, if the leader may commit
     /// up to it now.

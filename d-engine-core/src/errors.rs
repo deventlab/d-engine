@@ -241,26 +241,6 @@ pub enum StorageError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(String),
-
-    /// ID allocation errors
-    #[error(transparent)]
-    IdAllocation(#[from] IdAllocationError),
-}
-
-#[doc(hidden)]
-#[derive(Debug, thiserror::Error)]
-pub enum IdAllocationError {
-    /// ID allocation overflow
-    #[error("ID allocation overflow: {start} > {end}")]
-    Overflow { start: u64, end: u64 },
-
-    /// Invalid ID range
-    #[error("Invalid ID range: {start}..={end}")]
-    InvalidRange { start: u64, end: u64 },
-
-    /// No available IDs
-    #[error("No available IDs")]
-    NoIdsAvailable,
 }
 
 #[doc(hidden)]
@@ -832,12 +812,6 @@ impl From<ReadIndexError> for Error {
             },
             ReadIndexError::VerificationFailed { reason: _ } => ReplicationError::QuorumNotReached,
         }))
-    }
-}
-
-impl From<IdAllocationError> for Error {
-    fn from(e: IdAllocationError) -> Self {
-        StorageError::IdAllocation(e).into()
     }
 }
 

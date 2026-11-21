@@ -1,59 +1,30 @@
-//! Case 1: Verify that the Raft election compares logs by last Term, then Index, not by the number
-//! of log entries: a node with more entries but a lower last term is never elected while a
-//! majority holds a higher last term — and that node 2 rejects a vote request from such a peer,
-//! proving Raft's election restriction (§5.4.1) is enforced *on the wire*.
+//! A Raft election compares logs by last term, then index — never by entry count (Raft §5.4.1).
 //!
-//! Scenario:
+//! Each node's log on disk at startup:
 //!
-//! 1. Create a cluster with 3 nodes (A, B, C).
-//! 2. Node A appends 10 log entries with Term=2.
-//! 3. Node B appends 8 log entries with Term=3 (higher term).
-//! 4. Node C holds the same log as node B.
-//! 5. Trigger a leader election (all three nodes use the same default randomized timeout — the
-//!    rejection is no longer sourced from this race; see below).
+//! | node | log                          | last entry           |
+//! |------|------------------------------|----------------------|
+//! | 1    | 1..=10, all term 2           | (index 10, term 2)   |
+//! | 2    | 1..=2 term 2, 3..=8 term 3   | (index 8, term 3)    |
+//! | 3    | same as node 2               | (index 8, term 3)    |
 //!
-//! Expected Result:
+//! Node 1 has the most entries but the oldest last term. The test checks:
 //!
-//! - Node A is never elected, even though it has the most entries: B and C both hold a log whose
-//!   last term (3) is higher than A's (2), so A cannot get a single vote from them. B or C becomes
-//!   the leader; which one depends on whose election timer fires first, and Raft promises nothing
-//!   about that, so the test does not assert it.
-//! - Node B rejects a synthetic vote request built with node A's real log profile (more entries,
-//!   lower term) — proving the comparison is term-then-index, not entry count.
+//! 1. Node 1 is never elected. Nodes 2 and 3 hold a newer last term, so node 1 gets no vote from
+//!    either and cannot reach a majority. Which of nodes 2 and 3 wins depends on election timers;
+//!    the test accepts both.
+//! 2. Node 2 rejects a vote request carrying node 1's log (index 10, term 2): term is compared
+//!    first, so 10 entries lose to 8.
 //!
-//! ## Why node C is not empty
+//! Why node 3 holds node 2's log: with an empty log, node 3 would vote for node 1 as readily as for
+//! node 2, and nodes 1 and 3 are a majority — node 1 could then win legally.
 //!
-//! Node C used to start with no log. An empty log is older than any other, so C would vote for A
-//! as readily as for B, and A plus C is a majority of three: A could be elected legally, and the
-//! old assertion "B becomes the leader" depended on timer luck. With C holding B's log, a
-//! majority (B and C) has a higher last term than A, which is exactly the case §5.4.1 rules out.
-//!
-//! ## Why the rejection is injected directly, not observed from the natural election
-//!
-//! Earlier versions of this test relied on the natural 3-node election race to produce the
-//! rejection organically: whichever of A/C's randomized timers fired first would ask node B for
-//! a vote and (having a worse log) get rejected. Two problems with that:
-//!
-//! 1. It's not guaranteed. If node B's own timer happens to fire first, it becomes candidate itself
-//!    and never receives a vote request to reject — the assertion would then have nothing to
-//!    observe, purely due to timer luck (observed in CI: ~1/9 runs).
-//! 2. An earlier attempt to fix (1) by giving node B a much longer timeout than A/C — forcing A/C
-//!    to go first — backfired: A and C's logs disagree with each other too (A has no entries in
-//!    common with C's empty log, different terms), and they ended up in a prolonged split-vote
-//!    livelock (term counters observed climbing past 20) with neither able to reach a majority
-//!    without B.
-//!
-//! Fix: stop depending on the natural race for the rejection half of the proof. The test itself
-//! opens a raw `RaftElectionServiceClient` to node B's real gRPC endpoint (the same generated
-//! client real peers use — nothing mocked) and sends a `VoteRequest` carrying node A's exact log
-//! signature (last_log_index=10, last_log_term=2) under a fake `candidate_id`, at `term=10` —
-//! comfortably above any term the natural 3-node election reaches in this test's runtime
-//! (observed: single digits) — so the rejection is unambiguously the log check, not term
-//! staleness. It is sent right after the nodes start, but B and C can elect a leader within the
-//! first election timeout, so B may already lead (and have appended its no-op entry) when the
-//! request arrives. The injected term then makes it step down and B or C is elected again, which
-//! the election assertion allows; the rejection check accepts B's log at or above its initial
-//! (index=8, term=3) for the same reason.
+//! Why check 2 sends its own vote request instead of waiting for node 1 to ask: node 2 receives
+//! one only if node 1's election timer fires before node 2's, which is timer luck. The test sends
+//! it through the same gRPC client real peers use, under a made-up candidate id, at term 10 so the
+//! rejection can only come from the log comparison, not from a stale term. Nodes 2 and 3 may
+//! already have elected a leader by then; a request at a higher term makes that leader step down,
+//! so a second election can follow. Both checks allow for it.
 
 use std::time::Duration;
 
@@ -94,7 +65,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
 
-    // Prepare raft logs
+    // Logs on disk before startup (see the table in the module doc).
     let r1 = prepare_storage_engine(1, &format!("{}/cs/1", data_dir.display()), 0);
     manipulate_log(&r1, (1..=10).collect(), 2).await;
     init_hard_state(&r1, 2, None);
@@ -138,10 +109,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
         ctx.node_handles.push(node_handle);
     }
 
-    // Prove node 2 rejects a worse-log candidate on the wire (§5.4.1) — see the
-    // module doc for why this is injected directly instead of relied on from
-    // the natural election race. Sent right after node startup; node 2 may already
-    // be leader by then (see the module doc).
+    // Check 2: node 2 must reject a vote request carrying node 1's log (see the module doc).
     let node2_addr = format!("http://127.0.0.1:{}", ports[1]);
     let inject_deadline = std::time::Instant::now() + Duration::from_secs(10);
     let vote_response = loop {
@@ -151,11 +119,10 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
                 .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
             client
                 .request_vote(tonic::Request::new(VoteRequest {
-                    term: 10,           /* comfortably above any term the natural election
-                                         * reaches here */
-                    candidate_id: 99, // synthetic candidate — not a real cluster member
-                    last_log_index: 10, // node A's real log profile: more entries...
-                    last_log_term: 2, // ...but a lower term than node 2's (3)
+                    term: 10,
+                    candidate_id: 99,   // not a cluster member
+                    last_log_index: 10, // node 1's log: more entries...
+                    last_log_term: 2,   // ...but an older last term than node 2's (3)
                 }))
                 .await
         }
@@ -197,7 +164,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
         "[test_leader_election_based_on_log_term_and_index] Cluster started. Running tests..."
     );
 
-    // Node 1 has the most entries but the lowest last term: it must not be the leader.
+    // Check 1: node 1 must not be the leader.
     let bootstrap_urls = create_bootstrap_urls(ports);
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(30);

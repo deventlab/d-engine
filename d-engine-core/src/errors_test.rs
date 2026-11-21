@@ -84,32 +84,6 @@ fn test_storage_error_path_error() {
 }
 
 #[test]
-fn test_id_allocation_error_overflow() {
-    let err = IdAllocationError::Overflow {
-        start: 100,
-        end: 50,
-    };
-    let msg = err.to_string();
-    assert!(msg.contains("100"));
-    assert!(msg.contains("50"));
-}
-
-#[test]
-fn test_id_allocation_error_invalid_range() {
-    let err = IdAllocationError::InvalidRange { start: 10, end: 5 };
-    let msg = err.to_string();
-    assert!(msg.contains("10"));
-    assert!(msg.contains("5"));
-}
-
-#[test]
-fn test_id_allocation_error_no_ids_available() {
-    let err = IdAllocationError::NoIdsAvailable;
-    let msg = err.to_string();
-    assert!(msg.contains("IDs") || msg.contains("available"));
-}
-
-#[test]
 fn test_file_error_not_found() {
     let err = FileError::NotFound("/path/to/file".to_string());
     let msg = err.to_string();
@@ -414,13 +388,6 @@ fn test_from_snapshot_error_to_error() {
 fn test_from_io_error_to_error() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "test");
     let err: Error = io_err.into();
-    assert!(matches!(err, Error::System(SystemError::Storage(_))));
-}
-
-#[test]
-fn test_from_id_allocation_error_to_error() {
-    let id_err = IdAllocationError::NoIdsAvailable;
-    let err: Error = id_err.into();
     assert!(matches!(err, Error::System(SystemError::Storage(_))));
 }
 

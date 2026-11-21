@@ -69,9 +69,6 @@ where
     // call must not regress a value a faster call already advanced past.
     pub(crate) persisted_index: AtomicU64,
 
-    // The next index to be allocated
-    pub(crate) next_id: AtomicU64,
-
     // --- In-memory index ---
     // O(1) answer to "is this index currently held in memory" — lets callers
     // (e.g. entry_term()) reject an out-of-range index without touching `entries`.
@@ -214,28 +211,6 @@ where
         term: u64,
     ) -> Option<u64> {
         self.term_last_index.get(&term).map(|e| e.value().load(Ordering::Acquire))
-    }
-
-    fn pre_allocate_raft_logs_next_index(&self) -> u64 {
-        // self.get_raft_logs_length() + 1
-        self.next_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    fn pre_allocate_id_range(
-        &self,
-        count: u64,
-    ) -> RangeInclusive<u64> {
-        match count {
-            0 => u64::MAX..=u64::MAX, // Standard empty range
-            _ => {
-                // Overflow checking (enable on demand)
-                let cur = self.next_id.load(Ordering::SeqCst);
-                assert!(cur <= u64::MAX - count, "ID overflow");
-
-                let start = self.next_id.fetch_add(count, Ordering::SeqCst);
-                start..=(start + count - 1)
-            }
-        }
     }
 
     fn get_entries_range(
@@ -396,6 +371,50 @@ where
         };
 
         Ok(last_log_id)
+    }
+
+    async fn truncate_from(
+        &self,
+        from_index: u64,
+    ) -> Result<()> {
+        if self.is_poisoned() {
+            return Err(Error::Fatal("raft log storage is poisoned".into()));
+        }
+        // Entries up to the purge boundary are committed and covered by a snapshot.
+        let purged = self.last_purged_index.load(Ordering::Acquire);
+        if from_index <= purged {
+            return Err(Error::Fatal(format!(
+                "truncate_from({from_index}) is at or below the purge boundary {purged}"
+            )));
+        }
+        if from_index > self.last_entry_id() {
+            return Ok(());
+        }
+
+        self.remove_range(from_index..=u64::MAX);
+        self.persisted_index.fetch_min(from_index - 1, Ordering::AcqRel);
+
+        // Remove from the storage engine. Like every other write, the removal reaches disk
+        // through the fsync worker: its next fsync covers whatever the engine has written.
+        // No later append carries it there, so wait for that fsync here. `remove_range` above
+        // already bumped the fsync generation, so this round cannot be judged stale.
+        if let Err(e) = self.log_store.truncate(from_index).await {
+            error!(?self.node_id, "truncate_from failed (fatal): {e:?}");
+            self.mark_poisoned_and_notify(format!("truncate_from failed: {e:?}"));
+            return Err(e);
+        }
+        let new_last = from_index - 1;
+        let (tx, rx) = oneshot::channel();
+        self.fsync_worker.submit(
+            LogId {
+                term: self.entry_term(new_last).unwrap_or(0),
+                index: new_last,
+            },
+            vec![tx],
+        );
+        rx.await.map_err(|_| {
+            NetworkError::SingalSendFailed("truncate_from: fsync channel closed".into())
+        })?
     }
 
     fn calculate_majority_matched_index(
@@ -657,7 +676,6 @@ where
             last_purged_term: AtomicU64::new(last_purged_term_val),
             durable_index: AtomicU64::new(disk_len),
             persisted_index: AtomicU64::new(disk_len),
-            next_id: AtomicU64::new(disk_len + 1),
             term_first_index,
             term_last_index,
             term_segments,
@@ -681,13 +699,6 @@ where
 
         self.update_term_indexes(entries);
         self.term_segments.on_append(entries);
-
-        // `entries` are in log order: the last one has the highest index.
-        let max_index = entries.last().map_or(0, |e| e.index);
-        let current_next = self.next_id.load(Ordering::Acquire);
-        if max_index >= current_next {
-            self.next_id.store(max_index + 1, Ordering::Release);
-        }
 
         if let Some(first_entry) = entries.first() {
             let mut current_min = self.min_index.load(Ordering::Relaxed);
@@ -1014,7 +1025,6 @@ where
 
         self.entries.write().clear();
         self.durable_index.store(0, Ordering::Release);
-        self.next_id.store(1, Ordering::Release);
 
         // Reset boundaries
         self.min_index.store(0, Ordering::Release);
@@ -1069,12 +1079,6 @@ where
             }
             .into())
         }
-    }
-
-    /// Returns reference to next_id atomic for test verification (test-only).
-    #[cfg(test)]
-    pub fn next_id(&self) -> &std::sync::atomic::AtomicU64 {
-        &self.next_id
     }
 
     #[cfg(test)]
@@ -1239,10 +1243,6 @@ mod edge_cases_test;
 mod flush_strategy_test;
 
 #[cfg(test)]
-#[path = "raft_log_core_test/id_allocation_test.rs"]
-mod id_allocation_test;
-
-#[cfg(test)]
 #[path = "raft_log_core_test/performance_test.rs"]
 mod performance_test;
 
@@ -1293,3 +1293,7 @@ mod content_validated_watermark_test;
 #[cfg(test)]
 #[path = "raft_log_core_test/prev_log_index_zero_idempotency_test.rs"]
 mod prev_log_index_zero_idempotency_test;
+
+#[cfg(test)]
+#[path = "raft_log_core_test/truncate_from_test.rs"]
+mod truncate_from_test;

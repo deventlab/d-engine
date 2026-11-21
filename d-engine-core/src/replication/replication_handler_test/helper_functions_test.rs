@@ -87,9 +87,12 @@ async fn test_generate_new_entries_with_single_command() {
     let last_id_before = 5;
     let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
     raft_log_mut.expect_last_entry_id().returning(move || last_id_before);
-    raft_log_mut
-        .expect_pre_allocate_id_range()
-        .returning(move |count| (last_id_before + 1)..=(last_id_before + count));
+    raft_log_mut.expect_last_log_id().returning(move || {
+        Some(LogId {
+            index: last_id_before,
+            term: 1,
+        })
+    });
     raft_log_mut.expect_append_entries().returning(|_| Ok(()));
 
     // Arrange: One command
@@ -114,6 +117,70 @@ async fn test_generate_new_entries_with_single_command() {
         entries[0].term, current_term,
         "entry term should match current_term"
     );
+}
+
+/// New entries are numbered right after the log's last entry, whatever the log went through.
+///
+/// Scenario (#400): a follower held 1..12, a new leader's AppendEntries truncated it to 1..10,
+/// and the follower then became leader. Its first new entry must be 11. An allocation counter
+/// that only ever grew used to hand out 13, leaving 11 and 12 as a hole in the log.
+#[tokio::test]
+async fn test_generate_new_entries_numbers_right_after_the_last_entry() {
+    let entries = generate_two_entries_after(Some(LogId { index: 10, term: 3 })).await;
+    assert_eq!(
+        entries.iter().map(|e| e.index).collect::<Vec<_>>(),
+        vec![11, 12]
+    );
+}
+
+/// With every entry purged into a snapshot, numbering continues after the purge boundary,
+/// which `last_log_id()` reports for an empty log. Starting at 1 would reuse indexes the
+/// snapshot already covers.
+#[tokio::test]
+async fn test_generate_new_entries_continues_after_the_purge_boundary() {
+    let entries = generate_two_entries_after(Some(LogId { index: 5, term: 2 })).await;
+    assert_eq!(
+        entries.iter().map(|e| e.index).collect::<Vec<_>>(),
+        vec![6, 7]
+    );
+}
+
+/// A brand-new log starts numbering at 1.
+#[tokio::test]
+async fn test_generate_new_entries_starts_at_one_on_an_empty_log() {
+    let entries = generate_two_entries_after(None).await;
+    assert_eq!(
+        entries.iter().map(|e| e.index).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+/// Generates two entries on a log whose `last_log_id()` is `last`, and checks that the same
+/// entries are appended to the log.
+async fn generate_two_entries_after(last: Option<LogId>) -> Vec<Entry> {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let appended = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let appended_clone = appended.clone();
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_last_log_id().returning(move || last);
+    raft_log_mut.expect_append_entries().times(1).returning(move |entries| {
+        *appended_clone.lock().unwrap() = entries;
+        Ok(())
+    });
+
+    let commands = client_command_to_entry_payloads(vec![
+        WriteCommand::delete(crate::convert::safe_kv_bytes(1)),
+        WriteCommand::delete(crate::convert::safe_kv_bytes(2)),
+    ]);
+    let entries = handler.generate_new_entries(commands, 4, &context.raft_log).await.unwrap();
+
+    assert_eq!(
+        *appended.lock().unwrap(),
+        entries,
+        "the numbered entries must be the ones appended to the log"
+    );
+    entries
 }
 
 /// Build append request should create correct request for each peer.

@@ -26,7 +26,6 @@ use super::AppendResponseWithUpdates;
 use super::PrepareResult;
 use super::ReplicationCore;
 use crate::BuildAppendOutcome;
-use crate::IdAllocationError;
 use crate::LeaderStateSnapshot;
 use crate::PeerEntriesResult;
 use crate::PeerUpdate;
@@ -555,41 +554,26 @@ where
             return Ok(Vec::new());
         }
 
-        // Pre-allocate ID range in one atomic operation
-        let id_range = raft_log.pre_allocate_id_range(entry_payloads.len() as u64);
-        assert!(!id_range.is_empty());
-
-        let mut next_index = *id_range.start();
-
-        let mut entries = Vec::with_capacity(entry_payloads.len());
-
-        for payload in entry_payloads {
-            // Ensure we don't exceed allocated range
-            if next_index > *id_range.end() {
-                return Err(IdAllocationError::Overflow {
-                    start: next_index,
-                    end: *id_range.end(),
-                }
-                .into());
-            }
-
-            entries.push(Entry {
-                index: next_index,
+        // Number the new entries right after the log's last entry. Numbering and the append
+        // below happen in one call on the Raft loop, so nothing else can be numbered in between;
+        // `last_log_id()` falls back to the purge boundary when the log is empty.
+        let first_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
+        let entries: Vec<Entry> = entry_payloads
+            .into_iter()
+            .zip(first_index..)
+            .map(|(payload, index)| Entry {
+                index,
                 term: current_term,
                 payload: Some(payload),
-            });
+            })
+            .collect();
 
-            next_index += 1;
-        }
-
-        if !entries.is_empty() {
-            trace!(
-                "RaftLog append_entries: {}..={}",
-                entries[0].index,
-                entries.last().unwrap().index
-            );
-            raft_log.append_entries(entries.clone()).await?;
-        }
+        trace!(
+            "RaftLog append_entries: {}..={}",
+            entries[0].index,
+            entries.last().unwrap().index
+        );
+        raft_log.append_entries(entries.clone()).await?;
 
         Ok(entries)
     }

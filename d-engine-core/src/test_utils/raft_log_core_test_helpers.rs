@@ -166,14 +166,16 @@ pub async fn simulate_insert_command<L: RaftLog>(
     ids: Vec<u64>,
     term: u64,
 ) {
+    let mut next_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
     let mut entries = Vec::new();
     for id in ids {
         let entry = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index: next_index,
             term,
             payload: Some(EntryPayload::command(mock_insert_command_payload(vec![id]))),
         };
         entries.push(entry);
+        next_index += 1;
     }
     raft_log.append_entries(entries).await.unwrap();
     raft_log.flush().await.unwrap();
@@ -189,14 +191,16 @@ pub async fn simulate_delete_command<L: RaftLog>(
     id_range: std::ops::RangeInclusive<u64>,
     term: u64,
 ) {
+    let mut next_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
     let mut entries = Vec::new();
     for id in id_range {
         let entry = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index: next_index,
             term,
             payload: Some(EntryPayload::command(Bytes::from(format!("delete_{id}")))),
         };
         entries.push(entry);
+        next_index += 1;
     }
     raft_log.append_entries(entries).await.unwrap();
     raft_log.flush().await.unwrap();

@@ -4951,3 +4951,206 @@ async fn test_handle_client_propose_redirects_to_leader() {
     let result = resp_rx.recv().await.expect("channel should not be closed");
     assert_eq!(result.expect("Ok response").error, ErrorCode::NotLeader);
 }
+
+// ============================================================================
+// InstallSnapshotChunk: dropping local entries that conflict with the snapshot
+// ============================================================================
+
+/// Follower context whose snapshot stream yields a snapshot ending at `boundary`, whose log holds
+/// `local_term_at_boundary` at that index, and that records the order of log truncation and
+/// snapshot install in the returned list.
+///
+/// `expect_truncate_from`: `Some(from)` requires exactly one `truncate_from(from)`; `None`
+/// requires that the log is never truncated.
+fn snapshot_conflict_context(
+    graceful_rx: watch::Receiver<()>,
+    boundary: LogId,
+    local_term_at_boundary: Option<u64>,
+    expect_truncate_from: Option<u64>,
+) -> (
+    RaftContext<MockTypeConfig>,
+    tempfile::TempDir,
+    Arc<std::sync::Mutex<Vec<&'static str>>>,
+) {
+    let (mut context, temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        move |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: d_engine_proto::server::storage::SnapshotMetadata {
+                    last_included: Some(boundary),
+                    ..Default::default()
+                },
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let install_steps = steps.clone();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::InstallSnapshot { response, .. }) = rx.recv().await {
+            install_steps.lock().unwrap().push("install");
+            let _ = response.send(Ok(SnapshotApplyResult::Applied {
+                last_included: boundary,
+            }));
+        }
+    });
+    context.handlers.state_machine_commands = StateMachineCommandSender::new(tx);
+
+    let mut raft_log = mock_raft_log();
+    raft_log
+        .expect_entry_term()
+        .with(eq(boundary.index))
+        .returning(move |_| local_term_at_boundary);
+    match expect_truncate_from {
+        Some(from) => {
+            let truncate_steps = steps.clone();
+            raft_log.expect_truncate_from().with(eq(from)).times(1).returning(move |_| {
+                truncate_steps.lock().unwrap().push("truncate");
+                Ok(())
+            });
+        }
+        None => {
+            raft_log.expect_truncate_from().never();
+        }
+    }
+    context.storage.raft_log = Arc::new(raft_log);
+
+    (context, temp_dir, steps)
+}
+
+/// Pushes one snapshot chunk to `state`; returns the handler result and the response sent back
+/// to the leader, if any.
+async fn push_snapshot(
+    state: &mut FollowerState<MockTypeConfig>,
+    context: &RaftContext<MockTypeConfig>,
+) -> (
+    crate::Result<()>,
+    Option<d_engine_proto::server::storage::SnapshotResponse>,
+) {
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            context,
+            internal_event_tx,
+        )
+        .await;
+    let response = tokio::time::timeout(std::time::Duration::from_millis(500), resp_rx.recv())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|r| r.ok());
+    (result, response)
+}
+
+/// The local log disagrees with the snapshot at its boundary: drop every entry after the
+/// boundary, durably, before installing the snapshot.
+///
+/// Scenario (#400): the follower holds 1..10 from term 2; the leader's snapshot ends at (9, 4).
+/// Index 10 belongs to a history the leader does not share. If it stayed, the follower would
+/// report (10, 2) as its last log position and could vote for a candidate missing (9, 4).
+/// Truncating before the install means a crash in between leaves only a node that is behind.
+#[tokio::test]
+async fn test_install_snapshot_drops_entries_after_a_conflicting_boundary_first() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let boundary = LogId { index: 9, term: 4 };
+    let (context, _temp_dir, steps) =
+        snapshot_conflict_context(graceful_rx, boundary, Some(2), Some(10));
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (result, response) = push_snapshot(&mut state, &context).await;
+
+    result.unwrap();
+    assert!(response.expect("leader must get a response").success);
+    assert_eq!(
+        *steps.lock().unwrap(),
+        vec!["truncate", "install"],
+        "entries after the boundary must be dropped before the snapshot is installed"
+    );
+}
+
+/// The local log agrees with the snapshot at its boundary: entries after it continue the
+/// leader's history and may already be acknowledged, so they are kept.
+#[tokio::test]
+async fn test_install_snapshot_keeps_entries_after_a_matching_boundary() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let boundary = LogId { index: 9, term: 4 };
+    let (context, _temp_dir, steps) =
+        snapshot_conflict_context(graceful_rx, boundary, Some(4), None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (result, response) = push_snapshot(&mut state, &context).await;
+
+    result.unwrap();
+    assert!(response.expect("leader must get a response").success);
+    assert_eq!(*steps.lock().unwrap(), vec!["install"]);
+}
+
+/// The local log ends before the snapshot boundary: there is nothing after the boundary to drop.
+#[tokio::test]
+async fn test_install_snapshot_truncates_nothing_when_the_log_is_shorter() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let boundary = LogId { index: 9, term: 4 };
+    let (context, _temp_dir, steps) = snapshot_conflict_context(graceful_rx, boundary, None, None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (result, response) = push_snapshot(&mut state, &context).await;
+
+    result.unwrap();
+    assert!(response.expect("leader must get a response").success);
+    assert_eq!(*steps.lock().unwrap(), vec!["install"]);
+}
+
+/// The local entry at the boundary is committed but differs from the snapshot: two different
+/// entries are committed at the same index, so safety is already broken. Fail fast without
+/// touching the log or installing — repairing it would hide the violation.
+///
+/// The state machine's own boundary check does not catch this when the conflicting entry is
+/// committed but not yet applied.
+#[tokio::test]
+async fn test_install_snapshot_conflicting_with_a_committed_entry_is_fatal() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let boundary = LogId { index: 9, term: 4 };
+    let (context, _temp_dir, steps) =
+        snapshot_conflict_context(graceful_rx, boundary, Some(2), None);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_commit_index(9).unwrap();
+
+    let (result, response) = push_snapshot(&mut state, &context).await;
+
+    let err = result.expect_err("a conflict with a committed entry must stop the node");
+    assert!(err.is_fatal(), "expected a fatal error, got {err:?}");
+    assert!(
+        steps.lock().unwrap().is_empty(),
+        "the log must not be truncated and the snapshot must not be installed"
+    );
+    assert!(
+        response.is_none_or(|r| !r.success),
+        "the leader must not be told the install succeeded"
+    );
+}

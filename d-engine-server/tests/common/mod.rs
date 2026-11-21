@@ -374,8 +374,6 @@ pub async fn manipulate_log(
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        println!("pre_allocate_raft_logs_next_index: {id}",);
-
         let log = Entry {
             index: id,
             term,

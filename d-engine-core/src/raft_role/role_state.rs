@@ -44,6 +44,7 @@ use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
 use crate::SnapshotApplyResult;
+use crate::SnapshotError;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
@@ -940,6 +941,27 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 return Ok(());
             }
         };
+
+        // The local log may disagree with the snapshot at its boundary: the local entry there has
+        // another term, so the local log diverged from the leader's at or before that index and
+        // every local entry after it is on a branch that can never be committed. Drop those
+        // entries, durably, before installing, so a crash in between leaves a node that is only
+        // behind. If the conflicting local entry is already committed, two different entries are
+        // committed at one index: safety is already broken, so stop instead of repairing it.
+        if let Some(boundary) = prepared.metadata.last_included
+            && let Some(local_term) = ctx.raft_log().entry_term(boundary.index)
+            && local_term != boundary.term
+        {
+            if boundary.index <= self.commit_index() {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: boundary.index,
+                    local_term,
+                    incoming_term: boundary.term,
+                }
+                .into());
+            }
+            ctx.raft_log().truncate_from(boundary.index + 1).await?;
+        }
 
         // Sole write path: hand the received snapshot to the Worker, await the result.
         let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;
