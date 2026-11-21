@@ -68,7 +68,7 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ Wire protocol is not compatible with v0.2.4**: `ClientResponse.metadata` moved from field 4 to 5 (field 4 is now `scan_data`); `HandleClientScan` returns `ClientResponse` (the `ScanResponse` message is now `ScanResults`); the `ChunkStatus` values are renumbered with `CHUNK_STATUS_UNSPECIFIED = 0`; `WriteCommand.Insert.ttl_secs` (field 3) is reserved; new RPC `PreVote`. Do not run v0.2.4 and v0.3.0 nodes or clients together. See `MIGRATION_GUIDE.md`.
 
-- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
+- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `std::io::Result<()>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
 
 - **State machine worker lifecycle** (#455): the `NodeBuilder` only assembles the worker; `Node::run()` starts it and stops it. `StateMachineWorker::new` no longer takes a shutdown signal.
 
@@ -85,7 +85,7 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
-- **⚠️ `StateMachine::apply_snapshot_from_file` return type changed** (#436): Was `Result<()>`, now `Result<SnapshotApplyResult>`. The three outcomes (`Applied`/`IgnoredStale`/`IgnoredDuplicate`) are now explicit instead of every call looking identical on success. Custom `StateMachine` implementations must update the signature and return the matching variant. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
+- **⚠️ `StateMachine::apply_snapshot_from_file` returns `std::io::Result<()>` and is only called for a snapshot the engine has decided to install** (#436, #400): the engine ignores stale and duplicate snapshots itself, so the method reports nothing but success or failure. Custom `StateMachine` implementations: change the error type to `std::io::Error`.
 
 - **⚠️ Learner initial-snapshot PULL path removed** (#436): `Transport::request_snapshot_from_leader` and `StateMachineHandler::apply_snapshot_stream_from_leader` are removed. New learners catch up via the leader's PUSH replication loop (AppendEntries / InstallSnapshot) instead of eagerly pulling a snapshot on startup. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
@@ -124,7 +124,7 @@ All notable changes to this project will be documented in this file.
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
-- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, every method returns `std::io::Result` instead of `d_engine::Error` (as do the constructors of the built-in file and RocksDB state machines), and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, every method except `last_applied()` (which returns the `LogId` directly) returns `std::io::Result` instead of `d_engine::Error` (as do the constructors of the built-in file and RocksDB state machines), and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 - **⚠️ The engine takes the state machine by value** (#400): `start_custom`, `start_node` and `run_custom` take `SM` instead of `Arc<SM>`, and `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
 
