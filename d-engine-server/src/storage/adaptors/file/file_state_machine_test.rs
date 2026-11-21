@@ -896,3 +896,113 @@ async fn test_file_sm_install_empty_snapshot_clears_existing_data() {
     );
     assert_eq!(receiver.last_applied(), LogId { term: 1, index: 5 });
 }
+
+// ── checkpoint atomicity ──────────────────────────────────────────────────────
+
+fn insert_entry(
+    index: u64,
+    key: &'static str,
+    value: &'static str,
+) -> ApplyEntry {
+    ApplyEntry {
+        index,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from(key),
+            value: Bytes::from(value),
+        },
+    }
+}
+
+#[cfg(unix)]
+fn inode_of(
+    dir: &std::path::Path,
+    name: &str,
+) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(dir.join(name)).unwrap().ino()
+}
+
+/// A checkpoint replaces `state.data` and `metadata.bin` with a new file instead of rewriting
+/// them in place.
+///
+/// Rewriting in place (truncate, then write) leaves a window in which a crash has lost the old
+/// contents and holds only part of the new ones. Writing a new file and renaming it over the old
+/// one leaves either the old file or the new one. The inode changes only when the file was
+/// replaced, so it tells the two apart without having to crash anything.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_file_sm_checkpoint_replaces_files_instead_of_rewriting_them_in_place() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+    sm.apply_chunk(&[insert_entry(1, "k1", "v1")]).await.unwrap();
+    sm.flush().unwrap();
+    let data_before = inode_of(dir.path(), "state.data");
+    let metadata_before = inode_of(dir.path(), "metadata.bin");
+
+    sm.apply_chunk(&[insert_entry(2, "k2", "v2")]).await.unwrap();
+    sm.flush().unwrap();
+
+    assert_ne!(
+        inode_of(dir.path(), "state.data"),
+        data_before,
+        "state.data must be replaced, not rewritten in place"
+    );
+    assert_ne!(
+        inode_of(dir.path(), "metadata.bin"),
+        metadata_before,
+        "metadata.bin must be replaced, not rewritten in place"
+    );
+}
+
+/// The checkpoint taken after a WAL replay also replaces `state.data` instead of rewriting it.
+///
+/// The WAL is cleared right after that checkpoint, so for the replayed entries the checkpoint is
+/// the only copy. Rewriting `state.data` in place and crashing midway would lose them for good.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_file_sm_wal_replay_checkpoint_replaces_state_data() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+    sm.apply_chunk(&[insert_entry(1, "k1", "v1")]).await.unwrap();
+    sm.flush().unwrap();
+    // Entry 2 reaches the WAL but no checkpoint before the process dies.
+    sm.apply_chunk(&[insert_entry(2, "k2", "v2")]).await.unwrap();
+    let data_before = inode_of(dir.path(), "state.data");
+    drop(sm);
+
+    let recovered = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+
+    assert_eq!(recovered.get(b"k2").unwrap(), Some(Bytes::from("v2")));
+    assert_ne!(
+        inode_of(dir.path(), "state.data"),
+        data_before,
+        "the checkpoint after the replay must replace state.data"
+    );
+}
+
+/// A checkpoint leaves nothing behind but the state's own files.
+///
+/// The replacement is written to a temporary file first; that file must be gone once the
+/// checkpoint is done, or every checkpoint would leak one.
+#[tokio::test]
+async fn test_file_sm_checkpoint_leaves_no_temporary_files() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+    sm.apply_chunk(&[insert_entry(1, "k1", "v1")]).await.unwrap();
+    sm.flush().unwrap();
+    sm.apply_chunk(&[insert_entry(2, "k2", "v2")]).await.unwrap();
+    sm.flush().unwrap();
+
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    for name in &names {
+        assert!(
+            ["state.data", "metadata.bin", "wal.log"].contains(&name.as_str()),
+            "unexpected file left in the data directory: {name} (all: {names:?})"
+        );
+    }
+}

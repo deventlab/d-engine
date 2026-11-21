@@ -228,6 +228,40 @@ pub struct FileStateMachine {
     // wal_file: RwLock<File>, // Write-ahead log for crash recovery
 }
 
+/// Replaces the file at `path` with `contents` so that a crash leaves either the old file or the
+/// new one, never a mix.
+///
+/// The bytes go to a sibling temporary file and are synced to disk; the temporary file is then
+/// renamed over `path` (atomic on one filesystem), and the directory is synced so the rename
+/// itself survives a power loss. A temporary file left behind by an earlier crash is overwritten.
+fn write_file_atomically(
+    path: &std::path::Path,
+    contents: &[u8],
+) -> io::Result<()> {
+    let temporary = path.with_extension("tmp");
+    {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&temporary, path)?;
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// [`write_file_atomically`] on the blocking pool, so the fsyncs do not stall the async runtime.
+async fn write_file_atomically_async(
+    path: PathBuf,
+    contents: Vec<u8>,
+) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || write_file_atomically(&path, &contents))
+        .await
+        .map_err(io::Error::other)?
+}
+
 impl FileStateMachine {
     /// Creates a new file-based state machine with persistence
     ///
@@ -593,8 +627,7 @@ impl FileStateMachine {
             buf.extend_from_slice(&term.to_be_bytes());
         }
 
-        std::fs::write(data_path, buf)?;
-        Ok(())
+        write_file_atomically(&data_path, &buf)
     }
 
     /// Persists key-value data to disk
@@ -606,12 +639,6 @@ impl FileStateMachine {
         };
 
         let data_path = self.data_dir.join("state.data");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_path)
-            .await?;
 
         // Batch serialize into a single buffer — eliminates per-entry async yield overhead.
         // Mirrors append_to_wal's approach for consistent I/O pattern.
@@ -627,10 +654,7 @@ impl FileStateMachine {
             buf.extend_from_slice(&term.to_be_bytes());
         }
 
-        file.write_all(&buf).await?;
-        file.flush().await?;
-
-        Ok(())
+        write_file_atomically_async(data_path, buf).await
     }
 
     pub(crate) fn update_last_applied(
@@ -665,41 +689,24 @@ impl FileStateMachine {
     }
 
     /// Persists metadata to disk
+    /// The applied position as stored in `metadata.bin`: index, then term, big-endian.
+    fn metadata_bytes(&self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&self.last_applied_index.load(Ordering::SeqCst).to_be_bytes());
+        bytes[8..].copy_from_slice(&self.last_applied_term.load(Ordering::SeqCst).to_be_bytes());
+        bytes
+    }
+
     fn persist_metadata(&self) -> io::Result<()> {
-        let metadata_path = self.data_dir.join("metadata.bin");
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(metadata_path)?;
-
-        let index = self.last_applied_index.load(Ordering::SeqCst);
-        let term = self.last_applied_term.load(Ordering::SeqCst);
-
-        file.write_all(&index.to_be_bytes())?;
-        file.write_all(&term.to_be_bytes())?;
-
-        file.flush()?;
-        Ok(())
+        write_file_atomically(&self.data_dir.join("metadata.bin"), &self.metadata_bytes())
     }
 
     async fn persist_metadata_async(&self) -> io::Result<()> {
-        let metadata_path = self.data_dir.join("metadata.bin");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(metadata_path)
-            .await?;
-
-        let index = self.last_applied_index.load(Ordering::SeqCst);
-        let term = self.last_applied_term.load(Ordering::SeqCst);
-
-        file.write_all(&index.to_be_bytes()).await?;
-        file.write_all(&term.to_be_bytes()).await?;
-
-        file.flush().await?;
-        Ok(())
+        write_file_atomically_async(
+            self.data_dir.join("metadata.bin"),
+            self.metadata_bytes().to_vec(),
+        )
+        .await
     }
 
     /// Clears the write-ahead log (called after successful persistence)
