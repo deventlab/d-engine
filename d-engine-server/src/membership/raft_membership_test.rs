@@ -1031,6 +1031,140 @@ mod check_cluster_is_ready_test {
         }
     }
 
+    /// Builds a membership for node 1 with one peer per entry of `peers_healthy` (ids 2, 3, ...).
+    /// A `true` peer answers the health check as serving, a `false` peer answers as not serving.
+    /// `silent_peers` more peers follow, which accept the connection and never answer.
+    /// The returned senders and listeners keep the peers alive for as long as the caller holds them.
+    async fn membership_with_peers(
+        peers_healthy: &[bool],
+        silent_peers: usize,
+        config: RaftNodeConfig,
+    ) -> (
+        RaftMembership<RaftTypeConfig<MockStorageEngine, MockStateMachine>>,
+        Vec<oneshot::Sender<()>>,
+        Vec<tokio::net::TcpListener>,
+    ) {
+        let mut silent = Vec::new();
+        let mut nodes = Vec::new();
+        for i in 0..peers_healthy.len() {
+            nodes.push(NodeMeta {
+                id: i as u32 + 2,
+                address: "127.0.0.1:0".to_string(),
+                role: Follower as i32,
+                status: NodeStatus::Active.into(),
+            });
+        }
+        for i in 0..silent_peers {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            nodes.push(NodeMeta {
+                id: (peers_healthy.len() + i) as u32 + 2,
+                address: listener.local_addr().unwrap().to_string(),
+                role: Follower as i32,
+                status: NodeStatus::Active.into(),
+            });
+            silent.push(listener);
+        }
+        let (membership, _) =
+            RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                1, nodes, config,
+            );
+        let mut stops = Vec::new();
+        for (i, healthy) in peers_healthy.iter().enumerate() {
+            let (tx, rx) = oneshot::channel::<()>();
+            let (port, _addr) =
+                MockNode::mock_listener(MockRpcService::default(), rx, *healthy).await.unwrap();
+            membership.update_node_address(i as u32 + 2, format!("127.0.0.1:{port}")).await.unwrap();
+            stops.push(tx);
+        }
+        (membership, stops, silent)
+    }
+
+    fn quick_failing_config() -> RaftNodeConfig {
+        let mut config = RaftNodeConfig::default();
+        config.retry.membership.max_retries = 1;
+        config
+    }
+
+    /// A 3-node cluster whose other two nodes are not serving cannot form a majority.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_three_nodes_two_peers_down_fails() {
+        let (membership, _stops, _silent) = membership_with_peers(&[false, false], 0, quick_failing_config()).await;
+
+        assert!(membership.check_cluster_is_ready().await.is_err());
+    }
+
+    /// A 3-node cluster starts with one peer down: this node plus the healthy peer are 2 of 3.
+    /// Requiring every peer would keep a restarting node from ever joining a cluster that is
+    /// already able to elect and commit.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_three_nodes_one_peer_down_succeeds() {
+        let (membership, _stops, _silent) = membership_with_peers(&[true, false], 0, quick_failing_config()).await;
+
+        assert!(membership.check_cluster_is_ready().await.is_ok());
+    }
+
+    /// A 5-node cluster needs 3: this node plus two healthy peers, so two peers down is enough.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_five_nodes_two_peers_down_succeeds() {
+        let (membership, _stops, _silent) =
+            membership_with_peers(&[true, true, false, false], 0, quick_failing_config()).await;
+
+        assert!(membership.check_cluster_is_ready().await.is_ok());
+    }
+
+    /// A 5-node cluster with three peers down has this node plus one peer: 2 of 5, no majority.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_five_nodes_three_peers_down_fails() {
+        let (membership, _stops, _silent) =
+            membership_with_peers(&[true, false, false, false], 0, quick_failing_config()).await;
+
+        assert!(membership.check_cluster_is_ready().await.is_err());
+    }
+
+    /// A single-node cluster has no peer to wait for: this node alone is the majority.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_single_node_succeeds_without_peers() {
+        let (membership, _stops, _silent) = membership_with_peers(&[], 0, quick_failing_config()).await;
+
+        assert!(membership.check_cluster_is_ready().await.is_ok());
+    }
+
+    /// Once a majority is healthy the check returns, without waiting for a peer that never
+    /// answers. The slow peer accepts the connection and then stays silent, and its own timeout is
+    /// 5s, so waiting for it would take at least that long.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_returns_once_majority_is_healthy() {
+        let mut config = quick_failing_config();
+        config.retry.membership.timeout_ms = 5_000;
+        let (membership, _stops, _silent) = membership_with_peers(&[true], 1, config).await;
+
+        let start = Instant::now();
+        let result = membership.check_cluster_is_ready().await;
+
+        assert!(result.is_ok());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "returned after {:?}: it waited for the silent peer",
+            start.elapsed()
+        );
+    }
+
+    /// When no majority can be reached the check gives up at `startup_quorum_timeout`, not at the
+    /// peers' own much longer timeouts.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_without_majority_fails_at_startup_quorum_timeout() {
+        let mut config = quick_failing_config();
+        config.retry.membership.timeout_ms = 5_000;
+        config.raft.membership.startup_quorum_timeout = Duration::from_millis(300);
+        let (membership, _stops, _silent) = membership_with_peers(&[], 2, config).await;
+
+        let start = Instant::now();
+        let result = membership.check_cluster_is_ready().await;
+
+        assert!(result.is_err());
+        assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    }
+
     /// #428: `run_as_voter` wraps `check_cluster_is_ready()` in
     /// `tokio::time::timeout(startup_quorum_timeout, ...)` so a genuinely
     /// unreachable cluster fails fast at startup instead of waiting out

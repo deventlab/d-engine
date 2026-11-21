@@ -75,11 +75,19 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
         engines.push(engine);
     }
 
-    // Wait for initial leader election
-    let leader_info = engines[0]
-        .wait_ready(Duration::from_secs(10))
-        .await
-        .expect("Failed to elect leader");
+    // Wait for every node, not only the first. A node reports a leader only once its own
+    // startup is done, and a node still starting up cannot vote: stopping the leader before
+    // that leaves two nodes of which one cannot take part, so no new leader can be elected.
+    let mut leader_info = None;
+    for engine in &engines {
+        leader_info = Some(
+            engine
+                .wait_ready(Duration::from_secs(30))
+                .await
+                .expect("Failed to elect leader"),
+        );
+    }
+    let leader_info = leader_info.expect("the cluster has nodes");
     info!("Initial leader elected: node {}", leader_info.leader_id);
 
     let initial_leader_id = leader_info.leader_id;

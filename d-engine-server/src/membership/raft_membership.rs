@@ -50,6 +50,7 @@ use crate::network::HealthCheckerApis;
 use crate::network::HealthMonitor;
 use crate::network::RaftHealthMonitor;
 use crate::utils::async_task::task_with_timeout_and_exponential_backoff;
+use crate::utils::cluster::majority_count;
 use crate::utils::net::address_str;
 
 pub struct RaftMembership<T>
@@ -215,48 +216,58 @@ where
             tasks.push(task_handle);
         }
 
-        // Wait for all tasks to complete, but never past startup_quorum_timeout.
-        // On timeout, abort every still-outstanding task before returning so no
-        // per-peer retry survives this call giving up.
-        let mut success_count = 0;
-        tokio::select! {
-            _ = async {
+        // This node counts as one member of the cluster, so the peers still needed for a
+        // majority are `majority - 1`. Return as soon as that many are healthy: a peer that is
+        // slow or down must not hold back a cluster that can already elect and commit.
+        let majority = majority_count(peer_ids.len() + 1);
+        let peers_needed = majority - 1;
+
+        let mut healthy_peers = 0;
+        let reached = tokio::select! {
+            reached = async {
+                if peers_needed == 0 {
+                    return true;
+                }
                 while let Some(result) = tasks.next().await {
                     match result {
-                        Ok(Ok(_)) => success_count += 1,
+                        Ok(Ok(_)) => {
+                            healthy_peers += 1;
+                            if healthy_peers >= peers_needed {
+                                return true;
+                            }
+                        }
                         Ok(Err(e)) => error!("Task failed with error: {:?}", e),
                         Err(e) => error!("Task failed with error: {:?}", e),
                     }
                 }
-            } => {}
+                false
+            } => reached,
             _ = tokio::time::sleep(startup_quorum_timeout) => {
                 warn!(
-                    "check_cluster_is_ready timed out after {:?} with {} peer check(s) still pending — aborting them",
-                    startup_quorum_timeout,
-                    tasks.len()
+                    "check_cluster_is_ready timed out after {:?}: {} of {} needed peer(s) healthy",
+                    startup_quorum_timeout, healthy_peers, peers_needed
                 );
-                for task in tasks.iter() {
-                    task.abort();
-                }
-                return Err(MembershipError::ClusterIsNotReady.into());
+                false
             }
+        };
+
+        // Whatever the outcome, no per-peer retry may outlive this call.
+        for task in tasks.iter() {
+            task.abort();
         }
 
-        if peer_ids.len() == success_count {
-            if !peer_ids.is_empty() {
-                info!("All {} peer(s) health check passed", peer_ids.len());
-            }
-
-            return Ok(());
+        if reached {
+            info!(
+                "Startup health check passed: {} healthy peer(s) plus this node reach a majority of {}",
+                healthy_peers, majority
+            );
+            Ok(())
         } else {
             error!(
-                "
-
-                ... CLUSTER IS NOT READY ...
-
-            "
+                "CLUSTER IS NOT READY: {} healthy peer(s) of {} needed for a majority",
+                healthy_peers, peers_needed
             );
-            return Err(MembershipError::ClusterIsNotReady.into());
+            Err(MembershipError::ClusterIsNotReady.into())
         }
     }
 
