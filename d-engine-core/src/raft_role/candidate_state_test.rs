@@ -793,7 +793,7 @@ async fn test_handle_append_entries_steps_down_to_follower() {
 
     assert!(matches!(
         internal_event_rx.try_recv(),
-        Ok(InternalEvent::BecomeFollower(None))
+        Ok(InternalEvent::BecomeFollower(Some(5)))
     ));
     assert!(matches!(
         internal_event_rx.try_recv().unwrap(),
@@ -1038,7 +1038,7 @@ async fn test_handle_append_entries_same_term_log_conflict_steps_down() {
     assert!(
         matches!(
             internal_event_rx.try_recv(),
-            Ok(InternalEvent::BecomeFollower(None))
+            Ok(InternalEvent::BecomeFollower(Some(5)))
         ),
         "Candidate must step down when receiving AppendEntries with term >= currentTerm (Raft §5.2)"
     );
@@ -1120,7 +1120,7 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
     assert!(
         matches!(
             internal_event_rx.try_recv(),
-            Ok(InternalEvent::BecomeFollower(None))
+            Ok(InternalEvent::BecomeFollower(Some(5)))
         ),
         "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
     );
@@ -1217,7 +1217,7 @@ async fn test_handle_append_entries_higher_term_persists_hard_state_before_stepp
     assert!(
         matches!(
             internal_event_rx.lock().unwrap().try_recv(),
-            Ok(InternalEvent::BecomeFollower(None))
+            Ok(InternalEvent::BecomeFollower(Some(5)))
         ),
         "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
     );
@@ -1287,7 +1287,7 @@ fn test_send_become_follower_and_replay_events() {
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
 
-    assert!(state.send_become_follower_event(&internal_event_tx).is_ok());
+    assert!(state.send_become_follower_event(None, &internal_event_tx).is_ok());
     assert!(
         state
             .send_replay_inbound_event(
