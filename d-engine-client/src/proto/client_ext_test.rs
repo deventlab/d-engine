@@ -137,6 +137,91 @@ fn test_validate_error_not_leader_carries_leader_hint() {
     }
 }
 
+/// A NotLeader response without metadata still tells the caller to retry, after the default delay,
+/// and names no leader.
+#[test]
+fn test_validate_error_not_leader_without_metadata_has_default_retry_and_no_hint() {
+    let response = ClientResponse {
+        error: ErrorCode::NotLeader as i32,
+        metadata: None,
+        success_result: None,
+    };
+
+    match response.validate_error() {
+        Err(ClientApiError::Network {
+            leader_hint,
+            retry_after_ms,
+            ..
+        }) => {
+            assert_eq!(leader_hint, None);
+            assert_eq!(retry_after_ms, Some(100));
+        }
+        other => panic!("expected Network error, got {other:?}"),
+    }
+}
+
+/// The retry delay the server sends wins over the default.
+#[test]
+fn test_validate_error_not_leader_keeps_the_servers_retry_delay() {
+    let response = ClientResponse {
+        error: ErrorCode::NotLeader as i32,
+        metadata: Some(ErrorMetadata {
+            retry_after_ms: Some(250),
+            leader_id: None,
+            leader_address: None,
+            debug_message: None,
+        }),
+        success_result: None,
+    };
+
+    match response.validate_error() {
+        Err(ClientApiError::Network { retry_after_ms, .. }) => {
+            assert_eq!(retry_after_ms, Some(250));
+        }
+        other => panic!("expected Network error, got {other:?}"),
+    }
+}
+
+/// A leader id that is not a number gives no hint: the client must not redirect to a node it
+/// cannot name.
+#[test]
+fn test_validate_error_not_leader_with_malformed_leader_id_has_no_hint() {
+    let response = ClientResponse {
+        error: ErrorCode::NotLeader as i32,
+        metadata: Some(ErrorMetadata {
+            retry_after_ms: None,
+            leader_id: Some("not-a-number".to_string()),
+            leader_address: Some("127.0.0.1:9082".to_string()),
+            debug_message: None,
+        }),
+        success_result: None,
+    };
+
+    match response.validate_error() {
+        Err(ClientApiError::Network { leader_hint, .. }) => assert_eq!(leader_hint, None),
+        other => panic!("expected Network error, got {other:?}"),
+    }
+}
+
+/// Redirect metadata belongs to NotLeader only: another error code must convert exactly as the
+/// plain code conversion does, even if the server attached a leader.
+#[test]
+fn test_validate_error_other_code_ignores_redirect_metadata() {
+    let response = ClientResponse {
+        error: ErrorCode::InvalidRequest as i32,
+        metadata: Some(ErrorMetadata {
+            retry_after_ms: Some(250),
+            leader_id: Some("2".to_string()),
+            leader_address: Some("127.0.0.1:9082".to_string()),
+            debug_message: None,
+        }),
+        success_result: None,
+    };
+
+    let err = response.validate_error().unwrap_err();
+    assert_eq!(format!("{err:?}"), format!("{:?}", ClientApiError::from(ErrorCode::InvalidRequest)));
+}
+
 // --- into_read_results tests ---
 
 #[test]

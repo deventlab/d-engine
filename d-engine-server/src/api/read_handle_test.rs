@@ -643,16 +643,17 @@ mod error_helper_tests {
     use d_engine_core::client::ScanResults;
 
     use super::super::extract_read_payload;
-    use super::super::map_error_response;
-    use super::super::not_leader_error;
 
-    // ─── not_leader_error ────────────────────────────────────────────────────
+    // ─── NotLeader retry delay (ClientApiError::from_response) ────────────────
 
     #[test]
     fn test_not_leader_uses_server_retry_after_ms_when_provided() {
-        let err = not_leader_error(
-            Some("1".to_string()),
-            Some("127.0.0.1:5001".to_string()),
+        let err = ClientApiError::from_response(
+            ErrorCode::NotLeader,
+            Some(LeaderHint {
+                leader_id: 1,
+                address: "127.0.0.1:5001".to_string(),
+            }),
             Some(500),
         );
         match err {
@@ -665,7 +666,7 @@ mod error_helper_tests {
 
     #[test]
     fn test_not_leader_falls_back_to_100ms_when_server_provides_none() {
-        let err = not_leader_error(None, None, None);
+        let err = ClientApiError::from_response(ErrorCode::NotLeader, None, None);
         match err {
             ClientApiError::Network { retry_after_ms, .. } => {
                 assert_eq!(retry_after_ms, Some(100));
@@ -676,7 +677,7 @@ mod error_helper_tests {
 
     #[test]
     fn test_not_leader_zero_is_not_treated_as_none() {
-        let err = not_leader_error(None, None, Some(0));
+        let err = ClientApiError::from_response(ErrorCode::NotLeader, None, Some(0));
         match err {
             ClientApiError::Network { retry_after_ms, .. } => {
                 assert_eq!(retry_after_ms, Some(0));
@@ -685,11 +686,11 @@ mod error_helper_tests {
         }
     }
 
-    // ─── map_error_response ──────────────────────────────────────────────────
+    // ─── NotLeader redirect (ClientApiError::from_response) ───────────────────
 
     #[test]
-    fn test_map_error_response_not_leader_forwards_retry_after_ms() {
-        let err = map_error_response(
+    fn test_from_response_not_leader_forwards_retry_after_ms() {
+        let err = ClientApiError::from_response(
             ErrorCode::NotLeader,
             Some(LeaderHint {
                 leader_id: 2,
@@ -713,8 +714,8 @@ mod error_helper_tests {
     }
 
     #[test]
-    fn test_map_error_response_not_leader_falls_back_to_100ms_when_none() {
-        let err = map_error_response(ErrorCode::NotLeader, None, None);
+    fn test_from_response_not_leader_falls_back_to_100ms_when_none() {
+        let err = ClientApiError::from_response(ErrorCode::NotLeader, None, None);
         match err {
             ClientApiError::Network { retry_after_ms, .. } => {
                 assert_eq!(retry_after_ms, Some(100));

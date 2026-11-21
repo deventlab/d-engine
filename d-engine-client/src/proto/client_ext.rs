@@ -149,32 +149,27 @@ impl ClientResponseExt for ClientResponse {
     /// Validate error code in response header
     ///
     /// # Internal Logic
-    /// Converts numeric error code to enum variant
+    /// Converts the numeric error code to an enum variant. The redirect target and retry delay of a
+    /// NotLeader response travel in `metadata`, which the plain `From<ErrorCode>` conversion cannot
+    /// see, so they are read here and handed to `ClientApiError::from_response`.
     fn validate_error(&self) -> std::result::Result<(), ClientApiError> {
         let code = ErrorCode::try_from(self.error).unwrap_or(ErrorCode::Uncategorized);
         if code == ErrorCode::Success {
             return Ok(());
         }
 
-        // NotLeader carries redirect info in `metadata`, which the generic
-        // `From<ErrorCode>` conversion has no way to see — extract it here,
-        // where `self.metadata` is actually in scope.
-        if code == ErrorCode::NotLeader {
-            let leader_hint = self.metadata.as_ref().and_then(|m| {
-                let leader_id = m.leader_id.as_ref()?.parse::<u32>().ok()?;
-                let address = m.leader_address.clone()?;
-                Some(LeaderHint { leader_id, address })
-            });
-            let retry_after_ms = self.metadata.as_ref().and_then(|m| m.retry_after_ms);
-            return Err(ClientApiError::Network {
-                code,
-                message: "Not leader".to_string(),
-                retry_after_ms: retry_after_ms.or(Some(100)),
-                leader_hint,
-            });
-        }
+        let leader_hint = self.metadata.as_ref().and_then(|m| {
+            let leader_id = m.leader_id.as_ref()?.parse::<u32>().ok()?;
+            let address = m.leader_address.clone()?;
+            Some(LeaderHint { leader_id, address })
+        });
+        let retry_after_ms = self.metadata.as_ref().and_then(|m| m.retry_after_ms);
 
-        Err(code.into())
+        Err(ClientApiError::from_response(
+            code,
+            leader_hint,
+            retry_after_ms,
+        ))
     }
 
     fn is_write_success(&self) -> bool {

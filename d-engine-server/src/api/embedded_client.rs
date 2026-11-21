@@ -37,7 +37,6 @@ use d_engine_core::watch::WatchRegistry;
 use tokio::sync::mpsc;
 
 pub(crate) use super::read_handle::channel_closed_error;
-pub(crate) use super::read_handle::map_error_response;
 pub(crate) use super::read_handle::server_error;
 pub(crate) use super::read_handle::timeout_error;
 use crate::api::ReadHandle;
@@ -135,7 +134,7 @@ impl EmbeddedClient {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,
@@ -304,7 +303,7 @@ impl EmbeddedClient {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,
@@ -523,7 +522,7 @@ impl EmbeddedClient {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,
@@ -628,7 +627,7 @@ impl ClientApi for EmbeddedClient {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,
@@ -693,7 +692,7 @@ impl ClientApi for EmbeddedClient {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,

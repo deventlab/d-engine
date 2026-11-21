@@ -237,9 +237,12 @@ mod grpc_fast_path_tests {
             .handle_client_read(Request::new(req(b"k", ProtoPolicy::EventualConsistency)))
             .await;
 
+        let status = result.expect_err("SmError must surface as tonic Status error");
+        assert_eq!(status.code(), tonic::Code::Internal);
         assert!(
-            result.is_err(),
-            "SmError must surface as tonic Status error"
+            !status.message().contains("disk failure"),
+            "the raw state machine error must not reach a remote client: {}",
+            status.message()
         );
         drop(node);
         handle.await.unwrap();

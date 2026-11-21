@@ -18,7 +18,6 @@ use d_engine_core::client::ClientApiResult;
 use d_engine_core::client::ClientReadRequest;
 use d_engine_core::client::ClientResponsePayload;
 use d_engine_core::client::ErrorCode;
-use d_engine_core::client::LeaderHint;
 use d_engine_core::client::ReadResults;
 use d_engine_core::config::ReadConsistencyPolicy;
 use tokio::sync::mpsc;
@@ -53,49 +52,6 @@ pub(crate) fn server_error(msg: String) -> ClientApiError {
         code: ErrorCode::Uncategorized,
         message: msg,
         required_action: None,
-    }
-}
-
-pub(crate) fn not_leader_error(
-    leader_id: Option<String>,
-    leader_address: Option<String>,
-    retry_after_ms: Option<u64>,
-) -> ClientApiError {
-    let message = match (&leader_address, &leader_id) {
-        (Some(addr), _) => format!("Not leader, try leader at: {addr}"),
-        (None, Some(id)) => format!("Not leader, leader_id: {id}"),
-        (None, None) => "Not leader".to_string(),
-    };
-    let leader_hint = match (&leader_id, &leader_address) {
-        (Some(id_str), Some(addr)) => id_str.parse::<u32>().ok().map(|id| LeaderHint {
-            leader_id: id,
-            address: addr.clone(),
-        }),
-        _ => None,
-    };
-    ClientApiError::Network {
-        code: ErrorCode::NotLeader,
-        message,
-        retry_after_ms: retry_after_ms.or(Some(100)),
-        leader_hint,
-    }
-}
-
-pub(crate) fn map_error_response(
-    error: ErrorCode,
-    leader_hint: Option<LeaderHint>,
-    retry_after_ms: Option<u64>,
-) -> ClientApiError {
-    match error {
-        ErrorCode::NotLeader => {
-            let (leader_id, leader_address) = if let Some(hint) = leader_hint {
-                (Some(hint.leader_id.to_string()), Some(hint.address))
-            } else {
-                (None, None)
-            };
-            not_leader_error(leader_id, leader_address, retry_after_ms)
-        }
-        _ => server_error(format!("Error code: {error:?}")),
     }
 }
 
@@ -244,7 +200,7 @@ impl ReadHandle {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,

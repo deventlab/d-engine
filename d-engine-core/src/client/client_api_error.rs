@@ -359,6 +359,27 @@ impl ClientApiError {
             ClientApiError::General { message, .. } => message,
         }
     }
+
+    /// Builds the error for a failed response. A NotLeader response carries the redirect
+    /// (leader and retry time), which the plain conversion from an error code cannot see.
+    pub fn from_response(
+        code: ErrorCode,
+        leader_hint: Option<LeaderHint>,
+        retry_after_ms: Option<u64>,
+    ) -> Self {
+        match code {
+            ErrorCode::NotLeader => ClientApiError::Network {
+                code,
+                message: match &leader_hint {
+                    Some(hint) => format!("Not leader, try leader at: {}", hint.address),
+                    None => "Not leader".to_string(),
+                },
+                retry_after_ms: retry_after_ms.or(Some(100)),
+                leader_hint,
+            },
+            other => other.into(),
+        }
+    }
 }
 
 impl From<JoinError> for ClientApiError {
