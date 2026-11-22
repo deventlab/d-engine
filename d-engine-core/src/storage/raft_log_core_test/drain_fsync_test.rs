@@ -401,6 +401,7 @@ async fn test_replace_range_failure_poisons() {
                     payload: None,
                 },
             ],
+            0,
         )
         .await;
     assert!(
@@ -629,6 +630,7 @@ async fn test_poisoned_skips_replace_range() {
                     payload: None,
                 },
             ],
+            0,
         )
         .await;
 

@@ -73,6 +73,7 @@ async fn test_filter_conflicts_zero_prev_on_genuinely_empty_log_appends_all() {
                 entry(4, 1),
                 entry(5, 1),
             ],
+            0,
         )
         .await
         .unwrap();
@@ -124,6 +125,7 @@ async fn test_filter_conflicts_zero_prev_duplicate_resend_preserves_durable_inde
                 entry(4, 1),
                 entry(5, 1),
             ],
+            0,
         )
         .await
         .unwrap();
@@ -172,7 +174,11 @@ async fn test_filter_conflicts_zero_prev_overlap_appends_only_new_tail() {
 
     // Act: leader sends prev_log_index=0 with [1..7] — [1..5] match, [6,7] are new.
     let new_entries: Vec<_> = (1u64..=7).map(|i| entry(i, 1)).collect();
-    let result = ctx.raft_log.filter_out_conflicts_and_append(0, 0, new_entries).await.unwrap();
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(0, 0, new_entries, 0)
+        .await
+        .unwrap();
 
     // Assert: existing [1..5] untouched, new tail [6,7] appended.
     assert_eq!(result.unwrap().index, 7);
@@ -212,7 +218,7 @@ async fn test_filter_conflicts_zero_prev_real_conflict_truncates_and_replaces() 
     // Act: prev_log_index=0, entries=[1(t2), 2(t2), 3(t2)] — conflicts at index=1 immediately.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(0, 0, vec![entry(1, 2), entry(2, 2), entry(3, 2)])
+        .filter_out_conflicts_and_append(0, 0, vec![entry(1, 2), entry(2, 2), entry(3, 2)], 0)
         .await
         .unwrap();
 

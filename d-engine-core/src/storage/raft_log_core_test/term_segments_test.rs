@@ -234,6 +234,7 @@ async fn test_entry_term_after_truncation_reappend() {
                     payload: None,
                 },
             ],
+            0,
         )
         .await
         .unwrap();

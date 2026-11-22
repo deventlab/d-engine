@@ -201,7 +201,7 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
 
     // Trigger replace_range: term conflict at index 3 (term 1 → 2).
     let result = raft_log
-        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)])
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await;
 
     assert!(

@@ -98,7 +98,7 @@ async fn test_filter_conflicts_removes_entries_with_different_term() {
     ];
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(1, 1, new_entries)
+        .filter_out_conflicts_and_append(1, 1, new_entries, 0)
         .await
         .unwrap()
         .unwrap();
@@ -139,7 +139,7 @@ async fn test_filter_conflicts_handles_multiple_scenarios() {
     ];
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(1, 1, new_entries)
+        .filter_out_conflicts_and_append(1, 1, new_entries, 0)
         .await
         .unwrap()
         .unwrap();
@@ -155,7 +155,7 @@ async fn test_filter_conflicts_handles_multiple_scenarios() {
     // prev is entry 3 (term 3 after Case 1): the batch starts right after it.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(3, 3, new_entries)
+        .filter_out_conflicts_and_append(3, 3, new_entries, 0)
         .await
         .unwrap()
         .unwrap();

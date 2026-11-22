@@ -29,6 +29,7 @@ async fn test_log_matching_property() {
                 term: 3,
                 payload: None,
             }],
+            0,
         )
         .await
         .unwrap();

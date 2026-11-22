@@ -129,6 +129,7 @@ async fn test_filter_conflicts_performance_during_flush() {
             term: 1,
             payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
         }],
+        0,
     )
     .await
     .unwrap();

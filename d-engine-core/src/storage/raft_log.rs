@@ -217,11 +217,13 @@ pub trait RaftLog: Send + Sync + 'static {
     /// # Errors
     /// - `NonContiguousAppend` if `new_entries` does not start at `prev_log_index + 1` or has a gap.
     /// - A fatal error if the log is poisoned or the storage engine write fails.
+    /// - A fatal error if a new entry conflicts with a local entry at or below commit_index: committed history would be rewritten.
     async fn filter_out_conflicts_and_append(
         &self,
         prev_log_index: u64,
         prev_log_term: u64,
         new_entries: Vec<Entry>,
+        commit_index: u64,
     ) -> Result<Option<LogId>>;
 
     /// Removes every entry with index `>= from_index`, and returns only once the removal is

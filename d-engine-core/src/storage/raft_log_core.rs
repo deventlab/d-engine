@@ -268,6 +268,7 @@ where
         prev_log_index: u64,
         prev_log_term: u64,
         new_entries: Vec<Entry>,
+        commit_index: u64,
     ) -> Result<Option<LogId>> {
         let _timer = ScopedTimer::new("filter_out_conflicts_and_append");
 
@@ -350,6 +351,12 @@ where
                     let diverge_index = new_entries[pos].index;
 
                     if diverge_index <= last_current_index {
+                        if diverge_index <= commit_index {
+                            return Err(Error::Fatal(format!(
+                                "entry {diverge_index} conflicts with committed entry (commit_index {commit_index})"
+                            )));
+                        }
+
                         // Real term conflict: truncate from diverge_index, replace with tail.
                         // Await the done channel so callers can flush() knowing the truncation
                         // is durable — durable_index may exceed memory_max_index after truncation,

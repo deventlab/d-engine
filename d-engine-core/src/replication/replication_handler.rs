@@ -421,6 +421,7 @@ where
                     request.prev_log_index,
                     request.prev_log_term,
                     std::mem::take(&mut request.entries),
+                    state_snapshot.commit_index,
                 )
                 .await?;
         }
@@ -803,3 +804,7 @@ mod quorum_calculation_test;
 #[cfg(test)]
 #[path = "replication_handler_test/snapshot_trigger_test.rs"]
 mod snapshot_trigger_test;
+
+#[cfg(test)]
+#[path = "replication_handler_test/committed_entries_immutable_test.rs"]
+mod committed_entries_immutable_test;

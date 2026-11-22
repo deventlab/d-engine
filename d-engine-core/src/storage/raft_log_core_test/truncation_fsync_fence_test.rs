@@ -61,7 +61,10 @@ async fn test_durable_index_does_not_adopt_a_stale_fsync_after_truncation() {
 
     // New leader (term=2): index=2 conflicts, truncate and replace — the
     // stale fsync (still blocked on the gate) has no way to observe this.
-    raft_log.filter_out_conflicts_and_append(1, 1, vec![entry(2, 2)]).await.unwrap();
+    raft_log
+        .filter_out_conflicts_and_append(1, 1, vec![entry(2, 2)], 0)
+        .await
+        .unwrap();
     assert_eq!(
         raft_log.last_entry_id(),
         2,

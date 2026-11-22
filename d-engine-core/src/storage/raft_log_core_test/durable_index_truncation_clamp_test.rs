@@ -55,7 +55,7 @@ async fn test_durable_index_lands_on_new_tail_after_truncate_and_resync() {
     // path: remove_range(2..) drops memory_max_index to 1 and clamps
     // durable_index down, then the new index 2 is inserted.
     ctx.raft_log
-        .filter_out_conflicts_and_append(1, 1, vec![entry(2, 2)])
+        .filter_out_conflicts_and_append(1, 1, vec![entry(2, 2)], 0)
         .await
         .unwrap();
     assert_eq!(ctx.raft_log.last_entry_id(), 2, "log is now [1, 2]");
@@ -120,7 +120,7 @@ async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
     let truncate = {
         let raft_log = raft_log.clone();
         tokio::spawn(async move {
-            raft_log.filter_out_conflicts_and_append(1, 1, vec![entry(2, 2)]).await
+            raft_log.filter_out_conflicts_and_append(1, 1, vec![entry(2, 2)], 0).await
         })
     };
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -242,7 +242,7 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     // [6, 7] (term 2). `filter_out_conflicts_and_append` awaits
     // `replace_range_and_submit`, so the frontier is at new-tail 7 on return.
     raft_log
-        .filter_out_conflicts_and_append(5, 1, vec![entry(6, 2), entry(7, 2)])
+        .filter_out_conflicts_and_append(5, 1, vec![entry(6, 2), entry(7, 2)], 0)
         .await
         .unwrap();
 
@@ -330,7 +330,10 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     // ([3] only, term 2) — new_tail (3) lands far below the old persisted_index
     // (10). This is realistic, not contrived: a new leader's AppendEntries
     // batch is often much shorter than a stale follower's uncommitted tail.
-    raft_log.filter_out_conflicts_and_append(2, 1, vec![entry(3, 2)]).await.unwrap();
+    raft_log
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2)], 0)
+        .await
+        .unwrap();
     assert_eq!(raft_log.last_entry_id(), 3, "log is now [1, 2, 3]");
 
     persist_calls.lock().unwrap().clear();
