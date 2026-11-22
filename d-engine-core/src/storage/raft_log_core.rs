@@ -1088,6 +1088,58 @@ where
         }
     }
 
+    /// Makes the log agree with the state machine's applied position at startup.
+    ///
+    /// The state machine is the single source of truth. A node can stop between installing a
+    /// leader's snapshot and purging its log, which leaves the state machine at the snapshot
+    /// boundary while the log still holds entries from a history the cluster has dropped. When
+    /// the log disagrees with `applied` at its index, or ends before it, the log is cut after
+    /// `applied` and purged up to it, in the same order as a snapshot install.
+    ///
+    /// A purge boundary that sits above `applied`, or one that names another term at the same
+    /// index, means the state machine and the log describe different histories. Nothing is
+    /// repaired in that case: startup fails and the log is left as it was.
+    pub async fn align_with_state_machine(
+        &self,
+        applied: LogId,
+    ) -> Result<()> {
+        // Nothing has been applied, or the term of the applied entry is unknown.
+        if applied.index == 0 || applied.term == 0 {
+            return Ok(());
+        }
+
+        let purged_index = self.last_purged_index.load(Ordering::Acquire);
+        let purged_term = self.last_purged_term.load(Ordering::Acquire);
+        if applied.index < purged_index {
+            return Err(Error::Fatal(format!(
+                "state machine applied index {} is behind the log purge boundary {}",
+                applied.index, purged_index
+            )));
+        }
+        if applied.index == purged_index {
+            if applied.term != purged_term {
+                return Err(Error::Fatal(format!(
+                    "log purge boundary ({purged_index}, {purged_term}) disagrees with the \
+                     state machine at ({}, {})",
+                    applied.index, applied.term
+                )));
+            }
+            return Ok(());
+        }
+
+        if self.entry_term(applied.index) == Some(applied.term) {
+            return Ok(());
+        }
+
+        warn!(
+            ?self.node_id,
+            ?applied,
+            "log disagrees with the state machine at startup: purging it to the applied position"
+        );
+        self.truncate_from(applied.index + 1).await?;
+        self.purge_logs_up_to(applied).await
+    }
+
     #[cfg(test)]
     pub(super) fn set_memory_max_index_for_test(
         &self,
@@ -1304,3 +1356,7 @@ mod prev_log_index_zero_idempotency_test;
 #[cfg(test)]
 #[path = "raft_log_core_test/truncate_from_test.rs"]
 mod truncate_from_test;
+
+#[cfg(test)]
+#[path = "raft_log_core_test/align_with_state_machine_test.rs"]
+mod align_with_state_machine_test;

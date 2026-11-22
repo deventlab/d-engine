@@ -332,6 +332,7 @@ where
                 node_config.raft.persistence.shutdown_timeout_ms,
             )
         };
+        raft_log.align_with_state_machine(state_machine.last_applied()).await?;
 
         // Peer health channels: transport fires try_send(peer_id) on stream failure/success.
         // Bridge tasks below relay to membership so zombie detection and health recovery both work.
