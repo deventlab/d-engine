@@ -29,7 +29,11 @@ async fn test_align_purges_a_log_from_before_a_snapshot_install_to_the_applied_p
     ctx.raft_log.align_with_state_machine(log_id(9, 4)).await.unwrap();
 
     assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(9, 4)));
-    assert_eq!(ctx.raft_log.entry(9).unwrap(), None, "the stale entry must be gone");
+    assert_eq!(
+        ctx.raft_log.entry(9).unwrap(),
+        None,
+        "the stale entry must be gone"
+    );
     assert_eq!(
         ctx.raft_log.entry_term(9),
         Some(4),
@@ -48,7 +52,11 @@ async fn test_align_removes_the_entries_after_the_applied_position_of_a_stale_lo
 
     assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(9, 4)));
     for index in 10..=12 {
-        assert_eq!(ctx.raft_log.entry(index).unwrap(), None, "entry {index} must be gone");
+        assert_eq!(
+            ctx.raft_log.entry(index).unwrap(),
+            None,
+            "entry {index} must be gone"
+        );
     }
 }
 
@@ -62,7 +70,10 @@ async fn test_align_leaves_a_log_that_agrees_with_the_state_machine_alone() {
     ctx.raft_log.align_with_state_machine(log_id(9, 2)).await.unwrap();
 
     assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(12, 2)));
-    assert!(ctx.raft_log.entry(1).unwrap().is_some(), "no entry may be purged");
+    assert!(
+        ctx.raft_log.entry(1).unwrap().is_some(),
+        "no entry may be purged"
+    );
 }
 
 /// The log ends before the applied position: it is purged up to that position, so the node
@@ -165,6 +176,10 @@ async fn test_align_fails_when_the_purge_boundary_disagrees_with_the_state_machi
         .expect_err("a boundary that disagrees with the state machine must stop startup");
 
     assert!(err.is_fatal(), "expected a fatal error, got {err:?}");
-    assert_eq!(ctx.raft_log.entry_term(9), Some(2), "the boundary must be left as it was");
+    assert_eq!(
+        ctx.raft_log.entry_term(9),
+        Some(2),
+        "the boundary must be left as it was"
+    );
     assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(12, 2)));
 }

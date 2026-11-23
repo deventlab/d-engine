@@ -2346,7 +2346,10 @@ async fn test_scan_cmd_leader_rejects_empty_prefix_without_reading_state_machine
 
     let response = resp_rx.recv().await.expect("channel not closed").expect("a typed response");
     assert_eq!(response.error, ErrorCode::InvalidRequest);
-    assert!(response.result.is_none(), "a rejected scan must carry no entries");
+    assert!(
+        response.result.is_none(),
+        "a rejected scan must carry no entries"
+    );
 }
 
 /// The shortest non-empty prefix is a valid request: the rejection applies to the empty prefix
@@ -2355,15 +2358,12 @@ async fn test_scan_cmd_leader_rejects_empty_prefix_without_reading_state_machine
 #[traced_test]
 async fn test_scan_cmd_leader_passes_one_byte_prefix_to_state_machine() {
     let mut sm = mock_state_machine();
-    sm.expect_scan_prefix()
-        .withf(|prefix| prefix == b"/")
-        .times(1)
-        .returning(|_| {
-            Ok(ScanResult {
-                entries: vec![],
-                revision: 7,
-            })
-        });
+    sm.expect_scan_prefix().withf(|prefix| prefix == b"/").times(1).returning(|_| {
+        Ok(ScanResult {
+            entries: vec![],
+            revision: 7,
+        })
+    });
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)

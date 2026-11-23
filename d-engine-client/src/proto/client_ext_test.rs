@@ -219,7 +219,10 @@ fn test_validate_error_other_code_ignores_redirect_metadata() {
     };
 
     let err = response.validate_error().unwrap_err();
-    assert_eq!(format!("{err:?}"), format!("{:?}", ClientApiError::from(ErrorCode::InvalidRequest)));
+    assert_eq!(
+        format!("{err:?}"),
+        format!("{:?}", ClientApiError::from(ErrorCode::InvalidRequest))
+    );
 }
 
 // --- into_read_results tests ---

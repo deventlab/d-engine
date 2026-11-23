@@ -1073,7 +1073,10 @@ mod check_cluster_is_ready_test {
             let (tx, rx) = oneshot::channel::<()>();
             let (port, _addr) =
                 MockNode::mock_listener(MockRpcService::default(), rx, *healthy).await.unwrap();
-            membership.update_node_address(i as u32 + 2, format!("127.0.0.1:{port}")).await.unwrap();
+            membership
+                .update_node_address(i as u32 + 2, format!("127.0.0.1:{port}"))
+                .await
+                .unwrap();
             stops.push(tx);
         }
         (membership, stops, silent)
@@ -1088,7 +1091,8 @@ mod check_cluster_is_ready_test {
     /// A 3-node cluster whose other two nodes are not serving cannot form a majority.
     #[tokio::test]
     async fn test_check_cluster_is_ready_three_nodes_two_peers_down_fails() {
-        let (membership, _stops, _silent) = membership_with_peers(&[false, false], 0, quick_failing_config()).await;
+        let (membership, _stops, _silent) =
+            membership_with_peers(&[false, false], 0, quick_failing_config()).await;
 
         assert!(membership.check_cluster_is_ready().await.is_err());
     }
@@ -1098,7 +1102,8 @@ mod check_cluster_is_ready_test {
     /// already able to elect and commit.
     #[tokio::test]
     async fn test_check_cluster_is_ready_three_nodes_one_peer_down_succeeds() {
-        let (membership, _stops, _silent) = membership_with_peers(&[true, false], 0, quick_failing_config()).await;
+        let (membership, _stops, _silent) =
+            membership_with_peers(&[true, false], 0, quick_failing_config()).await;
 
         assert!(membership.check_cluster_is_ready().await.is_ok());
     }
@@ -1124,7 +1129,8 @@ mod check_cluster_is_ready_test {
     /// A single-node cluster has no peer to wait for: this node alone is the majority.
     #[tokio::test]
     async fn test_check_cluster_is_ready_single_node_succeeds_without_peers() {
-        let (membership, _stops, _silent) = membership_with_peers(&[], 0, quick_failing_config()).await;
+        let (membership, _stops, _silent) =
+            membership_with_peers(&[], 0, quick_failing_config()).await;
 
         assert!(membership.check_cluster_is_ready().await.is_ok());
     }
@@ -1162,7 +1168,11 @@ mod check_cluster_is_ready_test {
         let result = membership.check_cluster_is_ready().await;
 
         assert!(result.is_err());
-        assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     /// #428: `run_as_voter` wraps `check_cluster_is_ready()` in
