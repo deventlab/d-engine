@@ -855,6 +855,45 @@ async fn test_prepare_snapshot_stream_persists_file_in_snapshots_dir() {
     );
 }
 
+/// The unpack limits come from the `SnapshotConfig` the receiver is configured with, not from a
+/// constant inside the archive code: an application whose snapshots are larger (or smaller) than
+/// the defaults sets them. The archive in this test holds two files, the limit allows one, so the
+/// snapshot is refused, the error names the setting to raise, and nothing is handed to the state
+/// machine.
+#[tokio::test]
+#[traced_test]
+async fn test_prepare_snapshot_stream_refuses_an_archive_over_the_configured_unpack_limits() {
+    let temp_dir = tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_prepare_snapshot_stream_unpack_limits");
+    create_dir_all(&temp_path).await.unwrap();
+
+    let handler = create_test_handler(&temp_path, None);
+
+    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
+    let first_chunk = SnapshotChunk {
+        leader_term: TEST_TERM,
+        leader_id: TEST_LEADER_ID,
+        metadata: Some(metadata),
+        seq: 0,
+        total_chunks: 1,
+        data: Bytes::from(compressed_data.clone()),
+        chunk_checksum: Bytes::from(crc32fast::hash(&compressed_data).to_be_bytes().to_vec()),
+    };
+    let (ack_tx, _ack_rx) = mpsc::channel::<SnapshotAck>(1);
+    let (_tx, rx) = mpsc::channel(32);
+    drop(_tx);
+
+    let mut config = snapshot_config(temp_path.to_path_buf());
+    config.max_unpack_entries = 1;
+    let result = handler.prepare_snapshot_stream(first_chunk, rx, ack_tx, &config).await;
+
+    let err = result.expect_err("an archive over the configured limit must be refused");
+    assert!(
+        format!("{err:?}").contains("max_unpack_entries"),
+        "the error must name the setting to raise: {err:?}"
+    );
+}
+
 /// Node C receives a snapshot from the leader, then a third node that is even further behind
 /// asks C for a snapshot at the same boundary.
 ///

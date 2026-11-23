@@ -661,6 +661,27 @@ pub struct SnapshotConfig {
     /// Default: 30 seconds
     #[serde(default = "default_receive_chunk_timeout_in_sec")]
     pub receive_chunk_timeout_in_sec: u64,
+
+    /// Largest total size, in bytes, that the files of a received snapshot archive may unpack to.
+    /// The archive comes from another node: this stops a small archive from filling the disk.
+    /// Raise it if your snapshots are legitimately larger.
+    ///
+    /// Default: 256 GiB
+    #[serde(default = "default_max_unpack_total_bytes")]
+    pub max_unpack_total_bytes: u64,
+
+    /// Largest size, in bytes, of a single file in a received snapshot archive.
+    /// Must not exceed `max_unpack_total_bytes`.
+    ///
+    /// Default: 64 GiB
+    #[serde(default = "default_max_unpack_file_bytes")]
+    pub max_unpack_file_bytes: u64,
+
+    /// Largest number of entries (files and directories) in a received snapshot archive.
+    ///
+    /// Default: 100,000
+    #[serde(default = "default_max_unpack_entries")]
+    pub max_unpack_entries: u64,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -682,6 +703,9 @@ impl Default for SnapshotConfig {
             push_timeout_in_ms: default_push_timeout_in_ms(),
             receive_chunk_timeout_in_sec: default_receive_chunk_timeout_in_sec(),
             enable: default_snapshot_enabled(),
+            max_unpack_total_bytes: default_max_unpack_total_bytes(),
+            max_unpack_file_bytes: default_max_unpack_file_bytes(),
+            max_unpack_entries: default_max_unpack_entries(),
         }
     }
 }
@@ -746,6 +770,27 @@ impl SnapshotConfig {
                 self.snapshot_push_max_retry
             ))));
         }
+        if self.max_unpack_total_bytes == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_unpack_total_bytes must be greater than 0".into(),
+            )));
+        }
+        if self.max_unpack_file_bytes == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_unpack_file_bytes must be greater than 0".into(),
+            )));
+        }
+        if self.max_unpack_entries == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_unpack_entries must be greater than 0".into(),
+            )));
+        }
+        if self.max_unpack_file_bytes > self.max_unpack_total_bytes {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "max_unpack_file_bytes ({}) must not exceed max_unpack_total_bytes ({})",
+                self.max_unpack_file_bytes, self.max_unpack_total_bytes
+            ))));
+        }
 
         Ok(())
     }
@@ -772,6 +817,18 @@ fn default_snapshots_dir_prefix() -> String {
 /// 1KB chunks by default
 fn default_chunk_size() -> usize {
     1024
+}
+
+fn default_max_unpack_total_bytes() -> u64 {
+    256 * 1024 * 1024 * 1024
+}
+
+fn default_max_unpack_file_bytes() -> u64 {
+    64 * 1024 * 1024 * 1024
+}
+
+fn default_max_unpack_entries() -> u64 {
+    100_000
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

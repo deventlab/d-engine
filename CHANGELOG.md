@@ -64,6 +64,9 @@ All notable changes to this project will be documented in this file.
 
 - **Snapshot checksum now covers every file** (#400), including sub-directories. Delete snapshot archives made by older versions when you upgrade.
 
+- **Raft log safety fixes** (#400): a node that installs a leader's snapshot now drops its own entries after the snapshot boundary; a follower refuses to overwrite an entry it already committed, and stops instead; a node that stopped between installing a snapshot and purging its log repairs the log at startup, or refuses to start if the log and the state machine contradict each other. The commit quorum counts every voter, and a candidate that steps down to its leader announces it.
+- **File state machine checkpoints are written atomically** (#400): a crash during a checkpoint can no longer leave a truncated `state.data` or `metadata.bin`.
+
 ### Changed
 
 - **⚠️ Wire protocol is not compatible with v0.2.4**: `ClientResponse.metadata` moved from field 4 to 5 (field 4 is now `scan_data`); `HandleClientScan` returns `ClientResponse` (the `ScanResponse` message is now `ScanResults`); the `ChunkStatus` values are renumbered with `CHUNK_STATUS_UNSPECIFIED = 0`; `WriteCommand.Insert.ttl_secs` (field 3) is reserved; new RPC `PreVote`. Do not run v0.2.4 and v0.3.0 nodes or clients together. See `MIGRATION_GUIDE.md`.
@@ -129,6 +132,14 @@ All notable changes to this project will be documented in this file.
 - **⚠️ The engine takes the state machine by value** (#400): `start_custom`, `start_node` and `run_custom` take `SM` instead of `Arc<SM>`, and `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
 
 - **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
+
+- **⚠️ `scan_prefix` rejects an empty prefix** (#400): it returns `InvalidRequest` instead of the whole keyspace (file state machine) or nothing (RocksDB).
+
+- **A node starts once a majority of the cluster is healthy** (#400): the startup health check no longer waits for every peer, so a node can restart while one peer is down.
+
+- **Snapshot archives are checked when they are unpacked** (#477): the archive comes from another node, so unpacking now accepts only regular files and directories inside the target directory, refuses `..`, absolute paths, links, devices and duplicate paths, and stops at limits. New settings under `[raft.snapshot]`: `max_unpack_total_bytes` (default 256 GiB), `max_unpack_file_bytes` (64 GiB) and `max_unpack_entries` (100,000); raise them if your snapshots are larger. The unmaintained `astral-tokio-tar` (RUSTSEC-2026-0440) is replaced by `tar` and `flate2`, and packing no longer runs on an async worker thread.
+
+- **Client errors are built in one place** (#400): `ClientApiError::from_response` builds the error for a failed response, including the leader hint and retry delay of `NotLeader`, for the embedded and the gRPC client.
 
 ### Removed
 

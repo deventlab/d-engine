@@ -11,12 +11,7 @@ mod raft;
 mod retry;
 mod storage;
 mod tls;
-pub use cluster::*;
-pub use network::*;
-pub use raft::*;
-pub use retry::*;
-pub use storage::*;
-pub use tls::*;
+
 #[cfg(test)]
 mod config_test;
 #[cfg(test)]
@@ -24,16 +19,24 @@ mod network_test;
 #[cfg(test)]
 mod raft_test;
 #[cfg(test)]
+mod snapshot_unpack_limits_test;
+#[cfg(test)]
 mod tls_test;
 
-use std::env;
-use std::fmt::Debug;
+pub use cluster::*;
+pub use network::*;
+pub use raft::*;
+pub use retry::*;
+pub use storage::*;
+pub use tls::*;
 
 use config::Config;
 use config::Environment;
 use config::File;
 use serde::Deserialize;
 use serde::Serialize;
+use std::env;
+use std::fmt::Debug;
 
 use crate::Result;
 

@@ -7,8 +7,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use async_compression::tokio::bufread::GzipDecoder;
-use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -20,14 +18,10 @@ use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::stream::BoxStream;
 use memmap2::Mmap;
 use memmap2::MmapOptions;
-use tokio::fs::File;
 use tokio::fs::remove_file;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
-use tokio_tar::Archive;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -63,6 +57,8 @@ use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
 use crate::state_machine_handler::applied_state::AppliedState;
 use crate::state_machine_handler::snapshot_catalog::SnapshotCatalog;
+use crate::utils::snapshot_archive;
+use crate::utils::snapshot_archive::UnpackLimits;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -291,7 +287,12 @@ where
         let snapshot_path = assembler.finalize(&captured_metadata).await?;
 
         let temp_dir = tempfile::tempdir()?;
-        self.decompress_to_directory(&snapshot_path, temp_dir.path()).await?;
+        let limits = UnpackLimits {
+            max_total_bytes: config.max_unpack_total_bytes,
+            max_file_bytes: config.max_unpack_file_bytes,
+            max_entries: config.max_unpack_entries,
+        };
+        self.decompress_to_directory(&snapshot_path, temp_dir.path(), limits).await?;
 
         Ok(PreparedSnapshot {
             metadata: captured_metadata,
@@ -641,60 +642,33 @@ where
         source_dir: &Path,
         dest_path: &Path,
     ) -> Result<()> {
-        let compressed_file = File::create(dest_path).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}"))
-        })?;
-
-        let gzip_encoder = GzipEncoder::new(compressed_file);
-        let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
-
-        // Add all files in source_dir to the archive
-        tar_builder.append_dir_all(".", source_dir).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}"))
-        })?;
-
-        // Finish writing and flush all data
-        tar_builder.finish().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}"))
-        })?;
-
-        // Get inner GzipEncoder and shutdown to ensure all data is written
-        let mut gzip_encoder = tar_builder.into_inner().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}"))
-        })?;
-        gzip_encoder.shutdown().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}"))
-        })?;
-
-        Ok(())
+        let source_dir = source_dir.to_path_buf();
+        let dest_path = dest_path.to_path_buf();
+        tokio::task::spawn_blocking(move || snapshot_archive::pack(&source_dir, &dest_path))
+            .await
+            .map_err(|e| {
+                SnapshotError::OperationFailed(format!("Snapshot packing task failed: {e}"))
+            })?
     }
 
     async fn decompress_to_directory(
         &self,
         compressed_path: &Path,
         target_dir: &Path,
+        limits: UnpackLimits,
     ) -> Result<()> {
-        debug!(
-            ?compressed_path,
-            "Validate file format before processing (IMPROVEMENT ADDED)"
-        );
-        // Validate file format before processing (IMPROVEMENT ADDED) Verify the file is
-        //    actually compressed using magic numbers or extension
+        // Reject a file that is not a gzip archive before reading any of it.
         validate_compressed_format(compressed_path)?;
 
-        let file = File::open(compressed_path).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to open snapshot file: {e}"))
-        })?;
-
-        let buf_reader = BufReader::new(file);
-        let gzip_decoder = GzipDecoder::new(buf_reader);
-        let mut archive = Archive::new(gzip_decoder);
-
-        archive.unpack(target_dir).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to unpack snapshot: {e}"))
-        })?;
-
-        Ok(())
+        let compressed_path = compressed_path.to_path_buf();
+        let target_dir = target_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            snapshot_archive::unpack(&compressed_path, &target_dir, &limits)
+        })
+        .await
+        .map_err(|e| {
+            SnapshotError::OperationFailed(format!("Snapshot unpacking task failed: {e}"))
+        })?
     }
 
     /// Shared by `prepare_snapshot_stream`'s first-chunk handling and its remaining-chunk
