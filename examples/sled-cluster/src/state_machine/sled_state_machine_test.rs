@@ -308,3 +308,69 @@ async fn test_new_recovers_backup_after_interrupted_install() {
          from before the interrupted install is gone"
     );
 }
+
+/// A snapshot carries its own position. The node that installs it moves the database into place
+/// first and records the position afterwards; a crash in between must not leave the new data with
+/// position 0, or the engine would apply every entry again on top of it.
+#[tokio::test]
+async fn test_exported_snapshot_carries_its_position() {
+    let temp = TempDir::new().unwrap();
+    let sm = SledStateMachine::new(temp.path(), 1).unwrap();
+    sm.apply_chunk(&[ApplyEntry {
+        index: 7,
+        term: 3,
+        command: Command::Insert {
+            key: Bytes::from_static(b"k"),
+            value: Bytes::from_static(b"v"),
+        },
+    }])
+    .await
+    .unwrap();
+
+    let snap_dir = temp.path().join("snapshot");
+    let position = sm.generate_snapshot_data(snap_dir.clone()).await.unwrap();
+
+    // Open the exported database on its own, as a restart right after the install would.
+    let snap_sm = SledStateMachine::new(&snap_dir, 1).unwrap();
+    assert_eq!(snap_sm.last_applied(), position);
+}
+
+/// When the snapshot cannot be moved into place, the previous database is put back at once: left
+/// as it is, a restart would find a missing or half-copied `state_machine` directory.
+#[tokio::test]
+async fn test_failed_install_puts_the_previous_database_back() {
+    use d_engine::server_storage::SnapshotMetadata;
+
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("node");
+    let sm = SledStateMachine::new(&path, 1).unwrap();
+    sm.apply_chunk(&[ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from_static(b"kept"),
+            value: Bytes::from_static(b"value"),
+        },
+    }])
+    .await
+    .unwrap();
+
+    // A snapshot directory with no database in it: moving it into place fails.
+    let broken_snapshot = temp.path().join("broken_snapshot");
+    std::fs::create_dir_all(&broken_snapshot).unwrap();
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::new(),
+    };
+    let result = sm.apply_snapshot_from_file(&metadata, broken_snapshot).await;
+
+    assert!(result.is_err(), "installing a snapshot without a database must fail");
+    assert!(
+        path.join("state_machine").exists(),
+        "the previous database must be back in place"
+    );
+    assert!(
+        !path.join("state_machine.pre-install-backup").exists(),
+        "the backup was moved back, not left beside the database"
+    );
+}

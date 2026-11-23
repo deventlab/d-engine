@@ -50,6 +50,11 @@ pub struct SledStateMachine {
 
     is_serving: Arc<AtomicBool>,
 
+    /// `apply_chunk` holds it for writing while it commits a chunk and moves the position;
+    /// `generate_snapshot_data` holds it for reading while it copies the data and reads the
+    /// position. An export therefore never sees a chunk half applied.
+    apply_lock: tokio::sync::RwLock<()>,
+
     /// Volatile state on all servers:
     /// index of highest log entry applied to state machine (initialized to 0,
     /// increases monotonically)
@@ -159,6 +164,7 @@ impl StateMachine for SledStateMachine {
         let Some(position) = highest_log_id else {
             return Ok(Vec::new());
         };
+        let _applying = self.apply_lock.write().await;
 
         // The whole chunk and the new position are one transaction over the data tree and the
         // metadata tree: after a crash the position is exactly the last entry whose effects are in
@@ -253,11 +259,10 @@ impl StateMachine for SledStateMachine {
         &self,
         new_snapshot_dir: PathBuf,
     ) -> std::io::Result<LogId> {
-        // Known limits of this example: the tree is iterated while `apply_chunk` may run, so the
-        // copy is not a point-in-time view, and the position below comes from memory, not from the
-        // exported data. Reading it before the copy keeps it at or behind the data. A state machine
-        // that must export a consistent view has to exclude `apply_chunk` while it copies and read
-        // the position under the same lock (see `StateMachine::generate_snapshot_data`).
+        // No chunk is applied while this runs, so the copy and the position describe the same
+        // state. This lock is the whole guarantee, and no test checks it: the example shows the
+        // technique, it is not a production state machine.
+        let _exporting = self.apply_lock.read().await;
         let position = self.last_applied();
 
         // 2. Create a new state machine database instance
@@ -286,6 +291,10 @@ impl StateMachine for SledStateMachine {
         }
 
         new_state_machine_tree.apply_batch(batch).map_err(std::io::Error::other)?;
+
+        // The snapshot carries its position, so a node that installs it has data and position
+        // together, whenever it crashes afterwards.
+        write_last_applied(&new_tree(&new_db, STATE_MACHINE_META_NAMESPACE)?, position)?;
 
         // Make sure flush into disk
         new_db.flush().map_err(std::io::Error::other)?;
@@ -337,15 +346,22 @@ impl StateMachine for SledStateMachine {
             // which is the bug this fixes. This is an example adaptor, not the
             // production RocksDB/File ones.
             std::fs::rename(&db_dir, &backup_dir)?;
-            if let Err(e) = std::fs::rename(&incoming_db_dir, &db_dir) {
+            let moved = std::fs::rename(&incoming_db_dir, &db_dir).or_else(|e| {
                 // Temp storage and the data directory can be on different
                 // filesystems (e.g. `/tmp` vs a data disk) — rename can't hop
                 // devices. Fall back to a recursive copy in that case only.
                 if e.kind() == std::io::ErrorKind::CrossesDevices {
-                    copy_dir_recursive(&incoming_db_dir, &db_dir)?;
+                    copy_dir_recursive(&incoming_db_dir, &db_dir)
                 } else {
-                    return Err(e);
+                    Err(e)
                 }
+            });
+            if let Err(e) = moved {
+                // Put the previous database back: a restart that finds a half-copied `db_dir`
+                // skips the backup recovery in `SledStateMachine::new` and opens it.
+                let _ = std::fs::remove_dir_all(&db_dir);
+                std::fs::rename(&backup_dir, &db_dir)?;
+                return Err(e);
             }
             Ok(())
         })
@@ -424,6 +440,7 @@ impl SledStateMachine {
             db: ArcSwapOption::from(Some(db)),
             path,
             is_serving: Arc::new(AtomicBool::new(true)),
+            apply_lock: tokio::sync::RwLock::new(()),
             node_id,
 
             last_applied_index: AtomicU64::new(0),
@@ -486,16 +503,7 @@ impl SledStateMachine {
         debug!(%self.node_id, ?last_applied, "persist_last_applied");
         let db = self.db()?;
         let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
-        tree.insert(
-            STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
-            safe_kv(last_applied.index),
-        )
-        .map_err(std::io::Error::other)?;
-        tree.insert(
-            STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
-            safe_kv(last_applied.term),
-        )
-        .map_err(std::io::Error::other)?;
+        write_last_applied(&tree, last_applied)?;
 
         tree.flush().map_err(std::io::Error::other)?;
         Ok(())
@@ -518,6 +526,24 @@ impl SledStateMachine {
         );
         Ok(())
     }
+}
+
+/// Writes the position into the metadata tree, without flushing.
+fn write_last_applied(
+    tree: &sled::Tree,
+    last_applied: LogId,
+) -> std::io::Result<()> {
+    tree.insert(
+        STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
+        safe_kv(last_applied.index),
+    )
+    .map_err(std::io::Error::other)?;
+    tree.insert(
+        STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
+        safe_kv(last_applied.term),
+    )
+    .map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 /// Recursively copies `src` into `dst`, creating `dst` if needed. Fallback for
