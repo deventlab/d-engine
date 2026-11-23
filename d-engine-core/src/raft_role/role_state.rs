@@ -900,7 +900,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         // Recorded once per stream, on its first chunk; a very long transfer outlives the window.
         self.record_leader_contact();
 
-        self.commit_hard_state(
+        let is_new_leader = self.commit_hard_state(
             ctx,
             term_update,
             Some(VotedFor {
@@ -910,6 +910,21 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             }),
         )?;
         self.shared_state().set_current_leader(first_chunk.leader_id);
+
+        // The first chunk has proved that this leader is legitimate and its vote is on disk,
+        // whether or not the install that follows succeeds.
+        if is_new_leader {
+            internal_event_tx
+                .send(InternalEvent::LeaderDiscovered(
+                    first_chunk.leader_id,
+                    first_chunk.leader_term,
+                ))
+                .map_err(|e| {
+                    error!("Failed to send LeaderDiscovered: {e:?}");
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
+        }
+
         let my_term = first_chunk.leader_term.max(my_term);
 
         // ack_tx drained in background — push mode never reads it, avoids backpressure (#308).

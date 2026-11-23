@@ -3457,6 +3457,76 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
     );
 }
 
+/// A snapshot push is the first message a restarted node gets from its leader: the leader-change
+/// listener, which `wait_ready()` waits on, must learn who the leader is from it, as it does from
+/// an AppendEntries.
+///
+/// # Given
+/// - node 1 restarted in term 3 with its vote for leader 3 already confirmed on disk, so it knows
+///   no current leader
+///
+/// # When
+/// - leader 3 pushes a snapshot (the first chunk is the first contact; the install then fails)
+///
+/// # Then
+/// - `LeaderDiscovered(3, 3)` is sent, whether or not the install succeeds: the first chunk has
+///   already proved that leader 3 is legitimate
+#[tokio::test]
+async fn test_follower_install_snapshot_announces_the_leader_it_learns_from_the_first_chunk() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, _ack_tx, _config| {
+            Err(crate::SnapshotError::OperationFailed("receive failed".to_string()).into())
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let restored = HardState {
+        current_term: 3,
+        voted_for: Some(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 3,
+            committed: true,
+        }),
+    };
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), Some(restored), None);
+
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 3,
+        leader_id: 3,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let mut announced = false;
+    while let Ok(event) = internal_event_rx.try_recv() {
+        if matches!(event, InternalEvent::LeaderDiscovered(3, 3)) {
+            announced = true;
+        }
+    }
+    assert!(
+        announced,
+        "the snapshot path must send LeaderDiscovered(3, 3), like the AppendEntries path"
+    );
+}
+
 /// A snapshot transfer longer than the election timeout must not leave the follower ready to
 /// campaign the moment it finishes.
 ///
