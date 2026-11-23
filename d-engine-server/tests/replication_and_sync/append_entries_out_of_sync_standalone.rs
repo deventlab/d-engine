@@ -11,6 +11,14 @@
 //! - Node 3 becomes the leader
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
+//!
+//! Why nodes 2 and 3 start first, and node 1 later: with all three nodes up, node 2 can also win.
+//! Node 1's log is older than node 2's, so node 1 votes for node 2, and nodes 1 and 2 are a
+//! majority. Node 3's entries 4..=10 were never committed, so electing node 2 is legal, and which
+//! of nodes 2 and 3 wins is decided by election timers. With node 1 down, only nodes 2 and 3 vote:
+//! node 3's log is the newer one, so node 2 can never win and node 3 always does. That is a node
+//! that is down while the cluster starts, which is what an out-of-sync peer is. Node 1 then joins
+//! and has to catch up from the leader.
 
 // use std::sync::Arc; // Not needed anymore
 use std::time::Duration;
@@ -70,20 +78,45 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     init_hard_state(&raft_logs[2], 2, None);
     manipulate_log(&raft_logs[2], (4..=10).collect(), 2).await;
 
-    // 2. Start the cluster
-    println!("2. Start the cluster");
+    // 2. Start the cluster: nodes 2 and 3 first, node 1 once node 3 is the leader.
+    println!("2. Start nodes 2 and 3");
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
         node_handles: Vec::new(),
     };
 
     println!("{:?}", ports);
-    for (i, port) in ports.iter().enumerate() {
+    let mut client_manager = None;
+    for i in [1usize, 2, 0] {
+        if i == 0 {
+            // 3. Verify leader election. Node 1 is still down, so only nodes 2 and 3 vote and
+            // node 3 is the only one that can win (see the module doc).
+            tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
+            for port in &ports[1..] {
+                check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
+            }
+            let manager = ClientManager::new(&create_bootstrap_urls(&ports[1..])).await?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Ok(Some(_)) = manager.list_leader_id().await {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .expect("Timeout waiting for a leader among nodes 2 and 3");
+            assert_eq!(manager.list_leader_id().await.unwrap(), Some(3));
+            client_manager = Some(manager);
+
+            println!("Start node 1, the out-of-sync peer");
+        }
+
         let node_data_dir = format!("{DATA_DIR}/cs/{}", i + 1);
         let (graceful_tx, node_handle) = start_node(
             &node_data_dir,
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, &node_data_dir, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, ports[i], ports, &node_data_dir, LOG_DIR).await,
             ),
             None, // Let build_node create state machines for each node
             Some(raft_logs[i].clone()),
@@ -94,30 +127,13 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
-    // Check cluster status
+    // Node 1 has joined: wait until all three nodes answer.
     println!("Check cluster status");
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
     debug!("[test_out_of_sync_peer_scenario] Cluster started. Running tests...");
-
-    // 3. Verify leader election
-    // Wait for a stable leader before building client — under parallel test load,
-    // election may take longer than WAIT_FOR_NODE_READY_IN_SEC allows.
-    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(Some(_)) = client_manager.list_leader_id().await {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .expect("Timeout waiting for stable leader after cluster start");
-    assert_eq!(client_manager.list_leader_id().await.unwrap(), Some(3));
+    let mut client_manager = client_manager.expect("the leader check ran before node 1 started");
 
     // 4. Test client request
     test_put_get(&mut client_manager, 11, 100).await?;
