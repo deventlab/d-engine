@@ -118,6 +118,52 @@ async fn test_build_creates_node() {
     assert!(builder.node.is_some());
 }
 
+/// A node that stopped between installing a snapshot and purging its log restarts with the state
+/// machine at the snapshot boundary (9, 4) and a log that still holds entries 1..=9 from term 2,
+/// a history the cluster dropped. `build()` must repair the log before the node starts: the
+/// first conflicting entry from the leader would otherwise be refused as a rewrite of committed
+/// history, and the node would stop on every restart.
+#[tokio::test]
+#[traced_test]
+async fn test_build_purges_a_raft_log_that_disagrees_with_the_state_machine() {
+    let temp_dir = tempdir().unwrap();
+    let storage_engine =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage_engine")).unwrap());
+
+    let raft_log = RaftLogCore::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
+        1,
+        storage_engine.clone(),
+        None,
+        5000,
+    );
+    insert_raft_log(&raft_log, (1..=9).collect(), 2).await;
+    let file_sm = FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap();
+    insert_state_machine(&file_sm, (1..=9).collect(), 4).await;
+
+    assert!(
+        storage_engine.log_store().entry(9).await.unwrap().is_some(),
+        "the log must hold the stale entry before the node is built"
+    );
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    NodeBuilder::<FileStorageEngine, FileStateMachine>::new_from_db_path(
+        temp_dir.path().join("db_path").to_str().unwrap(),
+        shutdown_rx,
+    )
+    .state_machine(file_sm)
+    .storage_engine(storage_engine.clone())
+    .build()
+    .await
+    .expect("build should succeed");
+
+    for index in 1..=9 {
+        assert!(
+            storage_engine.log_store().entry(index).await.unwrap().is_none(),
+            "entry {index} of the dropped history must be purged by build()"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_start_fails_without_components() {
     let (_, shutdown_rx) = watch::channel(());
