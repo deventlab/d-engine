@@ -192,7 +192,7 @@ async fn start_engine(
     Ok(DefaultEmbeddedEngine::start_custom(
         &node_data_dir,
         Arc::new(storage),
-        Arc::new(sm),
+        sm,
         Some(config_path),
     )
     .await?)

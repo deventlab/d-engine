@@ -141,9 +141,7 @@ async fn run_engine(
         format!("{data_dir}/storage"),
         &options,
     )?);
-    let sm = Arc::new(d_engine::RocksDBStateMachine::new(format!(
-        "{data_dir}/state_machine"
-    ))?);
+    let sm = d_engine::RocksDBStateMachine::new(format!("{data_dir}/state_machine"))?;
     StandaloneEngine::run_custom(data_dir, storage, sm, graceful_rx, Some(config_path)).await
 }
 

@@ -170,203 +170,106 @@ pub trait RaftLog: Send + Sync + 'static {
     ) -> Result<Vec<Entry>>;
 
     // =========================================================================
-    // INDEX ALLOCATION (Thread-safe, atomic)
-    // =========================================================================
-
-    /// Pre-allocates the next log index atomically.
-    ///
-    /// # Returns
-    /// - Next available index
-    ///
-    /// # Safety Invariants
-    /// - MUST be thread-safe (atomic increment)
-    /// - MUST return unique, monotonically increasing values
-    /// - Each call MUST return a different value across all threads
-    /// - Used by leader to assign indexes to client proposals
-    fn pre_allocate_raft_logs_next_index(&self) -> u64;
-
-    /// Pre-allocates a contiguous range of log indices atomically.
-    ///
-    /// # Arguments
-    /// - `count`: Number of indices to allocate
-    ///
-    /// # Returns
-    /// - Inclusive range [start, end] where (end - start + 1) == count
-    /// - Empty range (u64::MAX..=u64::MAX) if count == 0
-    ///
-    /// # Safety Invariants
-    /// - MUST be atomic across all threads
-    /// - MUST NOT return overlapping ranges
-    /// - MUST prevent overflow (panic if allocation would exceed u64::MAX)
-    /// - Used for batch proposal optimization
-    fn pre_allocate_id_range(
-        &self,
-        count: u64,
-    ) -> RangeInclusive<u64>;
-
-    // =========================================================================
     // WRITE OPERATIONS (CRITICAL: Durability and Atomicity Required)
     // =========================================================================
 
-    /// Appends new entries to the log.
+    /// Appends `entries` to the end of the log without waiting for them to reach disk.
     ///
-    /// # Arguments
-    /// - `entries`: New log entries to append (must be ordered by index)
+    /// On return the entries are visible to every read method (`entry`, `last_log_id`, ...)
+    /// and have been written to the storage engine, but they are not yet crash-safe: the
+    /// fsync runs in the background. When it completes, `durable_index()` advances and the
+    /// log sends `InternalEvent::LogFlushed`. Nothing that promises durability to another node
+    /// (an AppendEntries success, a commit) may rely on this call alone.
     ///
-    /// # Durability Contract
-    /// **CRITICAL**: Implementers MUST choose one of these strategies:
+    /// An empty `entries` is a no-op.
     ///
-    /// 1. **Disk-First (Safest, Recommended for Leaders)**:
-    ///    - Persist entries to durable storage BEFORE updating in-memory state
-    ///    - Call fsync/flush before returning Ok(())
-    ///    - Ensures entries survive crashes immediately
-    ///    - Example: a store that fsyncs before returning
+    /// # Contract
+    /// - The caller passes entries in index order, contiguous, not overlapping existing
+    ///   entries. They are not re-checked; use `filter_out_conflicts_and_append` when the new
+    ///   entries may overlap or conflict with the log.
     ///
-    /// 2. **Memory-First (Performance-optimized, Acceptable for Followers)**:
-    ///    - Update in-memory state first
-    ///    - Enqueue entries for asynchronous durability
-    ///    - MUST guarantee eventual durability via background flush
-    ///    - MUST call flush() before acknowledging commits
-    ///    - Example: a store that fsyncs asynchronously
-    ///    - WARNING: Leader MUST wait_durable() before responding to AppendEntries RPCs
-    ///
-    /// # Safety Invariants
-    /// - Entries MUST have strictly increasing indices (no gaps)
-    /// - Entries MUST NOT conflict with existing entries (use filter_out_conflicts_and_append for
-    ///   that)
-    /// - After successful return, entries MUST be retrievable via entry()
-    /// - MUST update last_entry_id() atomically
-    /// - MUST update term indexes (first/last_index_for_term) atomically
-    ///
-    /// # Raft Protocol Integration
-    /// - Leaders using async fsync MUST call wait_durable(index) before:
-    ///   * Responding success to AppendEntries RPC
-    ///   * Advancing commit index
-    /// - Followers can use async fsync safely because leader durability guarantees safety
-    ///
-    /// # Failure Semantics
-    /// - On error, implementer MAY roll back partial writes
-    /// - Caller MUST retry or initiate crash recovery
+    /// # Errors
+    /// Returns a fatal error if the log is poisoned or the storage engine write fails. The
+    /// log stays poisoned; the caller must stop, not retry.
     async fn append_entries(
         &self,
         entries: Vec<Entry>,
     ) -> Result<()>;
 
-    /// Waits for a specific log index to become durable.
+    /// Applies an AppendEntries batch: checks the entry before it, drops the local entries
+    /// that conflict with it, and appends what is new.
     ///
-    /// # Arguments
-    /// - `index`: Log index to wait for
+    /// `new_entries` must start at `prev_log_index + 1`. If the local log has no entry at
+    /// `prev_log_index` with `prev_log_term`, nothing changes and the current `last_log_id()`
+    /// is returned. `prev_log_index == 0 && prev_log_term == 0` stands for the position before
+    /// the first entry and always matches; it does not clear the log.
     ///
-    /// # Returns
-    /// - `Ok(())` when index is guaranteed durable
-    /// - `Err(_)` if waiting failed (channel closed, timeout, etc.)
+    /// Otherwise the log is cut at the first new entry whose index is already present with a
+    /// different term, and every new entry from there on is appended. New entries that already
+    /// match are skipped, so a repeated batch changes nothing. Local entries are removed only
+    /// where a new entry conflicts: an empty or stale batch never shortens the log. On success
+    /// the id of the last new entry is returned.
     ///
-    /// # Usage Pattern
-    /// ```rust,ignore
-    /// // Leader with async fsync
-    /// raft_log.append_entries(new_entries).await?;
-    /// raft_log.wait_durable(max_index).await?;  // MUST wait before RPC response
-    /// respond_to_client(Ok(()));
-    /// ```
+    /// Like `append_entries`, this does not wait for disk; the truncation becomes durable with
+    /// the fsync of the appended entries. The caller must not acknowledge the batch before
+    /// `durable_index()` covers it.
     ///
-    /// # Safety Invariants
-    /// - MUST NOT return until flush() for this index completes successfully
-    /// - If implementation doesn't support async durability, return Ok(()) immediately
-    /// - Critical for async-fsync correctness
-    async fn wait_durable(
-        &self,
-        index: u64,
-    ) -> Result<()> {
-        // Default implementation for DiskFirst: no-op (already durable)
-        let _ = index;
-        Ok(())
-    }
-
-    /// Alias for append_entries (for backward compatibility).
-    ///
-    /// # Safety Invariants
-    /// - MUST have identical semantics to append_entries()
-    async fn insert_batch(
-        &self,
-        logs: Vec<Entry>,
-    ) -> Result<()> {
-        self.append_entries(logs).await
-    }
-
-    /// Resolves log conflicts and appends new entries atomically.
-    ///
-    /// This is the core of Raft's log replication safety. Implements the
-    /// AppendEntries RPC log consistency check and conflict resolution.
-    ///
-    /// # Arguments
-    /// - `prev_log_index`: Index of entry immediately preceding new entries
-    /// - `prev_log_term`: Term of entry at prev_log_index
-    /// - `new_entries`: New entries to append
-    ///
-    /// # Algorithm (from Raft paper §5.3)
-    /// 1. **Virtual Log Check**: If prev_log_index == 0 && prev_log_term == 0:
-    ///    - Clear entire log (snapshot installation)
-    ///    - Append all new entries
-    /// 2. **Consistency Check**: Verify entry at prev_log_index has term == prev_log_term
-    ///    - If mismatch, return current last_log_id (reject)
-    /// 3. **Conflict Resolution**: If existing entries conflict with new ones:
-    ///    - Delete all entries from prev_log_index+1 onwards
-    ///    - Append new entries
-    /// 4. **Optimization**: If prev_log_index >= last_entry_id:
-    ///    - No conflicts, directly append
-    ///
-    /// # Returns
-    /// - `Ok(Some(new_last_log_id))` on success (entries appended)
-    /// - `Ok(None)` or `Ok(Some(current_last_log_id))` on consistency failure (rejected)
-    /// - `Err(_)` on storage failure
-    ///
-    /// # Safety Invariants (CRITICAL)
-    /// - Truncation + Append MUST be atomic (no partial state visible)
-    /// - If crash occurs mid-operation, log MUST be in consistent state after recovery
-    /// - MUST NOT violate Log Matching Property (Raft invariant)
-    /// - MUST update term indexes atomically with log changes
-    /// - After success, all entries from first_entry_id to new last index MUST be contiguous
-    ///
-    /// # Recommended Implementation Pattern
-    /// ```rust,ignore
-    /// async fn filter_out_conflicts_and_append(...) -> Result<Option<LogId>> {
-    ///     // 1. Validate consistency (read-only)
-    ///     // 2. Begin transaction/write batch
-    ///     // 3. Truncate conflicting entries
-    ///     // 4. Append new entries
-    ///     // 5. Commit transaction/flush write batch
-    ///     // 6. Update in-memory indexes atomically
-    /// }
-    /// ```
+    /// # Errors
+    /// - `NonContiguousAppend` if `new_entries` does not start at `prev_log_index + 1` or has a gap.
+    /// - A fatal error if the log is poisoned or the storage engine write fails.
+    /// - A fatal error if a new entry conflicts with a local entry at or below commit_index: committed history would be rewritten.
     async fn filter_out_conflicts_and_append(
         &self,
         prev_log_index: u64,
         prev_log_term: u64,
         new_entries: Vec<Entry>,
+        commit_index: u64,
     ) -> Result<Option<LogId>>;
 
-    /// Calculates the majority-matched index for commit advancement.
+    /// Removes every entry with index `>= from_index`, and returns only once the removal is
+    /// on disk.
     ///
-    /// # Arguments
-    /// - `current_term`: Leader's current term
-    /// - `commit_index`: Current committed index
-    /// - `matched_ids`: Follower match indexes (leader's last index added automatically)
+    /// Called before installing a leader's snapshot whose boundary disagrees with the local log:
+    /// the entries after that boundary belong to a history the leader does not share. Afterwards
+    /// `last_log_id()`, `entry_term()`, the per-term indexes and the next allocated index all
+    /// describe the shorter log, and `durable_index()` covers no removed entry. If nothing is
+    /// left after the purge boundary, `last_log_id()` returns that boundary. A `from_index` past
+    /// the last entry removes nothing.
     ///
-    /// # Algorithm (Raft paper §5.3, §5.4)
-    /// 1. Sort all matched indexes (including leader's) in descending order
-    /// 2. Find median index (majority quorum)
-    /// 3. Verify conditions:
-    ///    - majority_index >= commit_index
-    ///    - entry at majority_index has term == current_term
+    /// Unlike `filter_out_conflicts_and_append`, this appends nothing, so no later fsync of new
+    /// entries carries the removal to disk; it syncs the removal itself.
     ///
-    /// # Returns
-    /// - `Some(new_commit_index)` if conditions met
-    /// - `None` if no advancement possible
+    /// # Contract
+    /// - Durable on return: after `Ok(())`, a crash never brings a removed entry back.
+    /// - A crash during the call leaves a contiguous prefix of the old log that still holds
+    ///   every entry below `from_index`.
+    /// - `from_index` is above the purge boundary: entries up to it are committed and covered
+    ///   by a snapshot.
     ///
-    /// # Safety Invariants
-    /// - MUST verify term matches current_term (prevents committing entries from old terms)
-    /// - MUST NOT decrease commit index
-    /// - Critical for State Machine Safety property
+    /// # Errors
+    /// - A fatal error if `from_index` is at or below the purge boundary; nothing is changed.
+    /// - A fatal error if the log is poisoned or the storage engine fails to remove or sync;
+    ///   the log is then poisoned and the node stops.
+    async fn truncate_from(
+        &self,
+        from_log_index: u64,
+    ) -> Result<()>;
+
+    /// Returns the highest index a majority of voters hold durably, if the leader may commit
+    /// up to it now.
+    ///
+    /// The leader's own `durable_index()` is added to `matched_ids`, and the median of the
+    /// result is the highest index held by a majority. It is returned only if it is above
+    /// `commit_index` and the entry there belongs to `current_term`: a leader never commits
+    /// an entry of an earlier term by counting replicas (Raft §5.4.2); such entries commit
+    /// together with a later entry of its own term.
+    ///
+    /// # Contract
+    /// - `matched_ids` holds exactly one value per voter other than the leader: its match
+    ///   index, or 0 if it has confirmed nothing. A missing voter or an extra learner
+    ///   moves the median, and the leader may then commit an entry most voters do not hold.
+    /// - The leader's contribution is its durable index, never its in-memory tail, so a
+    ///   commit never depends on entries the leader could still lose in a crash.
     fn calculate_majority_matched_index(
         &self,
         current_term: u64,
@@ -374,47 +277,43 @@ pub trait RaftLog: Send + Sync + 'static {
         matched_ids: Vec<u64>,
     ) -> Option<u64>;
 
-    /// Purges committed log entries up to cutoff_index (log compaction).
+    /// Removes every entry up to and including `cutoff`, because a snapshot already covers them.
     ///
-    /// # Arguments
-    /// - `cutoff_index`: LogId of last entry to purge (inclusive)
+    /// Afterwards `cutoff` is the purge boundary: `entry_term(cutoff.index)` returns
+    /// `cutoff.term`, so an AppendEntries whose previous entry is the boundary still matches,
+    /// and `durable_index()` counts the boundary as durable because the snapshot holds it.
     ///
-    /// # Safety Invariants (CRITICAL)
-    /// - MUST only be called after entries applied to state machine
-    /// - MUST NOT purge entries beyond last_applied_index
-    /// - After purge, first_entry_id() MUST be cutoff_index.index + 1
-    /// - MUST be atomic (no partial purge visible)
-    /// - MUST NOT cause gaps in remaining log
-    /// - MUST update term indexes correctly
+    /// Only the prefix is removed. Entries after `cutoff` are kept exactly as they are, whether
+    /// or not they agree with the snapshot; a caller that installs a snapshot conflicting with
+    /// the local log must drop those entries itself first (see `truncate_from`).
     ///
-    /// # Durability Contract
-    /// - Changes MUST be durable before returning Ok(())
-    /// - On crash, either old or new state MUST be consistent
+    /// # Contract
+    /// - The caller holds a durable snapshot that covers `cutoff`; nothing up to `cutoff` is
+    ///   needed again.
+    /// - The purge is durable when this returns `Ok`.
+    /// - A crash during the call leaves the log either exactly as before or fully purged: the
+    ///   removed entries and the boundary always agree, and entries after `cutoff` are never lost.
     ///
-    /// # Recommended Implementation
-    /// - Coordinate with snapshot mechanism
-    /// - Ensure snapshot covers purged range
+    /// # Errors
+    /// Returns a fatal error if the log is poisoned or the storage engine purge fails.
     async fn purge_logs_up_to(
         &self,
         cutoff_index: LogId,
     ) -> Result<()>;
 
-    /// Forces all pending writes to durable storage.
+    /// Waits until every entry appended so far is on disk.
     ///
-    /// # Durability Contract
-    /// - After successful return, ALL previously written entries MUST survive crashes
-    /// - MUST call fsync/fdatasync or equivalent
-    /// - MUST block until durability guaranteed
+    /// Writes out entries not yet handed to the storage engine, asks for an fsync up to the
+    /// current last entry, and returns once it completes; returns at once if everything is
+    /// already durable. It covers entries only: a log that only shrank (truncation) is not
+    /// synced by this call.
     ///
-    /// # When to Call
-    /// - Before acknowledging commits to clients
-    /// - Before voting in elections
-    /// - Before responding to AppendEntries RPCs
-    /// - Before taking snapshots
+    /// The normal write path does not use it: durability is reported through `durable_index()`
+    /// and `InternalEvent::LogFlushed`. It is used when the log is closed.
     ///
-    /// # Performance Note
-    /// - This is expensive; batch writes when possible
-    /// - Consider group commit optimization
+    /// # Errors
+    /// Returns an error if the storage engine write or the fsync fails, or if the fsync worker
+    /// has stopped.
     async fn flush(&self) -> Result<()>;
 
     /// Resets the entire log storage (destructive operation).
@@ -435,37 +334,29 @@ pub trait RaftLog: Send + Sync + 'static {
     // PERSISTENT STATE (Raft Paper §5.2)
     // =========================================================================
 
-    /// Loads persistent state (currentTerm, votedFor).
+    /// Returns the term and vote saved by the last successful `save_hard_state`, or `None` on a
+    /// node that has never saved one.
     ///
-    /// # Returns
-    /// - `Ok(Some(HardState))` if state exists
-    /// - `Ok(None)` if no state persisted yet (first boot)
-    /// - `Err(_)` on storage failure
+    /// Read once at startup to restore the node's term and vote.
     ///
-    /// # Safety Invariants
-    /// - MUST return most recently saved state
-    /// - MUST survive crashes (durably persisted)
+    /// # Errors
+    /// Returns an error if the stored state cannot be read or decoded. Startup treats it as fatal.
     fn load_hard_state(&self) -> Result<Option<crate::HardState>>;
 
-    /// Saves persistent state (currentTerm, votedFor).
+    /// Saves the current term and vote, and returns only once they are on disk.
     ///
-    /// # Arguments
-    /// - `hard_state`: Current term and vote information
+    /// A node that votes, restarts and forgets the vote can vote again in the same term, and two
+    /// candidates can then both win it. Role code changes the term or the vote only through
+    /// `commit_hard_state`, which calls this before the change is acted on (for example before a
+    /// vote is sent). It is also called once more on shutdown.
     ///
-    /// # Durability Contract (CRITICAL)
-    /// - MUST be durable BEFORE returning Ok(())
-    /// - MUST call fsync/flush before returning
-    /// - On crash after return, state MUST be retrievable via load_hard_state()
+    /// # Contract
+    /// - Durable on return: after `Ok(())`, `load_hard_state` returns this state, even after a crash.
+    /// - The caller never lowers the term; this method does not check it.
     ///
-    /// # Safety Invariants
-    /// - Violating durability breaks election safety (vote splitting)
-    /// - MUST be atomic with respect to load_hard_state()
-    /// - Term MUST NOT decrease (except during reset)
-    ///
-    /// # When to Call
-    /// - Before voting for a candidate
-    /// - When becoming candidate (incrementing term)
-    /// - When discovering higher term
+    /// # Errors
+    /// Returns a fatal error if the log is poisoned or the metadata store write or flush fails.
+    /// The log is then marked poisoned and the node stops.
     fn save_hard_state(
         &self,
         hard_state: &crate::HardState,

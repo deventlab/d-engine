@@ -73,10 +73,14 @@ fn log_backed_by(follower: &RaftLogCoreTestContext) -> Arc<MockRaftLog> {
         .returning(move |term| real.first_index_for_term(term));
     let real = follower.raft_log.clone();
     mock.expect_filter_out_conflicts_and_append().returning(
-        move |prev_index, prev_term, entries| {
+        move |prev_index, prev_term, entries, commit_index| {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(real.filter_out_conflicts_and_append(prev_index, prev_term, entries))
+                tokio::runtime::Handle::current().block_on(real.filter_out_conflicts_and_append(
+                    prev_index,
+                    prev_term,
+                    entries,
+                    commit_index,
+                ))
             })
         },
     );

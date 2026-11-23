@@ -63,7 +63,7 @@ general_raft_timeout_duration_in_ms = 5000
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
-        Arc::new(sm1),
+        sm1,
         Some(node1_config_path),
     )
     .await?;
@@ -120,7 +120,7 @@ general_raft_timeout_duration_in_ms = 5000
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
-        Arc::new(sm2),
+        sm2,
         Some(node2_config_path),
     )
     .await?;
@@ -165,7 +165,7 @@ general_raft_timeout_duration_in_ms = 5000
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),
-        Arc::new(sm3),
+        sm3,
         Some(node3_config_path),
     )
     .await?;
@@ -328,7 +328,7 @@ election_timeout_max = 600
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_db_root,
         Arc::new(storage1),
-        Arc::new(sm1),
+        sm1,
         Some(node1_config_path),
     )
     .await?;
@@ -390,7 +390,7 @@ election_timeout_max = 6000
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_db_root,
         Arc::new(storage2),
-        Arc::new(sm2),
+        sm2,
         Some(node2_config_path),
     )
     .await?;
@@ -436,7 +436,7 @@ election_timeout_max = 6000
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_db_root,
         Arc::new(storage3),
-        Arc::new(sm3),
+        sm3,
         Some(node3_config_path),
     )
     .await?;
@@ -612,7 +612,7 @@ election_timeout_max = 6000
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_db_root,
         Arc::new(node1_storage),
-        Arc::new(node1_state_machine),
+        node1_state_machine,
         Some(&node1_config_path),
     )
     .await?;

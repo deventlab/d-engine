@@ -26,7 +26,6 @@ use super::AppendResponseWithUpdates;
 use super::PrepareResult;
 use super::ReplicationCore;
 use crate::BuildAppendOutcome;
-use crate::IdAllocationError;
 use crate::LeaderStateSnapshot;
 use crate::PeerEntriesResult;
 use crate::PeerUpdate;
@@ -345,13 +344,16 @@ where
                 };
 
                 if !entries_are_contiguous_in_range(&head, start, head_end) {
-                    peer_entries.insert(id, PeerEntriesResult::CorruptGap {
-                        start,
-                        end: head_end,
-                        first_seen: head.first().map(|e| e.index),
-                        last_seen: head.last().map(|e| e.index),
-                        count: head.len(),
-                    });
+                    peer_entries.insert(
+                        id,
+                        PeerEntriesResult::CorruptGap {
+                            start,
+                            end: head_end,
+                            first_seen: head.first().map(|e| e.index),
+                            last_seen: head.last().map(|e| e.index),
+                            count: head.len(),
+                        },
+                    );
                     continue;
                 }
 
@@ -419,6 +421,7 @@ where
                     request.prev_log_index,
                     request.prev_log_term,
                     std::mem::take(&mut request.entries),
+                    state_snapshot.commit_index,
                 )
                 .await?;
         }
@@ -552,41 +555,26 @@ where
             return Ok(Vec::new());
         }
 
-        // Pre-allocate ID range in one atomic operation
-        let id_range = raft_log.pre_allocate_id_range(entry_payloads.len() as u64);
-        assert!(!id_range.is_empty());
-
-        let mut next_index = *id_range.start();
-
-        let mut entries = Vec::with_capacity(entry_payloads.len());
-
-        for payload in entry_payloads {
-            // Ensure we don't exceed allocated range
-            if next_index > *id_range.end() {
-                return Err(IdAllocationError::Overflow {
-                    start: next_index,
-                    end: *id_range.end(),
-                }
-                .into());
-            }
-
-            entries.push(Entry {
-                index: next_index,
+        // Number the new entries right after the log's last entry. Numbering and the append
+        // below happen in one call on the Raft loop, so nothing else can be numbered in between;
+        // `last_log_id()` falls back to the purge boundary when the log is empty.
+        let first_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
+        let entries: Vec<Entry> = entry_payloads
+            .into_iter()
+            .zip(first_index..)
+            .map(|(payload, index)| Entry {
+                index,
                 term: current_term,
                 payload: Some(payload),
-            });
+            })
+            .collect();
 
-            next_index += 1;
-        }
-
-        if !entries.is_empty() {
-            trace!(
-                "RaftLog insert_batch: {}..={}",
-                entries[0].index,
-                entries.last().unwrap().index
-            );
-            raft_log.insert_batch(entries.clone()).await?;
-        }
+        trace!(
+            "RaftLog append_entries: {}..={}",
+            entries[0].index,
+            entries.last().unwrap().index
+        );
+        raft_log.append_entries(entries.clone()).await?;
 
         Ok(entries)
     }
@@ -663,17 +651,20 @@ where
             entries.len()
         );
 
-        Ok((peer_id, BuildAppendOutcome::Append {
-            request: AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index: prev_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
+        Ok((
+            peer_id,
+            BuildAppendOutcome::Append {
+                request: AppendEntriesRequest {
+                    term: data.current_term,
+                    leader_id: self.my_id,
+                    prev_log_index: prev_index,
+                    prev_log_term,
+                    entries,
+                    leader_commit_index: data.commit_index,
+                },
+                effective_next_index: next_index,
             },
-            effective_next_index: next_index,
-        }))
+        ))
     }
 }
 
@@ -813,3 +804,7 @@ mod quorum_calculation_test;
 #[cfg(test)]
 #[path = "replication_handler_test/snapshot_trigger_test.rs"]
 mod snapshot_trigger_test;
+
+#[cfg(test)]
+#[path = "replication_handler_test/committed_entries_immutable_test.rs"]
+mod committed_entries_immutable_test;

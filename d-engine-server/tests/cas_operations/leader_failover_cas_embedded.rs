@@ -68,18 +68,26 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;
         engines.push(engine);
     }
 
-    // Wait for initial leader election
-    let leader_info = engines[0]
-        .wait_ready(Duration::from_secs(10))
-        .await
-        .expect("Failed to elect leader");
+    // Wait for every node, not only the first. A node reports a leader only once its own
+    // startup is done, and a node still starting up cannot vote: stopping the leader before
+    // that leaves two nodes of which one cannot take part, so no new leader can be elected.
+    let mut leader_info = None;
+    for engine in &engines {
+        leader_info = Some(
+            engine
+                .wait_ready(Duration::from_secs(30))
+                .await
+                .expect("Failed to elect leader"),
+        );
+    }
+    let leader_info = leader_info.expect("the cluster has nodes");
     info!("Initial leader elected: node {}", leader_info.leader_id);
 
     let initial_leader_id = leader_info.leader_id;
@@ -121,11 +129,25 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("New leader elected: node {}", new_leader_info.leader_id);
 
     // Find the engine whose node_id matches the new leader
-    let new_leader_client = engines
+    let new_leader_engine = engines
         .iter()
         .find(|e| e.node_id() == new_leader_info.leader_id)
-        .expect("New leader engine not found")
-        .client();
+        .expect("New leader engine not found");
+
+    // A follower reports the new leader as soon as it hears from it, before that leader has
+    // committed its no-op entry; until then the leader rejects linearizable reads. The leader
+    // itself reports only after its no-op commits, so wait for its own notification.
+    let ready = wait_for_new_leader(
+        vec![new_leader_engine.leader_change_notifier()],
+        initial_leader_id,
+        Duration::from_secs(120),
+    )
+    .await;
+    assert_eq!(
+        ready.leader_id, new_leader_info.leader_id,
+        "leadership moved again while waiting for the new leader to become ready"
+    );
+    let new_leader_client = new_leader_engine.client();
 
     // Phase 3: Verify lock state consistency
     info!("Phase 3: Verify lock state consistency");

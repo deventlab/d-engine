@@ -380,7 +380,7 @@ async fn test_p0_follower_eventual_read_local_processing() {
         .times(1)
         .withf(|keys| keys.len() == 1 && keys[0] == "test_key")
         .returning(|_| {
-            Some(vec![d_engine_proto::client::ClientResult {
+            Ok(vec![d_engine_proto::client::ClientResult {
                 key: bytes::Bytes::from("test_key"),
                 value: bytes::Bytes::from("test_value"),
             }])
@@ -540,7 +540,7 @@ async fn test_p0_candidate_commands_handling() {
         .times(1)
         .withf(|keys| keys.len() == 1 && keys[0] == "eventual_key")
         .returning(|_| {
-            Some(vec![d_engine_proto::client::ClientResult {
+            Ok(vec![d_engine_proto::client::ClientResult {
                 key: bytes::Bytes::from("eventual_key"),
                 value: bytes::Bytes::from("eventual_value"),
             }])

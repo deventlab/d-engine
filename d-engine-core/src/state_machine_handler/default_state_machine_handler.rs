@@ -7,8 +7,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use async_compression::tokio::bufread::GzipDecoder;
-use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -20,16 +18,10 @@ use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::stream::BoxStream;
 use memmap2::Mmap;
 use memmap2::MmapOptions;
-use tokio::fs;
-use tokio::fs::File;
-use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
-use tokio_tar::Archive;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -64,6 +56,9 @@ use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
 use crate::state_machine_handler::applied_state::AppliedState;
+use crate::state_machine_handler::snapshot_catalog::SnapshotCatalog;
+use crate::utils::snapshot_archive;
+use crate::utils::snapshot_archive::UnpackLimits;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]
@@ -91,21 +86,13 @@ where
 
     // current_snapshot_version: AtomicU64,
     snapshot_config: SnapshotConfig,
-    /// Explicit runtime path — always `data_dir/snapshots` (see #10). Not
-    /// part of `snapshot_config`; `snapshots_dir` is a runtime identity, not
-    /// a configurable setting.
-    snapshots_dir: PathBuf,
     snapshot_policy: SNP<T>,
     snapshot_in_progress: AtomicBool,
 
     path_mgr: Arc<SnapshotPathManager>,
-}
 
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-pub(crate) struct CleanupSnapshotMeta {
-    pub(crate) index: u64,
-    pub(crate) term: u64,
-    pub(crate) path: PathBuf,
+    /// The snapshots this node holds, recorded by the engine itself.
+    catalog: Arc<SnapshotCatalog>,
 }
 
 #[async_trait]
@@ -189,19 +176,13 @@ where
     fn read_from_state_machine(
         &self,
         keys: Vec<Bytes>,
-    ) -> Option<Vec<KvEntry>> {
-        let mut result = Vec::new();
-        for key in keys {
-            if let Ok(Some(value)) = self.state_machine.get(&key) {
-                result.push(KvEntry { key, value });
-            }
-        }
-
-        if !result.is_empty() {
-            Some(result)
-        } else {
-            None
-        }
+    ) -> Result<Vec<KvEntry>> {
+        let values = self.state_machine.get_multi(&keys)?;
+        Ok(keys
+            .into_iter()
+            .zip(values)
+            .filter_map(|(key, value)| value.map(|value| KvEntry { key, value }))
+            .collect())
     }
 
     async fn prepare_snapshot_stream(
@@ -306,7 +287,12 @@ where
         let snapshot_path = assembler.finalize(&captured_metadata).await?;
 
         let temp_dir = tempfile::tempdir()?;
-        self.decompress_to_directory(&snapshot_path, temp_dir.path()).await?;
+        let limits = UnpackLimits {
+            max_total_bytes: config.max_unpack_total_bytes,
+            max_file_bytes: config.max_unpack_file_bytes,
+            max_entries: config.max_unpack_entries,
+        };
+        self.decompress_to_directory(&snapshot_path, temp_dir.path(), limits).await?;
 
         Ok(PreparedSnapshot {
             metadata: captured_metadata,
@@ -327,7 +313,7 @@ where
         }
 
         let last_applied = self.state_machine.last_applied();
-        let last_snapshot_metadata = self.state_machine.snapshot_metadata();
+        let last_snapshot_metadata = self.catalog.latest();
 
         let last_included = last_snapshot_metadata
             .and_then(|meta| meta.last_included)
@@ -378,19 +364,12 @@ where
         temp_dir.remove().await?;
 
         // Publish metadata only after the archive is durably built (#436). A crash before
-        // this point leaves the old metadata on disk, so the leader re-sends the snapshot
+        // this point leaves the old record on disk, so the leader re-sends the snapshot
         // instead of advertising one whose archive is missing.
-        self.state_machine.persist_last_snapshot_metadata(&metadata)?;
+        self.catalog.publish(&metadata).await?;
 
         debug!(%self.snapshot_config.cleanup_retain_count, "build_local_snapshot: cleanup old versions");
-        if let Err(e) = self
-            .cleanup_snapshot(
-                self.snapshot_config.cleanup_retain_count,
-                &self.snapshots_dir,
-                &self.snapshot_config.snapshots_dir_prefix,
-            )
-            .await
-        {
+        if let Err(e) = self.cleanup_snapshot(self.snapshot_config.cleanup_retain_count).await {
             error!(%e, "clean up old snapshot file failed");
         }
 
@@ -401,82 +380,12 @@ where
     async fn cleanup_snapshot(
         &self,
         retain_count: u64,
-        snapshot_dir: &Path,
-        snapshot_dir_prefix: &str,
     ) -> Result<()> {
-        // Phase 1: Collect and parse snapshots
-        let mut snapshots = Vec::new();
-
-        let mut entries =
-            fs::read_dir(snapshot_dir).await.map_err(|e| StorageError::PathError {
-                path: snapshot_dir.to_path_buf(),
-                source: e,
-            })?;
-
-        while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
-            let path = entry.path();
-            debug!(?path, "cleanup_snapshot");
-
-            if path.extension().is_some_and(|ext| ext == "gz")
-                && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-            {
-                let parsed = parse_snapshot_dirname(file_name, snapshot_dir_prefix).or_else(|| {
-                    file_name
-                        .strip_suffix(".tar.gz")
-                        .and_then(|s| parse_snapshot_dirname(s, snapshot_dir_prefix))
-                });
-
-                let (index, term) = if let Some(pair) = parsed {
-                    pair
-                } else {
-                    continue;
-                };
-
-                info!(
-                    "Index: {:>10} | Term: {:>10} | Path: {}",
-                    index,
-                    term,
-                    path.display()
-                );
-                snapshots.push(CleanupSnapshotMeta { index, term, path });
-            }
-        }
-
-        // Phase 2: Sorting and cleaning
-        if snapshots.len() <= retain_count as usize {
-            return Ok(()); // No need to clean
-        }
-
-        // Sort in ascending order by index (earlier snapshots are at the front)
-        snapshots.sort_by_key(|m| m.index);
-
-        // Phase 4: Difference: Take the remaining elements
-        // Calculate the split point to be retained
-        let split_point = snapshots.len() - retain_count as usize;
-
-        for meta in &snapshots[..split_point] {
-            info!(
-                "Deleting old snapshot [index={}, term={}] at {}",
-                meta.index,
-                meta.term,
-                meta.path.display()
-            );
-            let file_type = tokio::fs::metadata(&meta.path)
-                .await
-                .map_err(StorageError::IoError)?
-                .file_type();
-
-            if file_type.is_file() {
-                remove_file(&meta.path).await.map_err(StorageError::IoError)?;
-            } else if file_type.is_dir() {
-                remove_dir_all(&meta.path).await.map_err(StorageError::IoError)?;
-            }
-        }
-        Ok(())
+        self.catalog.prune(retain_count).await
     }
 
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.state_machine.snapshot_metadata()
+        self.catalog.latest()
     }
 
     /// Load snapshot data as a stream of chunks (ZERO-COPY)
@@ -683,7 +592,10 @@ where
         snapshot_policy: SNP<T>,
     ) -> Self {
         let (applied, applied_notify_rx) = AppliedState::new(last_applied_index);
-
+        let path_mgr = Arc::new(SnapshotPathManager::new(
+            snapshots_dir.clone(),
+            snapshot_config.snapshots_dir_prefix.clone(),
+        ));
         Self {
             node_id,
             applied,
@@ -691,11 +603,8 @@ where
             pending_commit: AtomicU64::new(0),
             state_machine,
             snapshot_policy,
-            path_mgr: Arc::new(SnapshotPathManager::new(
-                snapshots_dir.clone(),
-                snapshot_config.snapshots_dir_prefix.clone(),
-            )),
-            snapshots_dir,
+            catalog: Arc::new(SnapshotCatalog::open(path_mgr.clone())),
+            path_mgr,
             snapshot_config,
 
             snapshot_in_progress: AtomicBool::new(false),
@@ -733,60 +642,33 @@ where
         source_dir: &Path,
         dest_path: &Path,
     ) -> Result<()> {
-        let compressed_file = File::create(dest_path).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to create compressed file: {e}"))
-        })?;
-
-        let gzip_encoder = GzipEncoder::new(compressed_file);
-        let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
-
-        // Add all files in source_dir to the archive
-        tar_builder.append_dir_all(".", source_dir).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to create tar archive: {e}"))
-        })?;
-
-        // Finish writing and flush all data
-        tar_builder.finish().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to finish tar archive: {e}"))
-        })?;
-
-        // Get inner GzipEncoder and shutdown to ensure all data is written
-        let mut gzip_encoder = tar_builder.into_inner().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to get inner encoder: {e}"))
-        })?;
-        gzip_encoder.shutdown().await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to shutdown gzip encoder: {e}"))
-        })?;
-
-        Ok(())
+        let source_dir = source_dir.to_path_buf();
+        let dest_path = dest_path.to_path_buf();
+        tokio::task::spawn_blocking(move || snapshot_archive::pack(&source_dir, &dest_path))
+            .await
+            .map_err(|e| {
+                SnapshotError::OperationFailed(format!("Snapshot packing task failed: {e}"))
+            })?
     }
 
     async fn decompress_to_directory(
         &self,
         compressed_path: &Path,
         target_dir: &Path,
+        limits: UnpackLimits,
     ) -> Result<()> {
-        debug!(
-            ?compressed_path,
-            "Validate file format before processing (IMPROVEMENT ADDED)"
-        );
-        // Validate file format before processing (IMPROVEMENT ADDED) Verify the file is
-        //    actually compressed using magic numbers or extension
+        // Reject a file that is not a gzip archive before reading any of it.
         validate_compressed_format(compressed_path)?;
 
-        let file = File::open(compressed_path).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to open snapshot file: {e}"))
-        })?;
-
-        let buf_reader = BufReader::new(file);
-        let gzip_decoder = GzipDecoder::new(buf_reader);
-        let mut archive = Archive::new(gzip_decoder);
-
-        archive.unpack(target_dir).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to unpack snapshot: {e}"))
-        })?;
-
-        Ok(())
+        let compressed_path = compressed_path.to_path_buf();
+        let target_dir = target_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            snapshot_archive::unpack(&compressed_path, &target_dir, &limits)
+        })
+        .await
+        .map_err(|e| {
+            SnapshotError::OperationFailed(format!("Snapshot unpacking task failed: {e}"))
+        })?
     }
 
     /// Shared by `prepare_snapshot_stream`'s first-chunk handling and its remaining-chunk
@@ -856,34 +738,6 @@ fn zero_copy_bytes_from_mmap(
     Bytes::copy_from_slice(slice)
 }
 
-/// Manual parsing file name format: snapshot-{index}-{term}
-fn parse_snapshot_dirname(
-    name: &str,
-    snapshot_dir_prefix: &str,
-) -> Option<(u64, u64)> {
-    debug!(%name, "parse_snapshot_dirname");
-
-    // Check prefix and suffix
-    if !name.starts_with(snapshot_dir_prefix) {
-        return None;
-    }
-
-    // Remove fixed parts
-    let core = &name[9..name.len()]; // "snapshot-".len() = 9,
-
-    // Split version and index
-    let parts: Vec<&str> = core.splitn(2, '-').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    // Parse numbers
-    match (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
-        (Ok(i), Ok(t)) => Some((i, t)),
-        _ => None,
-    }
-}
-
 /// Constructs a paired reader/writer sharing one `AppliedState` and one `state_machine`
 /// handle. This is the only place `DefaultStateMachineWriter` should be built alongside
 /// its reader — `StateMachineWorker` must be the sole holder of the writer half.
@@ -905,6 +759,7 @@ pub fn new_reader_writer_pair<T: TypeConfig>(
         snapshots_dir.clone(),
         snapshot_config.snapshots_dir_prefix.clone(),
     ));
+    let catalog = Arc::new(SnapshotCatalog::open(path_mgr.clone()));
     let reader = DefaultStateMachineHandler {
         node_id,
         pending_commit: AtomicU64::new(0),
@@ -913,7 +768,7 @@ pub fn new_reader_writer_pair<T: TypeConfig>(
         applied_notify_rx,
         snapshot_policy,
         path_mgr: path_mgr.clone(),
-        snapshots_dir,
+        catalog: catalog.clone(),
         snapshot_config,
         snapshot_in_progress: AtomicBool::new(false),
     };
@@ -922,6 +777,7 @@ pub fn new_reader_writer_pair<T: TypeConfig>(
         state_machine,
         applied,
         path_mgr,
+        catalog,
         watch_event_tx,
         prev_kv_watcher_count,
     );

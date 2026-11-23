@@ -271,16 +271,18 @@ pub(crate) async fn insert_raft_log(
     ids: Vec<u64>,
     term: u64,
 ) {
+    let mut next_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
     let mut entries = Vec::new();
     for id in ids {
         let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index: next_index,
             term,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
+        next_index += 1;
     }
-    if let Err(e) = raft_log.insert_batch(entries).await {
+    if let Err(e) = raft_log.append_entries(entries).await {
         panic!("error:{e:?}");
     }
 }
@@ -347,16 +349,18 @@ pub async fn simulate_insert_command(
     ids: Vec<u64>,
     term: u64,
 ) {
+    let mut next_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
     let mut entries = Vec::new();
     for id in ids {
         let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index: next_index,
             term,
             payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
         };
         entries.push(log);
+        next_index += 1;
     }
-    raft_log.insert_batch(entries).await.unwrap();
+    raft_log.append_entries(entries).await.unwrap();
     raft_log.flush().await.unwrap();
 }
 
@@ -381,16 +385,18 @@ pub async fn simulate_delete_command(
     id_range: RangeInclusive<u64>,
     term: u64,
 ) {
+    let mut next_index = raft_log.last_log_id().map_or(0, |id| id.index) + 1;
     let mut entries = Vec::new();
     for id in id_range {
         let log = Entry {
-            index: raft_log.pre_allocate_raft_logs_next_index(),
+            index: next_index,
             term,
             payload: Some(EntryPayload::command(generate_delete_commands(id..=id))),
         };
         entries.push(log);
+        next_index += 1;
     }
-    if let Err(e) = raft_log.insert_batch(entries).await {
+    if let Err(e) = raft_log.append_entries(entries).await {
         panic!("error: {e:?}");
     }
 }

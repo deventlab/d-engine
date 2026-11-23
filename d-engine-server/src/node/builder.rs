@@ -224,9 +224,9 @@ where
     /// Sets a custom state machine implementation
     pub fn state_machine(
         mut self,
-        state_machine: Arc<SM>,
+        state_machine: SM,
     ) -> Self {
-        self.state_machine = Some(state_machine);
+        self.state_machine = Some(Arc::new(state_machine));
         self
     }
 
@@ -309,9 +309,6 @@ where
             )
         })?;
 
-        // Start state machine: flip flags and load persisted data
-        state_machine.start().await?;
-
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().ok_or_else(|| {
             SystemError::NodeStartFailed(
@@ -335,6 +332,7 @@ where
                 node_config.raft.persistence.shutdown_timeout_ms,
             )
         };
+        raft_log.align_with_state_machine(state_machine.last_applied()).await?;
 
         // Peer health channels: transport fires try_send(peer_id) on stream failure/success.
         // Bridge tasks below relay to membership so zombie detection and health recovery both work.
@@ -612,7 +610,7 @@ where
             state_machine,
             max_drain,
         ));
-        let read_handle = crate::api::StandaloneReadHandle::new(Some(read_tx), cmd_tx.clone());
+        let read_handle = crate::api::ReadHandle::new(Some(read_tx), cmd_tx.clone());
 
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,
@@ -645,18 +643,24 @@ where
 
     /// Starts the gRPC server for cluster communication.
     ///
+    /// `incoming` is the already-bound listener: the caller binds it first so that a taken port
+    /// fails `start()` instead of leaving a node without its RPC server.
+    ///
     /// # Panics
-    /// Panics if node hasn't been built or address binding fails
-    async fn start_rpc_server(self) -> Self {
+    /// Panics if node hasn't been built
+    async fn start_rpc_server(
+        self,
+        incoming: tonic::transport::server::TcpIncoming,
+    ) -> Self {
         debug!("1. --- start RPC server --- ");
         if let Some(ref node) = self.node {
             let node_clone = node.clone();
             let shutdown = self.shutdown_signal.clone();
-            let listen_address = self.node_config.cluster.listen_address;
+
             let node_config = self.node_config.clone();
             let handle = tokio::spawn(async move {
                 if let Err(e) =
-                    grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
+                    grpc::start_rpc_server(node_clone, incoming, node_config, shutdown).await
                 {
                     eprintln!("RPC server stops. {e:?}");
                     error!("RPC server stops. {:?}", e);
@@ -681,7 +685,8 @@ where
     /// An `Arc<Node>` ready for operation
     ///
     /// # Errors
-    /// Returns an error if any initialization step fails
+    ///  Returns an error if any initialization step fails, including when the RPC listen address
+    /// cannot be bound (for example because another process already holds the port)
     ///
     /// # Example
     /// ```ignore
@@ -691,8 +696,18 @@ where
     ///     .start().await?;
     /// ```
     pub async fn start(self) -> Result<Arc<Node<RaftTypeConfig<SE, SM>>>> {
+        // Bind before anything is built or spawned: a taken port must fail `start()`, not leave
+        // a node running without its RPC server.
+        let listen_address = self.node_config.cluster.listen_address;
+        let incoming = tonic::transport::server::TcpIncoming::bind(listen_address)
+            .map_err(|e| {
+                SystemError::NodeStartFailed(format!(
+                    "failed to bind RPC listen address {listen_address}: {e}"
+                ))
+            })?
+            .with_nodelay(Some(self.node_config.network.tcp_nodelay));
         let builder = self.build().await?;
-        let builder = builder.start_rpc_server().await;
+        let builder = builder.start_rpc_server(incoming).await;
         builder.node.ok_or_else(|| {
             SystemError::NodeStartFailed("Node build failed unexpectedly".to_string()).into()
         })

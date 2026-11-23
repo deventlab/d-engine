@@ -1,7 +1,8 @@
-//! StandaloneReadHandle — read routing for standalone (gRPC) mode.
+//! ReadHandle — read routing for standalone (gRPC) mode.
 //!
 //! Routes reads through the ReadActor channel for Eventual/LeaseRead fast path,
-//! falling back to `cmd_tx` (Raft readIndex) for LinearizableRead or on error.
+//! falling back to `cmd_tx` (Raft readIndex) for LinearizableRead, when a lease is no longer valid,
+//! or when the ReadActor cannot answer. A state machine read failure is returned to the caller.
 //!
 //! For embedded mode, use `EmbeddedReadHandle` which calls the SM directly
 //! without any channel overhead.
@@ -9,6 +10,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_core::Error;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
 use d_engine_core::client::ClientApiError;
@@ -16,11 +18,11 @@ use d_engine_core::client::ClientApiResult;
 use d_engine_core::client::ClientReadRequest;
 use d_engine_core::client::ClientResponsePayload;
 use d_engine_core::client::ErrorCode;
-use d_engine_core::client::LeaderHint;
 use d_engine_core::client::ReadResults;
 use d_engine_core::config::ReadConsistencyPolicy;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tracing::error;
 
 use crate::read_actor::ReadActorError;
 use crate::read_actor::ReadCmd;
@@ -53,49 +55,6 @@ pub(crate) fn server_error(msg: String) -> ClientApiError {
     }
 }
 
-pub(crate) fn not_leader_error(
-    leader_id: Option<String>,
-    leader_address: Option<String>,
-    retry_after_ms: Option<u64>,
-) -> ClientApiError {
-    let message = match (&leader_address, &leader_id) {
-        (Some(addr), _) => format!("Not leader, try leader at: {addr}"),
-        (None, Some(id)) => format!("Not leader, leader_id: {id}"),
-        (None, None) => "Not leader".to_string(),
-    };
-    let leader_hint = match (&leader_id, &leader_address) {
-        (Some(id_str), Some(addr)) => id_str.parse::<u32>().ok().map(|id| LeaderHint {
-            leader_id: id,
-            address: addr.clone(),
-        }),
-        _ => None,
-    };
-    ClientApiError::Network {
-        code: ErrorCode::NotLeader,
-        message,
-        retry_after_ms: retry_after_ms.or(Some(100)),
-        leader_hint,
-    }
-}
-
-pub(crate) fn map_error_response(
-    error: ErrorCode,
-    leader_hint: Option<LeaderHint>,
-    retry_after_ms: Option<u64>,
-) -> ClientApiError {
-    match error {
-        ErrorCode::NotLeader => {
-            let (leader_id, leader_address) = if let Some(hint) = leader_hint {
-                (Some(hint.leader_id.to_string()), Some(hint.address))
-            } else {
-                (None, None)
-            };
-            not_leader_error(leader_id, leader_address, retry_after_ms)
-        }
-        _ => server_error(format!("Error code: {error:?}")),
-    }
-}
-
 /// Unwrap a `ClientResponsePayload` as `ReadResults`.
 pub(crate) fn extract_read_payload(
     result: Option<ClientResponsePayload>
@@ -119,23 +78,31 @@ pub(crate) fn extract_read_payload(
         }),
     }
 }
+/// Turns a state machine read failure into a client error without internal detail.
+/// The original error goes to the log and to a counter, so operators still see the cause.
+pub(crate) fn read_failure(e: &Error) -> ClientApiError {
+    error!(error = ?e, "state machine read failed");
+    metrics::counter!("server.read.errors").increment(1);
 
-// ── StandaloneReadHandle ──────────────────────────────────────────────────────
+    ErrorCode::for_read_failure(e).into()
+}
+
+// ── ReadHandle ──────────────────────────────────────────────────────
 
 /// Routes read requests to the ReadActor fast path or `cmd_tx` for standalone gRPC mode.
 ///
 /// Cloneable — the gRPC `Node` handler holds a clone per request.
 /// The underlying channels are shared (`mpsc::Sender` is cheaply cloneable).
 #[derive(Clone)]
-pub(crate) struct StandaloneReadHandle {
+pub(crate) struct ReadHandle {
     /// ReadActor channel. `None` if node was started without a ReadActor.
     pub(crate) read_tx: Option<mpsc::Sender<ReadCmd>>,
     /// Raft command channel for the cmd_tx fallback path.
     pub(crate) cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
 }
 
-impl StandaloneReadHandle {
-    /// Create a `StandaloneReadHandle` wiring the fast-path sender and the Raft cmd channel.
+impl ReadHandle {
+    /// Create a `ReadHandle` wiring the fast-path sender and the Raft cmd channel.
     pub(crate) fn new(
         read_tx: Option<mpsc::Sender<ReadCmd>>,
         cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
@@ -148,7 +115,7 @@ impl StandaloneReadHandle {
     /// # Routing rules
     /// | Policy         | Path                       | On failure            |
     /// |----------------|----------------------------|-----------------------|
-    /// | Eventual/Lease | ReadActor (fast path)      | fall through to cmd_tx|
+    /// | Eventual/Lease | ReadActor (fast path)      | cmd_tx only if the lease is invalid or the ReadActor cannot answer |
     /// | Linearizable   | cmd_tx always              | —                     |
     /// | SmError        | direct return              | no fallback           |
     ///
@@ -200,9 +167,9 @@ impl StandaloneReadHandle {
             {
                 match tokio::time::timeout(timeout, reply_rx).await {
                     Ok(Ok(Ok(values))) => return Ok(values),
-                    Ok(Ok(Err(ReadActorError::SmError(e)))) => return Err(server_error(e)),
-                    // LeaseInvalid / SmStopped → fall through to cmd_tx
-                    Ok(Ok(Err(ReadActorError::LeaseInvalid | ReadActorError::SmStopped))) => {}
+                    Ok(Ok(Err(ReadActorError::SmError(e)))) => return Err(read_failure(&e)),
+                    // LeaseInvalid → fall through to cmd_tx
+                    Ok(Ok(Err(ReadActorError::LeaseInvalid))) => {}
                     // ReadActor exited without replying → fall through
                     Ok(Err(_)) => {}
                     // ReadActor stalled beyond timeout → fall through to cmd_tx
@@ -233,7 +200,7 @@ impl StandaloneReadHandle {
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success {
-            return Err(map_error_response(
+            return Err(ClientApiError::from_response(
                 response.error,
                 response.leader_hint,
                 response.retry_after_ms,
@@ -248,5 +215,5 @@ impl StandaloneReadHandle {
 }
 
 #[cfg(test)]
-#[path = "standalone_read_handle_test.rs"]
+#[path = "read_handle_test.rs"]
 mod tests;

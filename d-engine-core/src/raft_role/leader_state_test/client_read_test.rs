@@ -511,9 +511,7 @@ async fn test_linearizable_read_quorum_success() {
     // read_from_state_machine is called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .returning(|_| Some(vec![]));
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -889,9 +887,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     // read_from_state_machine called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .returning(|_| Some(vec![]));
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -1209,12 +1205,9 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     // Built from scratch: with the default mock, its `last_applied() == 0` expectation is
     // registered first and wins over a later one.
     let mut state_machine = crate::MockStateMachine::new();
-    state_machine.expect_is_running().returning(|| true);
     state_machine
         .expect_last_applied()
         .return_const(d_engine_proto::common::LogId { index: 1, term: 1 });
-    state_machine.expect_update_last_applied().returning(|_| ());
-    state_machine.expect_persist_last_applied().returning(|_| Ok(()));
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_lease_reuse")
@@ -2305,16 +2298,11 @@ async fn test_scan_cmd_leader_delivers_result() {
 #[tokio::test]
 #[traced_test]
 async fn test_scan_cmd_leader_propagates_sm_error() {
-    use crate::Error;
-    use crate::StorageError;
     use crate::test_utils::mock_state_machine;
 
     let mut sm = mock_state_machine();
-    sm.expect_scan_prefix().returning(|_prefix| {
-        Err(Error::System(crate::SystemError::Storage(
-            StorageError::StateMachineError("scan failed".into()),
-        )))
-    });
+    sm.expect_scan_prefix()
+        .returning(|_prefix| Err(std::io::Error::other("scan failed")));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
@@ -2334,4 +2322,101 @@ async fn test_scan_cmd_leader_propagates_sm_error() {
     // The tonic Status is created from e.to_string() which renders as "Storage operation
     // failed" (the outer SystemError::Storage variant). Verify it's Internal.
     assert_eq!(err.code(), Code::Internal);
+}
+
+/// An empty prefix would return the whole keyspace in one response. The leader rejects it as an
+/// invalid request before it touches the state machine; the mock allows no `scan_prefix` call, so
+/// the test fails if the state machine is asked instead of the request being refused.
+#[tokio::test]
+#[traced_test]
+async fn test_scan_cmd_leader_rejects_empty_prefix_without_reading_state_machine() {
+    let mut sm = mock_state_machine();
+    sm.expect_scan_prefix().times(0);
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_scan_cmd_leader_rejects_empty_prefix")
+        .with_state_machine(sm)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Scan(Bytes::new(), resp_tx), &context);
+
+    let response = resp_rx.recv().await.expect("channel not closed").expect("a typed response");
+    assert_eq!(response.error, ErrorCode::InvalidRequest);
+    assert!(
+        response.result.is_none(),
+        "a rejected scan must carry no entries"
+    );
+}
+
+/// The shortest non-empty prefix is a valid request: the rejection applies to the empty prefix
+/// only, and a one-byte prefix still reaches the state machine with exactly those bytes.
+#[tokio::test]
+#[traced_test]
+async fn test_scan_cmd_leader_passes_one_byte_prefix_to_state_machine() {
+    let mut sm = mock_state_machine();
+    sm.expect_scan_prefix().withf(|prefix| prefix == b"/").times(1).returning(|_| {
+        Ok(ScanResult {
+            entries: vec![],
+            revision: 7,
+        })
+    });
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_scan_cmd_leader_one_byte_prefix")
+        .with_state_machine(sm)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Scan(Bytes::from("/"), resp_tx), &context);
+
+    let response = resp_rx.recv().await.expect("channel not closed").expect("scan succeeded");
+    assert_eq!(response.error, ErrorCode::Success);
+    assert!(matches!(response.result, Some(ClientResponsePayload::Scan(ref r)) if r.revision == 7));
+}
+
+/// A lease read that fails in the state machine must reach the client as an error. A state
+/// machine reports a failing disk as an `io::Error`, and the client gets the storage I/O code; it
+/// must not get an empty result that looks like "key not found".
+#[tokio::test]
+async fn test_lease_read_reports_state_machine_failure_as_error() {
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_read_from_state_machine()
+        .times(1)
+        .returning(|_| Err(std::io::Error::other("disk failure").into()));
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_lease_read_reports_state_machine_failure_as_error")
+        .with_state_machine_handler(state_machine_handler)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.test_update_lease_timestamp(); // lease valid: served immediately
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .process_lease_read(
+            ClientReadRequest {
+                client_id: 1,
+                consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
+                keys: vec![safe_kv_bytes(1)],
+            },
+            resp_tx,
+            &context,
+            &internal_event_tx,
+        )
+        .await
+        .expect("answering the client is not a node failure");
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(response.error, ErrorCode::StorageIoError);
+    assert!(response.result.is_none());
 }

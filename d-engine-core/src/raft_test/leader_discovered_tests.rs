@@ -178,3 +178,124 @@ async fn test_apply_completed_records_central_loop_queue_wait() {
         waits[0]
     );
 }
+
+/// Runs the Raft loop's event handling to a standstill: internal events (role changes, replayed
+/// requests, notifications) and buffered inbound requests, until nothing is left to do.
+async fn run_events_until_quiet(raft: &mut Raft<MockTypeConfig>) {
+    loop {
+        let mut progressed = false;
+        while let Ok(event) = raft.internal_event_rx.try_recv() {
+            raft.handle_internal_event(event).await.unwrap();
+            progressed = true;
+        }
+        if !raft.buffered_inbound_event.is_empty() {
+            raft.process_inbound_events().await.unwrap();
+            progressed = true;
+        }
+        if !progressed {
+            return;
+        }
+    }
+}
+
+/// A restarted node that campaigns before its leader reaches it must still announce that leader
+/// once the leader's AppendEntries arrives.
+///
+/// Scenario (#400): node 1 voted for leader 3 in term 3 and the vote was confirmed on disk
+/// before node 1 went down. After the restart its election timer fires first, so it becomes a
+/// candidate in the same term 3 (its PreVote is denied, so the term does not move). Leader 3's
+/// AppendEntries then arrives: node 1 steps down to follower and replays the request. The
+/// leader-change listener must end up on leader 3. It used to stay on "no leader" for the rest
+/// of the term, so `wait_ready()` timed out although replication worked.
+#[tokio::test]
+async fn test_restarted_candidate_stepping_down_to_its_leader_announces_it() {
+    use std::sync::Arc;
+
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::server::election::VotedFor;
+    use d_engine_proto::server::replication::AppendEntriesRequest;
+    use d_engine_proto::server::replication::AppendEntriesResponse;
+
+    use crate::AppendResponseWithUpdates;
+    use crate::HardState;
+    use crate::InboundEvent;
+    use crate::MockReplicationCore;
+    use crate::RaftRole;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::maybe_clone_oneshot::RaftOneshot;
+    use crate::raft_role::follower_state::FollowerState;
+    use crate::test_utils::node_config;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Node 1 as it comes back from disk: term 3, vote for leader 3 already confirmed.
+    let restored = HardState {
+        current_term: 3,
+        voted_for: Some(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 3,
+            committed: true,
+        }),
+    };
+    let follower = FollowerState::<MockTypeConfig>::new(
+        1,
+        Arc::new(node_config(
+            "/tmp/test_restarted_candidate_announces_leader",
+        )),
+        Some(restored),
+        None,
+    );
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_handle_append_entries()
+        .times(1)
+        .returning(|_, _, _| {
+            Ok(AppendResponseWithUpdates {
+                response: AppendEntriesResponse::success(1, 3, None),
+                commit_index_update: None,
+            })
+        });
+    let mut raft = MockBuilder::new(graceful_rx)
+        .id(1)
+        .with_role(RaftRole::Follower(Box::new(follower)))
+        .with_replication_handler(replication_handler)
+        .build_raft();
+    let (leader_tx, leader_rx) = watch::channel(None);
+    raft.register_leader_change_listener(leader_tx);
+
+    // The election timer fires before leader 3 reaches the node.
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    assert_eq!(
+        raft.role.as_i32(),
+        NodeRole::Candidate as i32,
+        "precondition: node 1 is a candidate"
+    );
+
+    // Leader 3's heartbeat arrives (same term).
+    let (tx, _rx) = MaybeCloneOneshot::new();
+    raft.buffered_inbound_event.push_back(InboundEvent::AppendEntries(
+        AppendEntriesRequest {
+            term: 3,
+            leader_id: 3,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit_index: 0,
+        },
+        vec![tx],
+    ));
+    run_events_until_quiet(&mut raft).await;
+
+    assert_eq!(
+        raft.role.as_i32(),
+        NodeRole::Follower as i32,
+        "the candidate must have stepped down"
+    );
+    let announced = leader_rx.borrow().map(|info| (info.leader_id, info.term));
+    assert_eq!(
+        announced,
+        Some((3, 3)),
+        "after stepping down to leader 3 the node must announce it"
+    );
+}

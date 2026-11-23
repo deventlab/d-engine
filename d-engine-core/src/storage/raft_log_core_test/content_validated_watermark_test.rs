@@ -56,7 +56,7 @@ async fn test_stale_durable_report_rejected_when_term_no_longer_matches() {
 
     // New leader (term 2) truncates 81..=100 and replaces with its own tail.
     let term2_tail: Vec<Entry> = (81..=100).map(|i| entry(i, 2)).collect();
-    raft_log.filter_out_conflicts_and_append(80, 1, term2_tail).await.unwrap();
+    raft_log.filter_out_conflicts_and_append(80, 1, term2_tail, 0).await.unwrap();
 
     // The stale in-flight fsync's report, generated before the truncation.
     let result = raft_log.try_advance_durable_index(LogId {
@@ -122,7 +122,7 @@ async fn test_durable_report_then_truncation_is_order_independent() {
     // Truncation arrives after — must still clamp durable_index down,
     // exactly as it does today via `remove_range`'s existing fetch_min.
     let term2_tail: Vec<Entry> = (81..=100).map(|i| entry(i, 2)).collect();
-    raft_log.filter_out_conflicts_and_append(80, 1, term2_tail).await.unwrap();
+    raft_log.filter_out_conflicts_and_append(80, 1, term2_tail, 0).await.unwrap();
 
     assert!(
         raft_log.durable_index() < 81,
@@ -165,7 +165,10 @@ async fn test_flush_does_not_short_circuit_after_truncation_regrows_the_log() {
     // New leader (term 2) truncates 81..=100, replaces with its own tail
     // 81..=85 — durable_index clamps to 80, memory_max_index becomes 85.
     let term2_tail: Vec<Entry> = (81..=85).map(|i| entry(i, 2)).collect();
-    ctx.raft_log.filter_out_conflicts_and_append(80, 1, term2_tail).await.unwrap();
+    ctx.raft_log
+        .filter_out_conflicts_and_append(80, 1, term2_tail, 0)
+        .await
+        .unwrap();
     assert!(ctx.raft_log.durable_index() < 81, "clamp must have fired");
     assert_eq!(ctx.raft_log.last_entry_id(), 85);
 

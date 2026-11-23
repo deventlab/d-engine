@@ -55,7 +55,7 @@ async fn test_get_entries_range_handles_large_range() {
             term: 7,
             payload: None,
         };
-        ctx.raft_log.insert_batch(vec![entry]).await.unwrap();
+        ctx.raft_log.append_entries(vec![entry]).await.unwrap();
     }
 
     // Act: Query single entry
@@ -98,7 +98,7 @@ async fn test_filter_conflicts_removes_entries_with_different_term() {
     ];
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(1, 1, new_entries)
+        .filter_out_conflicts_and_append(1, 1, new_entries, 0)
         .await
         .unwrap()
         .unwrap();
@@ -139,7 +139,7 @@ async fn test_filter_conflicts_handles_multiple_scenarios() {
     ];
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(1, 1, new_entries)
+        .filter_out_conflicts_and_append(1, 1, new_entries, 0)
         .await
         .unwrap()
         .unwrap();
@@ -155,7 +155,7 @@ async fn test_filter_conflicts_handles_multiple_scenarios() {
     // prev is entry 3 (term 3 after Case 1): the batch starts right after it.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(3, 3, new_entries)
+        .filter_out_conflicts_and_append(3, 3, new_entries, 0)
         .await
         .unwrap()
         .unwrap();
@@ -224,15 +224,15 @@ async fn test_last_entry_with_large_payload_id() {
     assert_eq!(last.index, 1);
 }
 
-/// Test insert_batch appends large number of entries in order
+/// Test append_entries appends large number of entries in order
 ///
 /// # Scenario
 /// - Insert 2000 entries
 /// - Query range 900..=2000
 /// - Expected: All entries present with correct sequential indexes
 #[tokio::test]
-async fn test_insert_batch_appends_entries_in_order() {
-    let ctx = RaftLogCoreTestContext::new("test_insert_batch_appends_entries_in_order");
+async fn test_append_entries_appends_entries_in_order() {
+    let ctx = RaftLogCoreTestContext::new("test_append_entries_appends_entries_in_order");
 
     // Arrange: Reset and insert 2000 entries
     ctx.raft_log.reset().await.unwrap();
@@ -369,7 +369,7 @@ async fn test_purge_logs_removes_entries_up_to_index() {
     // Arrange: Insert 9 entries
     ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 9, 1);
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     // Act: Purge up to index 3
     let last_applied = LogId { index: 3, term: 1 };
@@ -411,7 +411,7 @@ async fn test_concurrent_purge_operations_are_safe() {
     // Arrange: Insert 10 entries
     ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 10, 1);
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     // Act: Concurrent purge calls
     let handles: Vec<_> = vec![1, 2, 3, 4, 5, 6, 7]
@@ -444,7 +444,7 @@ async fn test_first_entry_id_after_purge_updates() {
     // Arrange: Insert 10 entries
     ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 10, 1);
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     // Act: Purge up to index 5
     let log_id = LogId { index: 5, term: 1 };
@@ -578,8 +578,8 @@ async fn test_same_index_and_term_implies_identical_prefix() {
 
     for i in 1..=5 {
         let entries = mock_empty_entries(i, 1, 3);
-        ctx1.raft_log.insert_batch(entries.clone()).await.unwrap();
-        ctx2.raft_log.insert_batch(entries).await.unwrap();
+        ctx1.raft_log.append_entries(entries.clone()).await.unwrap();
+        ctx2.raft_log.append_entries(entries).await.unwrap();
     }
 
     // Assert: Both logs have same entry at index 5
@@ -602,7 +602,7 @@ async fn test_committed_entry_present_in_future_leaders() {
     // Arrange: Insert and commit entry
     ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 5, 1);
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
     ctx.raft_log.flush().await.unwrap();
 
     // Act: Simulate leader change (new context reading same data)
@@ -636,38 +636,38 @@ async fn test_append_updates_last_entry() {
     assert_eq!(ctx.raft_log.last_entry().unwrap().index, 5);
 }
 
-/// Test insert_batch with empty list is safe
+/// Test append_entries with empty list is safe
 ///
 /// # Scenario
-/// - Call insert_batch with empty vec
+/// - Call append_entries with empty vec
 /// - Expected: No error, log unchanged
 #[tokio::test]
-async fn test_insert_batch_with_empty_list() {
-    let ctx = RaftLogCoreTestContext::new("test_insert_batch_with_empty_list");
+async fn test_append_entries_with_empty_list() {
+    let ctx = RaftLogCoreTestContext::new("test_append_entries_with_empty_list");
 
     // Act: Insert empty batch
-    let result = ctx.raft_log.insert_batch(vec![]).await;
+    let result = ctx.raft_log.append_entries(vec![]).await;
 
     // Assert: Operation succeeds
     assert!(result.is_ok(), "Empty batch insert should succeed");
     assert!(ctx.raft_log.is_empty(), "Log should remain empty");
 }
 
-/// Test insert_batch updates metadata correctly
+/// Test append_entries updates metadata correctly
 ///
 /// # Scenario
 /// - Insert batch and verify all metadata updated
 /// - Expected: length, last_entry_id, last_log_id all correct
 #[tokio::test]
-async fn test_insert_batch_updates_metadata() {
-    let ctx = RaftLogCoreTestContext::new("test_insert_batch_updates_metadata");
+async fn test_append_entries_updates_metadata() {
+    let ctx = RaftLogCoreTestContext::new("test_append_entries_updates_metadata");
 
     // Arrange: Reset log
     ctx.raft_log.reset().await.unwrap();
 
     // Act: Insert batch
     let entries = mock_empty_entries(1, 10, 5);
-    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.append_entries(entries).await.unwrap();
 
     // Assert: All metadata correct
     assert_eq!(ctx.raft_log.len(), 10, "Length should be 10");

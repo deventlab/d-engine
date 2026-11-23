@@ -3,7 +3,6 @@
 //! This test verifies that a new node can successfully join an existing Raft cluster,
 //! synchronize its state via snapshot, and become a fully functional member.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -102,14 +101,12 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         snapshot_last_included_id =
             Some(last_log_id.saturating_sub(node_config.raft.snapshot.retained_log_entries));
 
-        // Create state machine and storage engine for this node (Arc refcount = 1)
-        let state_machine = Arc::new(
-            prepare_state_machine(
-                node_id as u32,
-                &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/{node_id}"),
-            )
-            .await,
-        );
+        // Create state machine and storage engine for this node
+        let state_machine = prepare_state_machine(
+            node_id as u32,
+            &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/{node_id}"),
+        )
+        .await;
         let storage_engine = match i {
             0 => storage_engine_1.clone(),
             1 => storage_engine_2.clone(),
@@ -174,9 +171,9 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     node_config.raft.snapshot.cleanup_retain_count = 2;
     node_config.raft.snapshot.chunk_size = 100;
 
-    // Create state machine and storage engine for node 4 (Arc refcount = 1)
+    // Create state machine and storage engine for node 4
     let node4_state_machine =
-        Arc::new(prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4")).await);
+        prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4")).await;
     let node4_storage_engine =
         prepare_storage_engine(4, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4"), 0);
 

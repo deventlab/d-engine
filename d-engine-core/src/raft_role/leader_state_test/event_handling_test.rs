@@ -748,9 +748,7 @@ async fn test_handle_client_read_linearizable_success() {
     // Mock state machine handler: read_from_state_machine called when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .returning(|_| Some(vec![]));
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());

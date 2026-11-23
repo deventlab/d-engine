@@ -610,8 +610,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         new_match_id: u64,
     ) -> Result<()> {
         // Pipeline responses can arrive out of order; only advance, never retreat.
-        let current = self.match_index.get(&node_id).copied().unwrap_or(0);
-        if new_match_id > current {
+        // A peer without a record is stored even at 0: "confirmed nothing yet" must be
+        // tracked, not left absent.
+        let current = self.match_index.get(&node_id).copied();
+        if current.is_none_or(|c| new_match_id > c) {
             self.match_index.insert(node_id, new_match_id);
             self.peer_metrics(node_id).match_index.set(new_match_id as f64);
         }
@@ -1065,11 +1067,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
             ClientCmd::Scan(prefix, sender) => {
-                let response = ctx
-                    .state_machine()
-                    .scan_prefix(&prefix)
-                    .map(|sr| ClientResponse::scan_results(sr.entries, sr.revision))
-                    .map_err(|e| Status::internal(e.to_string()));
+                let response = if prefix.is_empty() {
+                    // An empty prefix would scan the whole keyspace in one response.
+                    Ok(ClientResponse::client_error(ErrorCode::InvalidRequest))
+                } else {
+                    ctx.state_machine()
+                        .scan_prefix(&prefix)
+                        .map(|sr| ClientResponse::scan_results(sr.entries, sr.revision))
+                        .map_err(|e| Status::internal(e.to_string()))
+                };
                 let _ = sender.send(response);
             }
         }
@@ -2456,11 +2462,14 @@ impl<T: TypeConfig> LeaderState<T> {
                 for (i, sender) in senders.into_iter().enumerate() {
                     metrics::histogram!("core.raft.write.propose_to_commit_ms")
                         .record(propose_to_commit_ms);
-                    self.pending_write_apply.insert(start_idx + i as u64, PendingApply {
-                        sender,
-                        proposed_at,
-                        committed_at: commit_ts,
-                    });
+                    self.pending_write_apply.insert(
+                        start_idx + i as u64,
+                        PendingApply {
+                            sender,
+                            proposed_at,
+                            committed_at: commit_ts,
+                        },
+                    );
                 }
             } else {
                 // Internal requests have no senders, so this loop is a no-op for them.
@@ -2498,10 +2507,13 @@ impl<T: TypeConfig> LeaderState<T> {
         // synchronous drain_commit_actions call (single-voter path) can find the entry.
         // No concurrent writes: Raft loop is single-threaded.
         let noop_index = ctx.raft_log().last_entry_id() + 1;
-        self.pending_commit_actions.insert(noop_index, PostCommitEntry {
-            deadline,
-            action: PostCommitAction::LeaderNoop { term },
-        });
+        self.pending_commit_actions.insert(
+            noop_index,
+            PostCommitEntry {
+                deadline,
+                action: PostCommitAction::LeaderNoop { term },
+            },
+        );
 
         // Write noop with no sender — purely for commit confirmation.
         if let Err(e) = self
@@ -3089,15 +3101,15 @@ impl<T: TypeConfig> LeaderState<T> {
         let replication_targets = &self.cluster_metadata.replication_targets;
         let learner_role = d_engine_proto::common::NodeRole::Learner as i32;
 
-        // Only voter peers (non-Learner) contribute to the commit quorum.
-        let mut matched_ids = Vec::with_capacity(self.match_index.len() + 1);
+        // Every voter peer (non-Learner) counts in the commit quorum. A voter with no progress
+        // record has confirmed nothing yet and counts as 0; leaving it out would let fewer
+        // than a majority commit.
+        let mut matched_ids = Vec::with_capacity(replication_targets.len() + 1);
         matched_ids.extend(
-            self.match_index
+            replication_targets
                 .iter()
-                .filter(|(id, _)| {
-                    replication_targets.iter().any(|n| n.id == **id && n.role != learner_role)
-                })
-                .map(|(_, idx)| *idx),
+                .filter(|n| n.role != learner_role)
+                .map(|n| self.match_index.get(&n.id).copied().unwrap_or(0)),
         );
 
         let majority =
@@ -3246,14 +3258,17 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Record post-commit action: when the config index commits, send JoinResponse.
         let join_index = ctx.raft_log().last_entry_id();
-        self.pending_commit_actions.insert(join_index, PostCommitEntry {
-            deadline,
-            action: PostCommitAction::NodeJoin {
-                node_id,
-                addr: address,
-                sender,
+        self.pending_commit_actions.insert(
+            join_index,
+            PostCommitEntry {
+                deadline,
+                action: PostCommitAction::NodeJoin {
+                    node_id,
+                    addr: address,
+                    sender,
+                },
             },
-        });
+        );
 
         debug!("JoinCluster: awaiting commit at index {}", join_index);
         Ok(())
@@ -3653,7 +3668,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Peers within an active backoff window (after consecutive failures) are skipped
         // to protect the leader from repeatedly pushing to unreachable peers.
         if !requests.snapshot_targets.is_empty() {
-            let snapshot_metadata = ctx.state_machine().snapshot_metadata();
+            let snapshot_metadata = ctx.state_machine_handler().get_latest_snapshot_metadata();
             if let Some(metadata) = snapshot_metadata {
                 for peer_id in requests.snapshot_targets {
                     // Respect per-peer backoff window: if recent push attempts failed,
@@ -3770,10 +3785,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 node_id,
                 "Stale learner detected: pending promotion threshold exceeded"
             );
-            metrics::counter!("core.membership.stale_learner_removed", &[(
-                "node_id",
-                node_id.to_string()
-            )])
+            metrics::counter!(
+                "core.membership.stale_learner_removed",
+                &[("node_id", node_id.to_string())]
+            )
             .increment(1);
             if let Err(e) = self.handle_stale_learner(node_id, internal_event_tx, ctx).await {
                 error!(node_id, ?e, "Failed to handle stale learner");
@@ -4087,12 +4102,10 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) {
         for (req, sender) in read_batch {
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(req.keys)
-                .unwrap_or_default();
-            let _ = sender.send(Ok(ClientResponse::read_results(results)));
+            let response = ClientResponse::from_read(
+                ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+            );
+            let _ = sender.send(Ok(response));
         }
     }
 
@@ -4104,12 +4117,10 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) {
         while let Some(entry) = self.pending_lease_reads.pop_front() {
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(entry.request.keys)
-                .unwrap_or_default();
-            let _ = entry.sender.send(Ok(ClientResponse::read_results(results)));
+            let response = ClientResponse::from_read(
+                ctx.handlers.state_machine_handler.read_from_state_machine(entry.request.keys),
+            );
+            let _ = entry.sender.send(Ok(response));
         }
     }
 
@@ -4159,12 +4170,15 @@ impl<T: TypeConfig> LeaderState<T> {
     ) {
         let (dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationTask>();
         drop(dead_rx); // receiver gone → sends will fail
-        self.replication_workers.insert(peer_id, ReplicationWorkerHandle {
-            task_tx: dead_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-            stream_open: Arc::new(AtomicBool::new(true)),
-        });
+        self.replication_workers.insert(
+            peer_id,
+            ReplicationWorkerHandle {
+                task_tx: dead_tx,
+                snapshot_failure_count: 0,
+                snapshot_next_retry_at: None,
+                stream_open: Arc::new(AtomicBool::new(true)),
+            },
+        );
     }
 
     /// Determine effective read consistency policy based on client request and server config
@@ -4208,12 +4222,9 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         if self.is_lease_valid() {
             // Lease valid - serve immediately
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(req.keys)
-                .unwrap_or_default();
-            let response = ClientResponse::read_results(results);
+            let response = ClientResponse::from_read(
+                ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+            );
             let _ = sender.send(Ok(response));
         } else {
             // Lease expired - need to confirm leadership before serving.
@@ -4224,12 +4235,10 @@ impl<T: TypeConfig> LeaderState<T> {
                     ctx.node_config().raft.read_consistency.lease_duration_ms,
                     ctx.state_machine().last_applied().index,
                 );
-                let results = ctx
-                    .handlers
-                    .state_machine_handler
-                    .read_from_state_machine(req.keys)
-                    .unwrap_or_default();
-                let _ = sender.send(Ok(ClientResponse::read_results(results)));
+                let response = ClientResponse::from_read(
+                    ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+                );
+                let _ = sender.send(Ok(response));
             } else {
                 // Multi-voter: queue the request and trigger a heartbeat.
                 // drain_pending_lease_reads() is called from handle_append_result after
@@ -4259,12 +4268,9 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) {
         // Eventual consistency: serve immediately without any verification
-        let results = ctx
-            .handlers
-            .state_machine_handler
-            .read_from_state_machine(req.keys)
-            .unwrap_or_default();
-        let response = ClientResponse::read_results(results);
+        let response = ClientResponse::from_read(
+            ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+        );
         let _ = sender.send(Ok(response));
     }
 

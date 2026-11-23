@@ -98,7 +98,7 @@ general_raft_timeout_duration_in_ms = 5000
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &db_path1,
         Arc::new(storage1),
-        Arc::new(sm1),
+        sm1,
         Some(node1_config_path),
     )
     .await?;
@@ -133,7 +133,7 @@ general_raft_timeout_duration_in_ms = 5000
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &db_path2,
         Arc::new(storage2),
-        Arc::new(sm2),
+        sm2,
         Some(node2_config_path),
     )
     .await?;
@@ -199,7 +199,7 @@ general_raft_timeout_duration_in_ms = 5000
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &db_path3,
         Arc::new(storage3),
-        Arc::new(sm3),
+        sm3,
         Some(node3_config_path),
     )
     .await?;

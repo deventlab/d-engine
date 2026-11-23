@@ -49,7 +49,7 @@ async fn test_filter_conflicts_pipeline_overlap_no_truncation() {
     // Act: leader sends prev_log_index=3, entries=[4,5] (pipeline overlap at 4)
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(3, 1, vec![entry(4, 1), entry(5, 1)])
+        .filter_out_conflicts_and_append(3, 1, vec![entry(4, 1), entry(5, 1)], 0)
         .await
         .unwrap();
 
@@ -78,7 +78,7 @@ async fn test_filter_conflicts_full_overlap_is_idempotent() {
     // Act: leader resends prev_log_index=2, entries=[3,4] — already present, same term
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 1)])
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 1)], 0)
         .await
         .unwrap();
 
@@ -105,7 +105,7 @@ async fn test_filter_conflicts_partial_overlap_truncates_only_from_conflict() {
     // index=3 term matches → skip; index=4 term conflicts → truncate from 4
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 2), entry(5, 2)])
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 2), entry(5, 2)], 0)
         .await
         .unwrap();
 
@@ -141,7 +141,11 @@ async fn test_filter_conflicts_large_overlap_no_conflict() {
     // Act: leader sends prev=50, entries=[51..150] all term=1
     // overlap = [51..100] (50 entries), new = [101..150] (50 entries)
     let new_entries: Vec<_> = (51u64..=150).map(|i| entry(i, 1)).collect();
-    let result = ctx.raft_log.filter_out_conflicts_and_append(50, 1, new_entries).await.unwrap();
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(50, 1, new_entries, 0)
+        .await
+        .unwrap();
 
     // Assert: log ends at 150, overlap range [51..100] untouched
     assert_eq!(result.unwrap().index, 150);
@@ -174,7 +178,11 @@ async fn test_filter_conflicts_election_recovery_conflict_at_overlap_head() {
     // Act: new leader (term=2), prev=50 term=1 (still exists in follower log),
     // sends [51..90] all term=2 — immediately conflicts at index=51
     let new_entries: Vec<_> = (51u64..=90).map(|i| entry(i, 2)).collect();
-    let result = ctx.raft_log.filter_out_conflicts_and_append(50, 1, new_entries).await.unwrap();
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(50, 1, new_entries, 0)
+        .await
+        .unwrap();
 
     // Assert: log ends at 90, [51..90] all term=2 (replaced)
     assert_eq!(result.unwrap().index, 90);
@@ -209,7 +217,11 @@ async fn test_filter_conflicts_election_recovery_conflict_in_overlap_middle() {
     // entries=[51..60 term=1, 61..90 term=2] — conflict at index=61
     let mut new_entries: Vec<_> = (51u64..=60).map(|i| entry(i, 1)).collect();
     new_entries.extend((61u64..=90).map(|i| entry(i, 2)));
-    let result = ctx.raft_log.filter_out_conflicts_and_append(50, 1, new_entries).await.unwrap();
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(50, 1, new_entries, 0)
+        .await
+        .unwrap();
 
     // Assert: log ends at 90
     assert_eq!(result.unwrap().index, 90);
@@ -247,7 +259,11 @@ async fn test_filter_conflicts_pure_append_no_overlap() {
 
     // Act: leader sends prev=50 term=1, entries=[51..60] — zero overlap
     let new_entries: Vec<_> = (51u64..=60).map(|i| entry(i, 1)).collect();
-    let result = ctx.raft_log.filter_out_conflicts_and_append(50, 1, new_entries).await.unwrap();
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(50, 1, new_entries, 0)
+        .await
+        .unwrap();
 
     // Assert: all 10 entries appended cleanly
     assert_eq!(result.unwrap().index, 60);
@@ -276,7 +292,7 @@ async fn test_filter_conflicts_bench_pattern_no_truncation() {
     // follower has 5 already (term matches) — overlap at index=5
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(4, 1, vec![entry(5, 1), entry(6, 1)])
+        .filter_out_conflicts_and_append(4, 1, vec![entry(5, 1), entry(6, 1)], 0)
         .await
         .unwrap();
 
@@ -323,7 +339,7 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
     // calls replace_range_and_submit(truncate_from=4, new_entries=[4(t2), 5(t2)])
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 2), entry(5, 2)])
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 2), entry(5, 2)], 0)
         .await
         .unwrap();
     assert_eq!(result.unwrap().index, 5);
@@ -387,7 +403,7 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     // Act: leader conflict at index=3 (term mismatch); new suffix is only [3(t2), 4(t2)]
     // replace_range_and_submit(truncate_from=3, new_entries=[3(t2), 4(t2)]) — entry 5 must vanish
     ctx.raft_log
-        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)])
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await
         .unwrap();
     ctx.raft_log.flush().await.unwrap();
@@ -477,7 +493,7 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
 
     // Trigger replace_range_and_submit: conflict at index=3 (term mismatch 1 vs 2)
     raft_log
-        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)])
+        .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await
         .unwrap();
     raft_log.flush().await.unwrap();
@@ -556,7 +572,7 @@ async fn test_filter_conflicts_first_entry_past_prev_plus_one_leaves_no_hole() {
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(10, 1, vec![entry(20, 1), entry(21, 1), entry(22, 1)])
+        .filter_out_conflicts_and_append(10, 1, vec![entry(20, 1), entry(21, 1), entry(22, 1)], 0)
         .await;
 
     assert_log_has_no_hole(&ctx);
@@ -572,12 +588,12 @@ async fn test_filter_conflicts_hole_inside_batch_leaves_no_hole() {
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(10, 1, vec![
-            entry(11, 1),
-            entry(12, 1),
-            entry(14, 1),
-            entry(15, 1),
-        ])
+        .filter_out_conflicts_and_append(
+            10,
+            1,
+            vec![entry(11, 1), entry(12, 1), entry(14, 1), entry(15, 1)],
+            0,
+        )
         .await;
 
     assert_log_has_no_hole(&ctx);
@@ -596,7 +612,7 @@ async fn test_filter_conflicts_hole_after_term_conflict_leaves_no_hole() {
     // New leader (term 3) overwrites 9..=10 and then skips 11.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(8, 1, vec![entry(9, 3), entry(10, 3), entry(12, 3)])
+        .filter_out_conflicts_and_append(8, 1, vec![entry(9, 3), entry(10, 3), entry(12, 3)], 0)
         .await;
 
     assert_log_has_no_hole(&ctx);
@@ -611,7 +627,7 @@ async fn test_filter_conflicts_contiguous_batch_is_accepted() {
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(10, 1, vec![entry(11, 1), entry(12, 1), entry(13, 1)])
+        .filter_out_conflicts_and_append(10, 1, vec![entry(11, 1), entry(12, 1), entry(13, 1)], 0)
         .await
         .unwrap();
 
@@ -628,7 +644,7 @@ async fn test_filter_conflicts_first_entry_not_after_prev_is_rejected() {
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(10, 1, vec![entry(10, 1), entry(11, 1)])
+        .filter_out_conflicts_and_append(10, 1, vec![entry(10, 1), entry(11, 1)], 0)
         .await;
 
     assert!(
@@ -649,7 +665,7 @@ async fn test_filter_conflicts_descending_batch_is_rejected() {
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(10, 1, vec![entry(11, 1), entry(10, 1)])
+        .filter_out_conflicts_and_append(10, 1, vec![entry(11, 1), entry(10, 1)], 0)
         .await;
 
     assert!(result.is_err(), "a descending batch must be rejected");
@@ -667,7 +683,7 @@ async fn test_filter_conflicts_prev_index_at_u64_max_is_rejected_without_overflo
 
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(u64::MAX, 1, vec![entry(1, 1)])
+        .filter_out_conflicts_and_append(u64::MAX, 1, vec![entry(1, 1)], 0)
         .await;
 
     assert!(result.is_err());

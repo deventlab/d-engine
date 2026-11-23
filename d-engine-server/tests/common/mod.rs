@@ -47,6 +47,10 @@ use tracing::error;
 
 use crate::client_manager::ClientManager;
 
+mod shared_state_machine;
+
+pub use shared_state_machine::SharedStateMachine;
+
 pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
 // we are testing linearizable read from Leader directly, the latency should less than 1ms ideally
@@ -282,7 +286,7 @@ pub async fn start_cluster(
 pub async fn start_node(
     data_dir: impl AsRef<Path>,
     config: RaftNodeConfig,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
+    state_machine: Option<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
 ) -> std::result::Result<
     (
@@ -310,11 +314,9 @@ pub async fn start_node(
         Some(sm) => sm,
         None => {
             let state_machine_path = data_dir.join("state_machine");
-            Arc::new(
-                FileStateMachine::new(state_machine_path).await.map_err(|e| {
-                    std::io::Error::other(format!("failed to create file state machine: {e}"))
-                })?,
-            )
+            FileStateMachine::new(state_machine_path).await.map_err(|e| {
+                std::io::Error::other(format!("failed to create file state machine: {e}"))
+            })?
         }
     };
 
@@ -372,8 +374,6 @@ pub async fn manipulate_log(
 ) {
     let mut entries = Vec::new();
     for id in log_ids {
-        println!("pre_allocate_raft_logs_next_index: {id}",);
-
         let log = Entry {
             index: id,
             term,

@@ -374,3 +374,30 @@ async fn test_snapshot_purge_single_node_cluster() {
     println!("  - single_voter: true");
     println!("  - total_voters: 1");
 }
+
+/// A new leader must track every peer from the start: next_index = last_entry_id + 1 and
+/// match_index = 0 ("nothing confirmed yet"), not "absent".
+///
+/// Scenario: node 1 wins an election in a 3-voter cluster with 9 entries in its log. Before
+/// any follower has answered, both followers must already be known with match_index 0. If the
+/// 0 is never stored, the leader has no record of these voters in its replication progress.
+#[tokio::test]
+async fn test_init_peers_next_index_and_match_index_tracks_every_peer_at_zero() {
+    let config = Arc::new(node_config("/tmp/test_init_peers_match_index_zero"));
+    let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+
+    state.init_peers_next_index_and_match_index(9, vec![2, 3]).unwrap();
+
+    for peer in [2, 3] {
+        assert_eq!(
+            state.next_index(peer),
+            Some(10),
+            "peer {peer}: next_index must start right after the leader's last entry"
+        );
+        assert_eq!(
+            state.match_index(peer),
+            Some(0),
+            "peer {peer}: match_index must be tracked as 0 right after the leader takes office"
+        );
+    }
+}

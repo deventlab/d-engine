@@ -8,11 +8,14 @@ mod start_data_dir_tests {
     use serial_test::serial;
 
     use crate::api::EmbeddedEngine;
+    use crate::test_utils::ListenAddressEnv;
+    use crate::test_utils::free_listen_address;
 
     /// data_dir is created automatically when it does not exist.
     #[tokio::test]
     #[serial]
     async fn test_start_creates_missing_directory() {
+        let _port = ListenAddressEnv::set();
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().join("auto-created");
 
@@ -46,7 +49,10 @@ mod start_data_dir_tests {
         let config_path = temp_dir.path().join("d-engine.toml");
         std::fs::write(
             &config_path,
-            "[raft]\ngeneral_raft_timeout_duration_in_ms = 3000\n",
+            format!(
+                "[cluster]\nlisten_address = \"{}\"\n\n[raft]\ngeneral_raft_timeout_duration_in_ms = 3000\n",
+                free_listen_address()
+            ),
         )
         .expect("write config");
 
@@ -84,8 +90,9 @@ mod start_data_dir_tests {
         std::fs::write(
             &config_path,
             format!(
-                "[cluster]\ndata_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
-                config_data_dir.display()
+                "[cluster]\ndata_dir = \"{}\"\nlisten_address = \"{}\"\n",
+                config_data_dir.display(),
+                free_listen_address()
             ),
         )
         .expect("write config");
@@ -109,6 +116,7 @@ mod start_data_dir_tests {
     #[tokio::test]
     #[serial(tmp_db)]
     async fn test_start_tmp_path_accepted() {
+        let _port = ListenAddressEnv::set();
         let tmp_dir = tempfile::Builder::new()
             .tempdir_in("/tmp")
             .expect("Failed to create temp dir in /tmp");

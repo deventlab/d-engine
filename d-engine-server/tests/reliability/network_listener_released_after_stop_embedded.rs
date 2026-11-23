@@ -69,7 +69,7 @@ general_raft_timeout_duration_in_ms = 5000
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             Some(config_path.to_str().unwrap()),
         )
         .await?;

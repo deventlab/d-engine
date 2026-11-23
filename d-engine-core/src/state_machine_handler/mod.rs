@@ -35,6 +35,7 @@ mod applied_state;
 mod command;
 mod default_state_machine_handler;
 mod snapshot_assembler;
+mod snapshot_catalog;
 mod snapshot_policy;
 mod worker;
 mod worker_handle;
@@ -100,12 +101,12 @@ where
         timeout: std::time::Duration,
     ) -> Result<()>;
 
-    /// Reads values from the state machine for given keys
-    /// Returns None if any key doesn't exist
+    /// Reads `keys` from one consistent view of the state machine. Keys that do not exist are left
+    /// out of the result. A state machine failure is returned.
     fn read_from_state_machine(
         &self,
         keys: Vec<bytes::Bytes>,
-    ) -> Option<Vec<KvEntry>>;
+    ) -> Result<Vec<KvEntry>>;
 
     /// Receives the remaining chunks of a snapshot stream, ACKs each one, and assembles
     /// + decompresses them into a `PreparedSnapshot`.
@@ -146,12 +147,11 @@ where
         captured: crate::CapturedLocalSnapshot,
     ) -> Result<(SnapshotMetadata, std::path::PathBuf)>;
 
-    /// Cleans up old snapshots before specified version
+    /// Deletes the snapshots this node no longer needs, keeping the newest `retain_count`
+    /// recorded ones.
     async fn cleanup_snapshot(
         &self,
-        before_version: u64,
-        snapshot_dir: &std::path::Path,
-        snapshot_dir_prefix: &str,
+        retain_count: u64,
     ) -> crate::Result<()>;
 
     /// Retrieves metadata of the latest valid snapshot

@@ -26,6 +26,8 @@ All notable changes to this project will be documented in this file.
 
 - **`raft.state_machine.shutdown_apply_timeout_ms`** (#455, default `5000`): how long shutdown waits for the state machine worker to apply the entries already committed. On timeout it logs an error and shuts down anyway; a restart replays what was not applied.
 
+- **Crash-recovery test for state machines** (#400): `StateMachineTestSuite` now checks that a restart after a crash reports a position that matches the data. Implement `StateMachineBuilder::build_from_crash_image` to enable it.
+
 ### Fixed
 
 - **🛑 Snapshot data corruption — label/data mismatch** (#418): `last_included` in snapshot metadata was computed by subtracting `retained_log_entries` from `last_applied`, but the snapshot data already reflected the full `last_applied` state. Followers installing such snapshots would re-apply entries 91–100 after restoring state through index 100, causing double-application and permanent cluster state divergence. Also fixes a fabricated `LogId` where `last_included.term` was copied from `last_applied.term` instead of queried from the log. Snapshot label is now always truthful: `last_included == last_applied`.
@@ -56,11 +58,20 @@ All notable changes to this project will be documented in this file.
 
 - **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
 
+- **RocksDB snapshot could be ahead of its data** (#400): a snapshot taken during writes could make a node skip entries after it installed it. Snapshots are now exported from one consistent copy.
+
+- **File state machine reported an old position after a crash** (#400): recovery now restores `last_applied` together with the data.
+
+- **Snapshot checksum now covers every file** (#400), including sub-directories. Delete snapshot archives made by older versions when you upgrade.
+
+- **Raft log safety fixes** (#400): a node that installs a leader's snapshot now drops its own entries after the snapshot boundary; a follower refuses to overwrite an entry it already committed, and stops instead; a node that stopped between installing a snapshot and purging its log repairs the log at startup, or refuses to start if the log and the state machine contradict each other. The commit quorum counts every voter, and a candidate that steps down to its leader announces it.
+- **File state machine checkpoints are written atomically** (#400): a crash during a checkpoint can no longer leave a truncated `state.data` or `metadata.bin`.
+
 ### Changed
 
 - **⚠️ Wire protocol is not compatible with v0.2.4**: `ClientResponse.metadata` moved from field 4 to 5 (field 4 is now `scan_data`); `HandleClientScan` returns `ClientResponse` (the `ScanResponse` message is now `ScanResults`); the `ChunkStatus` values are renumbered with `CHUNK_STATUS_UNSPECIFIED = 0`; `WriteCommand.Insert.ttl_secs` (field 3) is reserved; new RPC `PreVote`. Do not run v0.2.4 and v0.3.0 nodes or clients together. See `MIGRATION_GUIDE.md`.
 
-- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
+- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `std::io::Result<()>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
 
 - **State machine worker lifecycle** (#455): the `NodeBuilder` only assembles the worker; `Node::run()` starts it and stops it. `StateMachineWorker::new` no longer takes a shutdown signal.
 
@@ -77,7 +88,7 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
-- **⚠️ `StateMachine::apply_snapshot_from_file` return type changed** (#436): Was `Result<()>`, now `Result<SnapshotApplyResult>`. The three outcomes (`Applied`/`IgnoredStale`/`IgnoredDuplicate`) are now explicit instead of every call looking identical on success. Custom `StateMachine` implementations must update the signature and return the matching variant. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
+- **⚠️ `StateMachine::apply_snapshot_from_file` returns `std::io::Result<()>` and is only called for a snapshot the engine has decided to install** (#436, #400): the engine ignores stale and duplicate snapshots itself, so the method reports nothing but success or failure. Custom `StateMachine` implementations: change the error type to `std::io::Error`.
 
 - **⚠️ Learner initial-snapshot PULL path removed** (#436): `Transport::request_snapshot_from_leader` and `StateMachineHandler::apply_snapshot_stream_from_leader` are removed. New learners catch up via the leader's PUSH replication loop (AppendEntries / InstallSnapshot) instead of eagerly pulling a snapshot on startup. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
@@ -115,6 +126,20 @@ All notable changes to this project will be documented in this file.
   `durable_index`, which is no longer a configurable choice. Existing configs setting `strategy =
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
+
+- **⚠️ `StateMachine` trait slimmed from 17 methods to 8** (#400, #455, #469): `start`, `stop`, `is_running`, `len`, `is_empty`, `reset` and the snapshot-metadata methods are removed, `close_storage` is now `close`, every method except `last_applied()` (which returns the `LogId` directly) returns `std::io::Result` instead of `d_engine::Error` (as do the constructors of the built-in file and RocksDB state machines), and `generate_snapshot_data(dir)` returns the position of what it exported. The engine now owns snapshot checksums, records and install decisions. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
+- **⚠️ The engine takes the state machine by value** (#400): `start_custom`, `start_node` and `run_custom` take `SM` instead of `Arc<SM>`, and `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters.
+
+- **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
+
+- **⚠️ `scan_prefix` rejects an empty prefix** (#400): it returns `InvalidRequest` instead of the whole keyspace (file state machine) or nothing (RocksDB).
+
+- **A node starts once a majority of the cluster is healthy** (#400): the startup health check no longer waits for every peer, so a node can restart while one peer is down.
+
+- **Snapshot archives are checked when they are unpacked** (#477): the archive comes from another node, so unpacking now accepts only regular files and directories inside the target directory, refuses `..`, absolute paths, links, devices and duplicate paths, and stops at limits. New settings under `[raft.snapshot]`: `max_unpack_total_bytes` (default 256 GiB), `max_unpack_file_bytes` (64 GiB) and `max_unpack_entries` (100,000); raise them if your snapshots are larger. The unmaintained `astral-tokio-tar` (RUSTSEC-2026-0440) is replaced by `tar` and `flate2`, and packing no longer runs on an async worker thread.
+
+- **Client errors are built in one place** (#400): `ClientApiError::from_response` builds the error for a failed response, including the leader hint and retry delay of `NotLeader`, for the embedded and the gRPC client.
 
 ### Removed
 

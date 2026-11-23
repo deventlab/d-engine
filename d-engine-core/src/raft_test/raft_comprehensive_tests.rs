@@ -1328,6 +1328,90 @@ async fn test_log_purge_completed_dispatch_on_candidate() {
 
 // C1. Peer Index Initialization Tests
 
+/// Log tip of the node before it becomes leader (see `prepare_succeed_majority_confirmation`).
+const LEADER_INIT_LAST_ENTRY_ID: u64 = 11;
+
+/// Makes node 1 leader of a cluster whose membership lists `voters` and `learners` as peers.
+///
+/// Peer progress is initialized from this membership on `BecomeLeader`, so the peers must be
+/// real here: with the default mock membership there are none and nothing is initialized.
+async fn become_leader_with_peers(
+    graceful_rx: watch::Receiver<()>,
+    voters: &[u32],
+    learners: &[u32],
+) -> crate::Raft<MockTypeConfig> {
+    use d_engine_proto::common::NodeRole as Role;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
+
+    let meta = |id: u32, role: Role| NodeMeta {
+        id,
+        address: format!("http://127.0.0.1:{}", 55000 + id),
+        role: role.into(),
+        status: NodeStatus::Active.into(),
+    };
+    let voter_metas: Vec<NodeMeta> = voters.iter().map(|&id| meta(id, Role::Follower)).collect();
+    let mut peer_metas = voter_metas.clone();
+    peer_metas.extend(learners.iter().map(|&id| meta(id, Role::Learner)));
+    let peer_ids: Vec<u32> = peer_metas.iter().map(|n| n.id).collect();
+
+    let mut membership = crate::MockMembership::<MockTypeConfig>::new();
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
+    membership.expect_pre_warm_connections().returning(|| Ok(()));
+    membership.expect_voters().returning(move || voter_metas.clone());
+    let members = peer_metas.clone();
+    membership.expect_replication_peers().returning(move || peer_metas.clone());
+    membership.expect_members().returning(move || members.clone());
+    membership.expect_check_cluster_is_ready().returning(|| Ok(()));
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    membership
+        .expect_get_peers_id_with_condition()
+        .returning(move |_| peer_ids.clone());
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_initial_cluster_size().returning(|| 3);
+    membership
+        .expect_retrieve_node_meta()
+        .returning(move |id| Some(meta(id, Role::Follower)));
+
+    let mut raft = MockBuilder::new(graceful_rx).with_membership(membership).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+    assert!(is_leader(raft.role.as_i32()));
+    raft
+}
+
+/// Every peer — voter or learner — must have a progress record right after election:
+/// next_index right after the leader's log tip and match_index 0 ("confirmed nothing yet").
+/// A peer without a record was once left out of the commit quorum, letting a leader commit
+/// alone (#400).
+fn assert_peers_start_untracked_progress(
+    raft: &crate::Raft<MockTypeConfig>,
+    voters: &[u32],
+    learners: &[u32],
+) {
+    use crate::role_state::RaftRoleState;
+
+    let crate::RaftRole::Leader(leader) = &raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
+    for &peer in voters.iter().chain(learners) {
+        assert_eq!(
+            leader.next_index(peer),
+            Some(LEADER_INIT_LAST_ENTRY_ID + 1),
+            "peer {peer}: next_index must start right after the leader's log tip"
+        );
+        assert_eq!(
+            leader.match_index(peer),
+            Some(0),
+            "peer {peer}: match_index must be recorded as 0, not left absent"
+        );
+    }
+}
+
 /// Test: Single peer cluster - peer next_index and match_index initialized
 ///
 /// Verifies single peer is initialized with next_index = last_entry_id + 1
@@ -1336,16 +1420,8 @@ async fn test_log_purge_completed_dispatch_on_candidate() {
 #[tokio::test]
 async fn test_leader_init_single_peer() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // Peer indices are initialized correctly
+    let raft = become_leader_with_peers(graceful_rx, &[2], &[]).await;
+    assert_peers_start_untracked_progress(&raft, &[2], &[]);
 }
 
 /// Test: Two peer cluster - both peers initialized correctly
@@ -1355,16 +1431,8 @@ async fn test_leader_init_single_peer() {
 #[tokio::test]
 async fn test_leader_init_two_peers() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // Both peers are initialized with correct indices
+    let raft = become_leader_with_peers(graceful_rx, &[2, 3], &[]).await;
+    assert_peers_start_untracked_progress(&raft, &[2, 3], &[]);
 }
 
 /// Test: Three peer cluster - all peers initialized correctly
@@ -1374,16 +1442,8 @@ async fn test_leader_init_two_peers() {
 #[tokio::test]
 async fn test_leader_init_three_peers() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // All three peers are initialized
+    let raft = become_leader_with_peers(graceful_rx, &[2, 3, 4], &[]).await;
+    assert_peers_start_untracked_progress(&raft, &[2, 3, 4], &[]);
 }
 
 // ============================================================================
@@ -1724,16 +1784,8 @@ async fn test_peer_stream_error_downgrades_non_snapshot_peer_to_probe() {
 #[tokio::test]
 async fn test_leader_init_five_peers() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // All five peers are initialized
+    let raft = become_leader_with_peers(graceful_rx, &[2, 3, 4, 5, 6], &[]).await;
+    assert_peers_start_untracked_progress(&raft, &[2, 3, 4, 5, 6], &[]);
 }
 
 /// Test: Match index starts at 0 for all peers
@@ -1743,16 +1795,8 @@ async fn test_leader_init_five_peers() {
 #[tokio::test]
 async fn test_leader_init_match_index_zero() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // Match index is initialized to 0 for all peers
+    let raft = become_leader_with_peers(graceful_rx, &[2, 3], &[]).await;
+    assert_peers_start_untracked_progress(&raft, &[2, 3], &[]);
 }
 
 /// Test: Learner peers also initialized (tracked separately)
@@ -1762,16 +1806,8 @@ async fn test_leader_init_match_index_zero() {
 #[tokio::test]
 async fn test_leader_init_includes_learners() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // Learner peers are initialized separately
+    let raft = become_leader_with_peers(graceful_rx, &[2], &[3]).await;
+    assert_peers_start_untracked_progress(&raft, &[2], &[3]);
 }
 
 /// Test: Mixed voter/learner cluster initialization
@@ -1781,16 +1817,8 @@ async fn test_leader_init_includes_learners() {
 #[tokio::test]
 async fn test_leader_init_mixed_voters_learners() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
-    raft.ctx.storage.raft_log = Arc::new(raft_log);
-    raft.ctx.handlers.replication_handler = replication_core;
-
-    // Become leader
-    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
-    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
-    assert!(is_leader(raft.role.as_i32()));
-    // Both voters and learners are initialized together
+    let raft = become_leader_with_peers(graceful_rx, &[2, 3], &[4, 5]).await;
+    assert_peers_start_untracked_progress(&raft, &[2, 3], &[4, 5]);
 }
 
 // C2. Cluster Metadata Caching Tests

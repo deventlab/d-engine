@@ -4,12 +4,18 @@
 //! SledStateMachine to that suite and adds sled-specific scenarios not covered
 //! by the standard suite.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
+use d_engine::ApplyEntry;
+use d_engine::Command;
+use d_engine::Error;
+use d_engine::StateMachine;
 use d_engine::common::LogId;
-use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use d_engine::{ApplyEntry, Command, Error, StateMachine};
-use std::sync::Arc;
+use d_engine::state_machine_test::StateMachineBuilder;
+use d_engine::state_machine_test::StateMachineTestSuite;
+use d_engine::state_machine_test::copy_storage_dir;
 use tempfile::TempDir;
 
 use crate::SledStateMachine;
@@ -23,21 +29,40 @@ use crate::SledStateMachine;
 /// so that data written by the first instance is readable by the second.
 struct SledBuilder {
     temp_dir: TempDir,
+    // How many times `build()` ran: every build gets its own directory.
+    builds: std::sync::atomic::AtomicUsize,
 }
 
 impl SledBuilder {
     fn new() -> Self {
         Self {
             temp_dir: TempDir::new().expect("create TempDir"),
+            builds: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// The directory the last `build()` used.
+    fn current_dir(&self) -> std::path::PathBuf {
+        let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
+        self.temp_dir.path().join(format!("sled_{n}"))
     }
 }
 
 #[async_trait]
 impl StateMachineBuilder for SledBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-        let sm = SledStateMachine::new(self.temp_dir.path(), 1)?;
-        Ok(Arc::new(sm))
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Arc::new(SledStateMachine::new(self.current_dir(), 1)?))
+    }
+
+    async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        Ok(Arc::new(SledStateMachine::new(self.current_dir(), 1)?))
+    }
+
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+        let image = TempDir::new()?.keep();
+        copy_storage_dir(&self.current_dir(), &image)?;
+        Ok(Some(Arc::new(SledStateMachine::new(&image, 1)?)))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
@@ -54,6 +79,26 @@ impl StateMachineBuilder for SledBuilder {
 #[tokio::test]
 async fn test_standard_suite() {
     StateMachineTestSuite::run_all_tests(SledBuilder::new()).await.unwrap();
+}
+
+/// `scan_prefix` is optional in the trait, so the suite runs this check separately.
+#[tokio::test]
+async fn test_scan_prefix_revision_not_newer_than_data_during_snapshot_install() {
+    StateMachineTestSuite::test_scan_prefix_revision_not_newer_than_data_during_snapshot_install(
+        &SledBuilder::new(),
+    )
+    .await
+    .unwrap();
+}
+
+/// `scan_prefix` is optional in the trait, so the suite runs this check separately.
+#[tokio::test]
+async fn test_scan_prefix_revision_not_newer_than_data_during_apply() {
+    StateMachineTestSuite::test_scan_prefix_revision_not_newer_than_data_during_apply(
+        &SledBuilder::new(),
+    )
+    .await
+    .unwrap();
 }
 
 /// Optional performance regression check (excluded from normal CI).
@@ -80,15 +125,14 @@ async fn test_snapshot_captures_all_current_data() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from(format!("snap_key_{i}")),
-                value: Bytes::from(format!("snap_val_{i}")),            },
+                value: Bytes::from(format!("snap_val_{i}")),
+            },
         })
         .collect();
     sm.apply_chunk(&entries).await.unwrap();
 
     let snap_dir = temp.path().join("snapshot");
-    sm.generate_snapshot_data(snap_dir.clone(), LogId { index: 5, term: 1 })
-        .await
-        .unwrap();
+    sm.generate_snapshot_data(snap_dir.clone()).await.unwrap();
 
     // Open the snapshot as a fresh SM and verify all 5 keys were captured.
     let snap_sm = SledStateMachine::new(&snap_dir, 1).unwrap();
@@ -116,14 +160,13 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         term: 1,
         command: Command::Insert {
             key: Bytes::from_static(b"before"),
-            value: Bytes::from_static(b"v1"),        },
+            value: Bytes::from_static(b"v1"),
+        },
     }];
     sm.apply_chunk(&pre_entries).await.unwrap();
 
     let snap_dir = temp.path().join("partial_snapshot");
-    sm.generate_snapshot_data(snap_dir.clone(), LogId { index: 1, term: 1 })
-        .await
-        .unwrap();
+    sm.generate_snapshot_data(snap_dir.clone()).await.unwrap();
 
     // Write another key AFTER snapshot
     let post_entries = vec![ApplyEntry {
@@ -131,7 +174,8 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         term: 1,
         command: Command::Insert {
             key: Bytes::from_static(b"after"),
-            value: Bytes::from_static(b"v2"),        },
+            value: Bytes::from_static(b"v2"),
+        },
     }];
     sm.apply_chunk(&post_entries).await.unwrap();
 
@@ -162,21 +206,21 @@ async fn test_snapshot_install_content_survives_restart() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from(format!("install_key_{i}")),
-                value: Bytes::from(format!("install_val_{i}")),            },
+                value: Bytes::from(format!("install_val_{i}")),
+            },
         })
         .collect();
     source_sm.apply_chunk(&entries).await.unwrap();
 
     let last_included = LogId { index: 3, term: 1 };
     let export_dir = TempDir::new().unwrap();
-    let checksum = source_sm
-        .generate_snapshot_data(export_dir.path().to_path_buf(), last_included)
-        .await
-        .unwrap();
+    source_sm.generate_snapshot_data(export_dir.path().to_path_buf()).await.unwrap();
 
+    // The engine verifies the checksum before it calls the state machine, which only stores it,
+    // so any 32-byte value will do here.
     let metadata = d_engine::server_storage::SnapshotMetadata {
         last_included: Some(last_included),
-        checksum: Bytes::from(checksum.to_vec()),
+        checksum: Bytes::from(vec![0u8; 32]),
     };
 
     // Node B: fresh, empty, behind the purge boundary — installs the snapshot.
@@ -184,14 +228,10 @@ async fn test_snapshot_install_content_survives_restart() {
     let node_b_path = node_b_dir.path().to_path_buf();
     {
         let node_b = SledStateMachine::new(&node_b_path, 2).unwrap();
-        let result = node_b
+        node_b
             .apply_snapshot_from_file(&metadata, export_dir.path().to_path_buf())
             .await
             .unwrap();
-        assert!(
-            matches!(result, d_engine::SnapshotApplyResult::Applied { .. }),
-            "expected Applied, got: {result:?}"
-        );
         assert_eq!(
             node_b.get(b"install_key_1").unwrap(),
             Some(Bytes::from_static(b"install_val_1")),
@@ -238,7 +278,8 @@ async fn test_new_recovers_backup_after_interrupted_install() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from_static(b"pre_crash_key"),
-                value: Bytes::from_static(b"pre_crash_val"),            },
+                value: Bytes::from_static(b"pre_crash_val"),
+            },
         }])
         .await
         .unwrap();
@@ -265,5 +306,71 @@ async fn test_new_recovers_backup_after_interrupted_install() {
         Some(Bytes::from_static(b"pre_crash_val")),
         "BUG: SledStateMachine::new did not recover the pre-install backup — data \
          from before the interrupted install is gone"
+    );
+}
+
+/// A snapshot carries its own position. The node that installs it moves the database into place
+/// first and records the position afterwards; a crash in between must not leave the new data with
+/// position 0, or the engine would apply every entry again on top of it.
+#[tokio::test]
+async fn test_exported_snapshot_carries_its_position() {
+    let temp = TempDir::new().unwrap();
+    let sm = SledStateMachine::new(temp.path(), 1).unwrap();
+    sm.apply_chunk(&[ApplyEntry {
+        index: 7,
+        term: 3,
+        command: Command::Insert {
+            key: Bytes::from_static(b"k"),
+            value: Bytes::from_static(b"v"),
+        },
+    }])
+    .await
+    .unwrap();
+
+    let snap_dir = temp.path().join("snapshot");
+    let position = sm.generate_snapshot_data(snap_dir.clone()).await.unwrap();
+
+    // Open the exported database on its own, as a restart right after the install would.
+    let snap_sm = SledStateMachine::new(&snap_dir, 1).unwrap();
+    assert_eq!(snap_sm.last_applied(), position);
+}
+
+/// When the snapshot cannot be moved into place, the previous database is put back at once: left
+/// as it is, a restart would find a missing or half-copied `state_machine` directory.
+#[tokio::test]
+async fn test_failed_install_puts_the_previous_database_back() {
+    use d_engine::server_storage::SnapshotMetadata;
+
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("node");
+    let sm = SledStateMachine::new(&path, 1).unwrap();
+    sm.apply_chunk(&[ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from_static(b"kept"),
+            value: Bytes::from_static(b"value"),
+        },
+    }])
+    .await
+    .unwrap();
+
+    // A snapshot directory with no database in it: moving it into place fails.
+    let broken_snapshot = temp.path().join("broken_snapshot");
+    std::fs::create_dir_all(&broken_snapshot).unwrap();
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::new(),
+    };
+    let result = sm.apply_snapshot_from_file(&metadata, broken_snapshot).await;
+
+    assert!(result.is_err(), "installing a snapshot without a database must fail");
+    assert!(
+        path.join("state_machine").exists(),
+        "the previous database must be back in place"
+    );
+    assert!(
+        !path.join("state_machine.pre-install-backup").exists(),
+        "the backup was moved back, not left beside the database"
     );
 }

@@ -35,13 +35,12 @@ pub enum Error {
 impl Error {
     /// Returns true only for errors that require node shutdown.
     ///
-    /// Fatal: explicit `Fatal` marker, storage data corruption.
+    /// Fatal: explicit `Fatal` marker, snapshot boundary conflict.
     /// Non-fatal (warn + continue): network, snapshot, election, replication.
     pub fn is_fatal(&self) -> bool {
         matches!(
             self,
             Error::Fatal(_)
-                | Error::System(SystemError::Storage(StorageError::DataCorruption { .. }))
                 | Error::Consensus(ConsensusError::Snapshot(
                     SnapshotError::BoundaryConflict { .. }
                 ))
@@ -223,10 +222,6 @@ pub enum StorageError {
     // /// Snapshot creation/restoration failures
     // #[error("Snapshot operation failed: {0}")]
     // Snapshot(String),
-    /// Checksum validation failures
-    #[error("Data corruption detected at {location}")]
-    DataCorruption { location: String },
-
     /// Configuration storage failures
     #[error("Configuration storage error: {0}")]
     ConfigStorage(String),
@@ -246,34 +241,6 @@ pub enum StorageError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(String),
-
-    /// ID allocation errors
-    #[error(transparent)]
-    IdAllocation(#[from] IdAllocationError),
-
-    /// State machine not serving requests
-    ///
-    /// Returned when read operations are attempted during critical operations
-    /// such as snapshot restoration. This ensures reads never access inconsistent
-    /// or temporary state during database transitions.
-    #[error("State machine not serving: {0}")]
-    NotServing(String),
-}
-
-#[doc(hidden)]
-#[derive(Debug, thiserror::Error)]
-pub enum IdAllocationError {
-    /// ID allocation overflow
-    #[error("ID allocation overflow: {start} > {end}")]
-    Overflow { start: u64, end: u64 },
-
-    /// Invalid ID range
-    #[error("Invalid ID range: {start}..={end}")]
-    InvalidRange { start: u64, end: u64 },
-
-    /// No available IDs
-    #[error("No available IDs")]
-    NoIdsAvailable,
 }
 
 #[doc(hidden)]
@@ -845,12 +812,6 @@ impl From<ReadIndexError> for Error {
             },
             ReadIndexError::VerificationFailed { reason: _ } => ReplicationError::QuorumNotReached,
         }))
-    }
-}
-
-impl From<IdAllocationError> for Error {
-    fn from(e: IdAllocationError) -> Self {
-        StorageError::IdAllocation(e).into()
     }
 }
 

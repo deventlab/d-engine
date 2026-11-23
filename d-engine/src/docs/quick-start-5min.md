@@ -209,18 +209,18 @@ DefaultEmbeddedEngine::start_with(
 ) -> Result<Self>
 
 // Start with programmatic config — no config file needed
-EmbeddedEngine::<YourTypeConfig>::start_node(
+EmbeddedEngine::start_node(
     data_dir: impl AsRef<Path>,
     storage: Arc<impl StorageEngine>,
-    state_machine: Arc<impl StateMachine>,
+    state_machine: impl StateMachine,
     config: RaftNodeConfig
 ) -> Result<Self>
 
 // Advanced (custom storage + state machine with optional config file)
-EmbeddedEngine::<YourTypeConfig>::start_custom(
+EmbeddedEngine::start_custom(
     data_dir: impl AsRef<Path>,
     storage: Arc<impl StorageEngine>,
-    state_machine: Arc<impl StateMachine>,
+    state_machine: impl StateMachine,
     config_path: Option<&str>
 ) -> Result<Self>
 

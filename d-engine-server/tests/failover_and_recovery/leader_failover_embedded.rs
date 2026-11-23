@@ -63,7 +63,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&configs[i].1),
         )
         .await?;
@@ -252,7 +252,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&configs[i].1),
         )
         .await?;
@@ -333,7 +333,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     let restarted_engine = DefaultEmbeddedEngine::start_custom(
         &node_db_root,
         Arc::new(storage),
-        Arc::new(state_machine),
+        state_machine,
         Some(&killed_config.1),
     )
     .await?;
@@ -408,7 +408,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;
@@ -558,7 +558,7 @@ async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::e
         Ok(DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?)

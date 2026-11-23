@@ -1,18 +1,5 @@
 //! It works as KV storage for client business CRUDs.
 
-use crate::compute_checksum_from_folder_path;
-use crate::{safe_kv, safe_vk_ivec};
-use arc_swap::ArcSwapOption;
-use async_trait::async_trait;
-use bincode::config;
-use bytes::Bytes;
-use d_engine::BatchOp;
-use d_engine::{
-    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotApplyResult, SnapshotError,
-    StateMachine, StorageError, common::LogId, server_storage::SnapshotMetadata,
-};
-use parking_lot::Mutex;
-use sled::Batch;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,22 +7,35 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+
+use arc_swap::ArcSwapOption;
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine::ApplyEntry;
+use d_engine::ApplyResult;
+use d_engine::BatchOp;
+use d_engine::Command;
+use d_engine::ScanResult;
+use d_engine::StateMachine;
+use d_engine::common::LogId;
+use d_engine::server_storage::SnapshotMetadata;
+use sled::Transactional;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
+use crate::safe_kv;
+use crate::safe_vk_ivec;
+
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
 pub(crate) const STATE_MACHINE_META_NAMESPACE: &str = "_state_machine_metadata";
-pub(crate) const STATE_SNAPSHOT_METADATA_TREE: &str = "_snapshot_metadata";
 
 /// Sled entry key namespaces
 pub(crate) const STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX: &str = "_raft_last_applied_index";
 pub(crate) const STATE_MACHINE_META_KEY_LAST_APPLIED_TERM: &str = "_raft_last_applied_term";
-
-pub(crate) const LAST_SNAPSHOT_METADATA_KEY: &str = "_raft_last_snapshot_metadata";
 
 pub struct SledStateMachine {
     node_id: u32,
@@ -50,17 +50,17 @@ pub struct SledStateMachine {
 
     is_serving: Arc<AtomicBool>,
 
+    /// `apply_chunk` holds it for writing while it commits a chunk and moves the position;
+    /// `generate_snapshot_data` holds it for reading while it copies the data and reads the
+    /// position. An export therefore never sees a chunk half applied.
+    apply_lock: tokio::sync::RwLock<()>,
+
     /// Volatile state on all servers:
     /// index of highest log entry applied to state machine (initialized to 0,
     /// increases monotonically)
     /// The last submitted log index and term (atomic operation ensures lock-free)
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
-
-    /// Snapshot metadata
-    last_included_index: AtomicU64, // load from STATE_SNAPSHOT_METADATA_TREE
-    last_included_term: AtomicU64,
-    last_snapshot_checksum: Mutex<Option<[u8; 32]>>, //SHA-256
 }
 
 impl std::fmt::Debug for SledStateMachine {
@@ -88,13 +88,7 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    async fn start(&self) -> Result<()> {
-        debug!("start state machine");
-        self.is_serving.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    fn close(&self) -> Result<()> {
+    fn close(&self) -> std::io::Result<()> {
         if self.db.load().is_none() {
             return Ok(());
         }
@@ -106,35 +100,6 @@ impl StateMachine for SledStateMachine {
         saved
     }
 
-    fn is_running(&self) -> bool {
-        self.is_serving.load(Ordering::Acquire)
-    }
-
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        debug!(%self.node_id, ?last_applied, "update_last_applied");
-        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
-        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
-    }
-
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?snapshot_metadata, "update_last_snapshot_metadata");
-        let last_included = snapshot_metadata.last_included.unwrap();
-        self.last_included_index.store(last_included.index, Ordering::SeqCst);
-        self.last_included_term.store(last_included.term, Ordering::SeqCst);
-        let checksum = snapshot_metadata
-            .checksum_array()
-            .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")))?;
-        *self.last_snapshot_checksum.lock() = Some(checksum);
-
-        Ok(())
-    }
-
     fn last_applied(&self) -> LogId {
         LogId {
             index: self.last_applied_index.load(Ordering::SeqCst),
@@ -142,50 +107,46 @@ impl StateMachine for SledStateMachine {
         }
     }
 
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        let last_included_index = self.last_included_index.load(Ordering::SeqCst);
-        if last_included_index > 0 {
-            Some(SnapshotMetadata {
-                last_included: Some(LogId {
-                    index: self.last_included_index.load(Ordering::SeqCst),
-                    term: self.last_included_term.load(Ordering::SeqCst),
-                }),
-                checksum: self
-                    .last_snapshot_checksum
-                    .lock()
-                    .as_ref()
-                    .map(|arr| Bytes::copy_from_slice(arr))?,
-            })
-        } else {
-            None
-        }
-    }
-
     fn get(
         &self,
         key_buffer: &[u8],
-    ) -> Result<Option<Bytes>> {
+    ) -> std::io::Result<Option<Bytes>> {
         match self.current_tree()?.get(key_buffer) {
             Ok(Some(v)) => Ok(Some(Bytes::copy_from_slice(&v))),
             Ok(None) => Ok(None),
             Err(e) => {
                 error!("state_machine get error: {}", e);
-                Err(StorageError::DbError(e.to_string()).into())
+                Err(std::io::Error::other(e))
             }
         }
+    }
+
+    fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> std::io::Result<Vec<Option<Bytes>>> {
+        // Open the tree once: it stays on the database it came from, so every key is read
+        // from the same database even if `apply_snapshot_from_file` swaps `self.db` midway.
+        let tree = self.current_tree()?;
+        keys.iter()
+            .map(|key| match tree.get(key) {
+                Ok(value) => Ok(value.map(|v| Bytes::copy_from_slice(&v))),
+                Err(e) => {
+                    error!("state_machine get_multi error: {}", e);
+                    Err(std::io::Error::other(e))
+                }
+            })
+            .collect()
     }
 
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],
-    ) -> Result<Vec<ApplyResult>> {
+    ) -> std::io::Result<Vec<ApplyResult>> {
         trace!("Applying chunk: {} entries", chunk.len());
-        self.db()?;
+        let db = self.db()?;
 
         let mut highest_log_id: Option<LogId> = None;
-        let mut batch = Batch::default();
-        let mut results = Vec::with_capacity(chunk.len());
-
         for entry in chunk {
             if let Some(prev) = &highest_log_id {
                 assert!(
@@ -199,156 +160,114 @@ impl StateMachine for SledStateMachine {
                 index: entry.index,
                 term: entry.term,
             });
+        }
+        let Some(position) = highest_log_id else {
+            return Ok(Vec::new());
+        };
+        let _applying = self.apply_lock.write().await;
 
-            match &entry.command {
-                Command::Noop => {
-                    debug!("NOOP at index {}", entry.index);
-                    results.push(ApplyResult::success(entry.index));
-                }
-                Command::Insert { key, value, .. } => {
-                    batch.insert(key.as_ref(), value.as_ref());
-                    results.push(ApplyResult::success(entry.index));
-                }
-                Command::Delete { key } => {
-                    batch.remove(key.as_ref());
-                    results.push(ApplyResult::success(entry.index));
-                }
-                Command::CompareAndSwap {
-                    key,
-                    expected,
-                    value: new_value,
-                } => {
-                    // Flush pending batch before CAS (Sled batch doesn't support atomic CAS)
-                    self.apply_batch(std::mem::take(&mut batch))?;
+        // The whole chunk and the new position are one transaction over the data tree and the
+        // metadata tree: after a crash the position is exactly the last entry whose effects are in
+        // the data. A compare-and-swap reads and writes inside the same transaction, so it sees
+        // the entries applied before it in this chunk. sled may run the closure more than once on
+        // a conflict, so it builds its results from scratch every time.
+        let data_tree = self.current_tree()?;
+        let meta_tree =
+            db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
 
-                    // Perform native Sled CAS
-                    let tree = self.current_tree()?;
-                    let old = expected.as_ref().map(|v| v.as_ref());
-
-                    let cas_success =
-                        match tree.compare_and_swap(key.as_ref(), old, Some(new_value.as_ref())) {
-                            Ok(Ok(_)) => true,
-                            Ok(Err(_)) => false,
-                            Err(e) => {
-                                error!("CAS error at index {}: {:?}", entry.index, e);
-                                return Err(StorageError::DbError(e.to_string()).into());
+        let results = (&data_tree, &meta_tree)
+            .transaction(|(data, meta)| {
+                let mut results = Vec::with_capacity(chunk.len());
+                for entry in chunk {
+                    match &entry.command {
+                        Command::Noop => {
+                            debug!("NOOP at index {}", entry.index);
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Command::Insert { key, value, .. } => {
+                            data.insert(key.as_ref(), value.as_ref())?;
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Command::Delete { key } => {
+                            data.remove(key.as_ref())?;
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Command::CompareAndSwap {
+                            key,
+                            expected,
+                            value: new_value,
+                        } => {
+                            let current = data.get(key.as_ref())?;
+                            let cas_success = match (&current, expected) {
+                                (None, None) => true,
+                                (Some(current), Some(expected)) => {
+                                    current.as_ref() == expected.as_ref()
+                                }
+                                _ => false,
+                            };
+                            if cas_success {
+                                data.insert(key.as_ref(), new_value.as_ref())?;
                             }
-                        };
-
-                    debug!(
-                        "CAS at index {}: key={:?}, success={}",
-                        entry.index,
-                        String::from_utf8_lossy(key),
-                        cas_success
-                    );
-                    results.push(if cas_success {
-                        ApplyResult::success(entry.index)
-                    } else {
-                        ApplyResult::failure(entry.index)
-                    });
-                }
-                Command::Batch { ops } => {
-                    ops.iter().for_each(|op| match op {
-                        BatchOp::Insert { key, value } => {
-                            batch.insert(key.as_ref(), value.as_ref())
+                            debug!(
+                                "CAS at index {}: key={:?}, success={}",
+                                entry.index,
+                                String::from_utf8_lossy(key),
+                                cas_success
+                            );
+                            results.push(if cas_success {
+                                ApplyResult::success(entry.index)
+                            } else {
+                                ApplyResult::failure(entry.index)
+                            });
                         }
-                        BatchOp::Delete { key } => {
-                            batch.remove(key.as_ref());
+                        Command::Batch { ops } => {
+                            for op in ops {
+                                match op {
+                                    BatchOp::Insert { key, value } => {
+                                        data.insert(key.as_ref(), value.as_ref())?;
+                                    }
+                                    BatchOp::Delete { key } => {
+                                        data.remove(key.as_ref())?;
+                                    }
+                                }
+                            }
+                            results.push(ApplyResult::success(entry.index));
                         }
-                    });
-                    results.push(ApplyResult::success(entry.index));
+                    }
                 }
-            }
-        }
+                meta.insert(
+                    STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX.as_bytes(),
+                    safe_kv(position.index),
+                )?;
+                meta.insert(
+                    STATE_MACHINE_META_KEY_LAST_APPLIED_TERM.as_bytes(),
+                    safe_kv(position.term),
+                )?;
+                Ok(results)
+            })
+            .map_err(|e: sled::transaction::TransactionError| {
+                error!("state_machine apply_chunk failed: {}", e);
+                std::io::Error::other(e)
+            })?;
 
-        // Apply final batch
-        self.apply_batch(batch)?;
-
-        // Update last applied index
-        if let Some(log_id) = highest_log_id {
-            self.update_last_applied(log_id);
-        }
+        self.update_last_applied(position);
 
         Ok(results)
-    }
-
-    fn save_hard_state(&self) -> Result<()> {
-        let last_applied = self.last_applied();
-        self.persist_last_applied(last_applied)?;
-
-        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
-            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        }
-
-        self.flush()?;
-        Ok(())
-    }
-
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?last_applied, "persist_last_applied");
-        let db = self.db()?;
-        let tree = db
-            .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        tree.insert(
-            STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
-            safe_kv(last_applied.index),
-        )
-        .map_err(|e| StorageError::DbError(e.to_string()))?;
-        tree.insert(
-            STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
-            safe_kv(last_applied.term),
-        )
-        .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    fn persist_last_snapshot_metadata(
-        &self,
-        last_snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?last_snapshot_metadata, "persist_last_snapshot_metadata");
-        let db = self.db()?;
-        let tree = db
-            .open_tree(STATE_SNAPSHOT_METADATA_TREE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.persist_last_snapshot_metadata_with_tree(tree, last_snapshot_metadata)?;
-
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<()> {
-        let db = self.db()?;
-        let bytes = db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        info!(
-            "Successfully flushed State Machine, bytes flushed: {}",
-            bytes
-        );
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<()> {
-        self.flush()
     }
 
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-        _last_included: LogId,
-    ) -> Result<Bytes> {
-        // No internal locking needed: `StateMachineWorker` is the sole caller of
-        // generate_snapshot_data/apply_snapshot_from_file/apply_chunk, and it processes
-        // them one at a time from a single queue (#436) — concurrent snapshot
-        // generation from this trait's methods cannot happen.
+    ) -> std::io::Result<LogId> {
+        // No chunk is applied while this runs, so the copy and the position describe the same
+        // state. This lock is the whole guarantee, and no test checks it: the example shows the
+        // technique, it is not a production state machine.
+        let _exporting = self.apply_lock.read().await;
+        let position = self.last_applied();
 
         // 2. Create a new state machine database instance
-        let new_db = init_sled_state_machine_db(&new_snapshot_dir)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        let new_db =
+            init_sled_state_machine_db(&new_snapshot_dir).map_err(std::io::Error::other)?;
 
         let exist_db_tree = self.current_tree()?;
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
@@ -360,98 +279,41 @@ impl StateMachine for SledStateMachine {
         // as log indices. The SM already reflects state at last_included.index, so
         // all current entries are valid snapshot content.
         for item in exist_db_tree.iter() {
-            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            let (k, v) = item.map_err(std::io::Error::other)?;
 
             batch.insert(k, v);
             counter += 1;
 
             if counter % 100 == 0 {
-                new_state_machine_tree
-                    .apply_batch(batch)
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
+                new_state_machine_tree.apply_batch(batch).map_err(std::io::Error::other)?;
                 batch = sled::Batch::default();
             }
         }
 
-        new_state_machine_tree
-            .apply_batch(batch)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        new_state_machine_tree.apply_batch(batch).map_err(std::io::Error::other)?;
+
+        // The snapshot carries its position, so a node that installs it has data and position
+        // together, whenever it crashes afterwards.
+        write_last_applied(&new_tree(&new_db, STATE_MACHINE_META_NAMESPACE)?, position)?;
 
         // Make sure flush into disk
-        new_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        new_db.flush().map_err(std::io::Error::other)?;
 
-        // Calculate the checksum after generating snapshot data
-        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
-
-        Ok(Bytes::copy_from_slice(&checksum))
+        Ok(position)
     }
 
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
-    ) -> Result<SnapshotApplyResult> {
-        // No internal locking needed — see generate_snapshot_data. `StateMachineWorker`
-        // processes ApplyEntries/InstallSnapshot/CaptureLocalSnapshot one at a time from a
-        // single queue (#436), so this call never races a concurrent snapshot generation
-        // or another install.
+    ) -> std::io::Result<()> {
+        // `StateMachineWorker` never runs this concurrently with `apply_chunk`, a snapshot
+        // export or another install (#436).
 
-        // Boundary classification (#436, every StateMachine impl must honor this): stale or
-        // duplicate is a no-op, same-index-different-term is a conflict error, and a missing
-        // boundary can't be classified at all — reject it outright (mirrors
-        // prepare_transfer_meta's handling of the same field).
-        let new_last_included = metadata.last_included.ok_or_else(|| {
-            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
-        })?;
-
-        let current = self.last_applied();
-        match new_last_included.index.cmp(&current.index) {
-            std::cmp::Ordering::Less => {
-                info!(?new_last_included, ?current, "Ignoring stale snapshot");
-                return Ok(SnapshotApplyResult::IgnoredStale { current });
-            }
-            std::cmp::Ordering::Equal if new_last_included.term == current.term => {
-                info!(?new_last_included, ?current, "Ignoring duplicate snapshot");
-                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
-            }
-            std::cmp::Ordering::Equal => {
-                return Err(SnapshotError::BoundaryConflict {
-                    index: current.index,
-                    local_term: current.term,
-                    incoming_term: new_last_included.term,
-                }
-                .into());
-            }
-            std::cmp::Ordering::Greater => {
-                // Eligible to install, fall through.
-            }
-        }
-
-        debug!(
-            ?decompressed_snapshot_path,
-            "Validating checksum before install"
-        );
-        // CRITICAL SECURITY STEP: prevents tampered or corrupted snapshots from being applied.
-        let computed_checksum =
-            compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
-
-        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-            error!(
-                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                computed_checksum, metadata.checksum
-            );
-
-            metrics::counter!(
-                "snapshot.checksum_failures",
-                &[
-                    ("node_id", self.node_id.to_string()),
-                    ("snapshot_index", new_last_included.index.to_string()),
-                ]
-            )
-            .increment(1);
-
-            return Err(SnapshotError::ChecksumMismatch.into());
-        }
+        // The engine only calls this for a snapshot newer than `last_applied()`.
+        let new_last_included = metadata
+            .last_included
+            .ok_or_else(|| std::io::Error::other("Missing last_included in snapshot metadata"))?;
 
         // `decompressed_snapshot_path` is a temporary directory owned by the caller
         // (see `PreparedSnapshot`), not this state machine's own `self.path`. Opening a
@@ -484,25 +346,31 @@ impl StateMachine for SledStateMachine {
             // which is the bug this fixes. This is an example adaptor, not the
             // production RocksDB/File ones.
             std::fs::rename(&db_dir, &backup_dir)?;
-            if let Err(e) = std::fs::rename(&incoming_db_dir, &db_dir) {
+            let moved = std::fs::rename(&incoming_db_dir, &db_dir).or_else(|e| {
                 // Temp storage and the data directory can be on different
                 // filesystems (e.g. `/tmp` vs a data disk) — rename can't hop
                 // devices. Fall back to a recursive copy in that case only.
                 if e.kind() == std::io::ErrorKind::CrossesDevices {
-                    copy_dir_recursive(&incoming_db_dir, &db_dir)?;
+                    copy_dir_recursive(&incoming_db_dir, &db_dir)
                 } else {
-                    return Err(e);
+                    Err(e)
                 }
+            });
+            if let Err(e) = moved {
+                // Put the previous database back: a restart that finds a half-copied `db_dir`
+                // skips the backup recovery in `SledStateMachine::new` and opens it.
+                let _ = std::fs::remove_dir_all(&db_dir);
+                std::fs::rename(&backup_dir, &db_dir)?;
+                return Err(e);
             }
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::DbError(format!("snapshot install task panicked: {e}")))?
-        .map_err(|e| StorageError::DbError(format!("failed to move snapshot into place: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("snapshot install task panicked: {e}")))?
+        .map_err(|e| std::io::Error::other(format!("failed to move snapshot into place: {e}")))?;
 
         debug!("Reopening state machine database at its permanent path");
-        let db = init_sled_state_machine_db(&self.path)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        let db = init_sled_state_machine_db(&self.path).map_err(std::io::Error::other)?;
         self.db.store(Some(Arc::new(db)));
 
         // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
@@ -516,50 +384,25 @@ impl StateMachine for SledStateMachine {
             "Updating Raft metadata and indexes"
         );
         self.update_last_applied(new_last_included);
-        self.update_last_snapshot_metadata(metadata)?;
 
         self.save_hard_state()?;
 
-        Ok(SnapshotApplyResult::Applied {
-            last_included: new_last_included,
-        })
-    }
-
-    fn len(&self) -> usize {
-        self.current_tree().map(|t| t.len()).unwrap_or(0)
-    }
-
-    async fn reset(&self) -> Result<()> {
-        let db = self.db()?;
-        for tree_name in &[
-            STATE_MACHINE_TREE,
-            STATE_MACHINE_META_NAMESPACE,
-            STATE_SNAPSHOT_METADATA_TREE,
-        ] {
-            db.open_tree(tree_name)
-                .map_err(|e| StorageError::DbError(e.to_string()))?
-                .clear()
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-        }
-        self.last_applied_index.store(0, Ordering::SeqCst);
-        self.last_applied_term.store(0, Ordering::SeqCst);
-        self.last_included_index.store(0, Ordering::SeqCst);
-        self.last_included_term.store(0, Ordering::SeqCst);
-        *self.last_snapshot_checksum.lock() = None;
         Ok(())
     }
 
     fn scan_prefix(
         &self,
         prefix: &[u8],
-    ) -> Result<ScanResult> {
+    ) -> std::io::Result<ScanResult> {
+        // Read the position before the data: `apply_chunk` commits data before it advances the
+        // position, so `revision` never names a state newer than the entries returned.
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
         let tree = self.current_tree()?;
         let mut entries = Vec::new();
         for result in tree.scan_prefix(prefix) {
-            let (k, v) = result.map_err(|e| StorageError::DbError(e.to_string()))?;
+            let (k, v) = result.map_err(std::io::Error::other)?;
             entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
         }
-        let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
     }
 }
@@ -568,7 +411,7 @@ impl SledStateMachine {
     pub fn new<P: AsRef<Path> + std::fmt::Debug>(
         path: P,
         node_id: u32,
-    ) -> Result<Self> {
+    ) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
         // Recovery from a crash mid-install (see `apply_snapshot_from_file`): if the
@@ -583,36 +426,25 @@ impl SledStateMachine {
                 ?backup_dir,
                 "Recovering from an interrupted snapshot install: restoring pre-install backup"
             );
-            std::fs::rename(&backup_dir, &db_dir)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            std::fs::rename(&backup_dir, &db_dir)?;
         }
 
-        let db = Arc::new(
-            init_sled_state_machine_db(&path).map_err(|e| StorageError::DbError(e.to_string()))?,
-        );
+        let db = Arc::new(init_sled_state_machine_db(&path).map_err(std::io::Error::other)?);
 
-        let state_machine_meta_tree = db
-            .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        let state_machine_meta_tree =
+            db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
         let (last_applied_index, last_applied_term) =
             Self::load_state_machine_metadata(&state_machine_meta_tree)?;
-
-        let snapshot_meta_tree = db
-            .open_tree(STATE_SNAPSHOT_METADATA_TREE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         let sm = SledStateMachine {
             db: ArcSwapOption::from(Some(db)),
             path,
             is_serving: Arc::new(AtomicBool::new(true)),
+            apply_lock: tokio::sync::RwLock::new(()),
             node_id,
 
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
-
-            last_included_index: AtomicU64::new(0),
-            last_included_term: AtomicU64::new(0),
-            last_snapshot_checksum: Mutex::new(None),
         };
 
         // Important to sync the last applied index into memory
@@ -621,106 +453,97 @@ impl SledStateMachine {
             term: last_applied_term,
         });
 
-        // Update last snapshot metadata
-        if let Some(last_snapshot_metadata) = Self::load_snapshot_metadata(&snapshot_meta_tree)? {
-            trace!(
-                ?last_snapshot_metadata,
-                "Updating last snapshot metadata from local database when node starts"
-            );
-            sm.update_last_snapshot_metadata(&last_snapshot_metadata)?;
-        } else {
-            info!("No snapshot metadata found in DB");
-        }
-
         Ok(sm)
     }
 
-    fn load_state_machine_metadata(tree: &sled::Tree) -> Result<(u64, u64)> {
+    fn load_state_machine_metadata(tree: &sled::Tree) -> std::io::Result<(u64, u64)> {
         let index = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
+            .map_err(std::io::Error::other)?
             .map(safe_vk_ivec)
-            .unwrap_or(Ok(0))?;
+            .unwrap_or(Ok(0))
+            .map_err(std::io::Error::other)?;
 
         let term = tree
             .get(STATE_MACHINE_META_KEY_LAST_APPLIED_TERM)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
+            .map_err(std::io::Error::other)?
             .map(safe_vk_ivec)
-            .unwrap_or(Ok(0))?;
+            .unwrap_or(Ok(0))
+            .map_err(std::io::Error::other)?;
 
         Ok((index, term))
     }
 
-    pub(super) fn load_snapshot_metadata(tree: &sled::Tree) -> Result<Option<SnapshotMetadata>> {
-        if let Ok(Some(v)) = tree.get(LAST_SNAPSHOT_METADATA_KEY) {
-            info!(
-                "found SnapshotMetadata from DB with key: {}",
-                LAST_SNAPSHOT_METADATA_KEY
-            );
-            let v = v.to_vec();
-
-            let config = config::standard();
-            match bincode::serde::decode_from_slice::<SnapshotMetadata, _>(&v, config) {
-                Ok((last_snapshot_metadata, _)) => {
-                    info!(
-                        "load_snapshot_metadata: last_included={:?}",
-                        last_snapshot_metadata.last_included
-                    );
-                    return Ok(Some(last_snapshot_metadata));
-                }
-                Err(e) => {
-                    return Err(SnapshotError::OperationFailed(format!(
-                        "state:load_snapshot_metadata deserialize error. {e}"
-                    ))
-                    .into());
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    pub(super) fn apply_batch(
-        &self,
-        batch: Batch,
-    ) -> Result<()> {
-        if let Err(e) = self.current_tree()?.apply_batch(batch) {
-            error!("state_machine apply_batch failed: {}", e);
-            return Err(StorageError::DbError(e.to_string()).into());
-        }
-        Ok(())
-    }
-
     // Dynamically obtain the current Tree (lock-free cache optimization)
     #[inline]
-    fn current_tree(&self) -> Result<sled::Tree> {
-        self.db()?
-            .open_tree(STATE_MACHINE_TREE)
-            .map_err(|e| StorageError::DbError(e.to_string()).into())
+    fn current_tree(&self) -> std::io::Result<sled::Tree> {
+        self.db()?.open_tree(STATE_MACHINE_TREE).map_err(std::io::Error::other)
     }
 
-    /// The live db, or `NotServing` once `close()` has released it.
-    fn db(&self) -> Result<Arc<sled::Db>> {
+    /// The live db, or an error once `close()` has released it.
+    fn db(&self) -> std::io::Result<Arc<sled::Db>> {
         self.db
             .load_full()
-            .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
+            .ok_or_else(|| std::io::Error::other("state machine stopped"))
     }
 
-    pub(super) fn persist_last_snapshot_metadata_with_tree(
+    pub(crate) fn update_last_applied(
         &self,
-        tree: sled::Tree,
-        last_snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        let config = config::standard();
-        let v = bincode::serde::encode_to_vec(last_snapshot_metadata, config)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        last_applied: LogId,
+    ) {
+        debug!(%self.node_id, ?last_applied, "update_last_applied");
+        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
+        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
+    }
 
-        tree.insert(LAST_SNAPSHOT_METADATA_KEY, v)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        info!("persist_last_snapshot_metadata_with_tree successfully!");
+    pub(crate) fn persist_last_applied(
+        &self,
+        last_applied: LogId,
+    ) -> std::io::Result<()> {
+        debug!(%self.node_id, ?last_applied, "persist_last_applied");
+        let db = self.db()?;
+        let tree = db.open_tree(STATE_MACHINE_META_NAMESPACE).map_err(std::io::Error::other)?;
+        write_last_applied(&tree, last_applied)?;
 
-        tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        tree.flush().map_err(std::io::Error::other)?;
         Ok(())
     }
+
+    pub(crate) fn save_hard_state(&self) -> std::io::Result<()> {
+        let last_applied = self.last_applied();
+        self.persist_last_applied(last_applied)?;
+
+        self.flush()?;
+        Ok(())
+    }
+
+    pub(crate) fn flush(&self) -> std::io::Result<()> {
+        let db = self.db()?;
+        let bytes = db.flush().map_err(std::io::Error::other)?;
+        info!(
+            "Successfully flushed State Machine, bytes flushed: {}",
+            bytes
+        );
+        Ok(())
+    }
+}
+
+/// Writes the position into the metadata tree, without flushing.
+fn write_last_applied(
+    tree: &sled::Tree,
+    last_applied: LogId,
+) -> std::io::Result<()> {
+    tree.insert(
+        STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
+        safe_kv(last_applied.index),
+    )
+    .map_err(std::io::Error::other)?;
+    tree.insert(
+        STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
+        safe_kv(last_applied.term),
+    )
+    .map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 /// Recursively copies `src` into `dst`, creating `dst` if needed. Fallback for
@@ -748,9 +571,8 @@ fn copy_dir_recursive(
 fn new_tree(
     db: &sled::Db,
     key: &str,
-) -> Result<sled::Tree> {
-    db.open_tree(key)
-        .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")).into())
+) -> std::io::Result<sled::Tree> {
+    db.open_tree(key).map_err(std::io::Error::other)
 }
 
 pub fn init_sled_state_machine_db(

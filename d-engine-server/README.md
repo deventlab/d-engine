@@ -135,7 +135,7 @@ Simple file-based storage for development and small deployments.
 use d_engine_server::{FileStorageEngine, FileStateMachine};
 
 let storage = Arc::new(FileStorageEngine::new("./logs")?);
-let sm = Arc::new(FileStateMachine::new("./sm").await?);
+let sm = FileStateMachine::new("./sm").await?;
 ```
 
 ### RocksDB Storage (Production)
@@ -152,7 +152,6 @@ use d_engine_server::RocksDBUnifiedEngine;
 
 let (storage, sm) = RocksDBUnifiedEngine::open("./data/db")?;
 let storage = Arc::new(storage);
-let sm = Arc::new(sm);
 ```
 
 ---

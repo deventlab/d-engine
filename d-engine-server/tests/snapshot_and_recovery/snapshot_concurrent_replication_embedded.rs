@@ -109,7 +109,7 @@ retained_log_entries = {}
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             Some(&config_path),
         )
         .await?;
@@ -205,7 +205,7 @@ retained_log_entries = {}
     let learner_engine = DefaultEmbeddedEngine::start_custom(
         &learner_db_path,
         Arc::new(learner_storage),
-        Arc::new(learner_sm),
+        learner_sm,
         Some(&learner_config_path),
     )
     .await?;

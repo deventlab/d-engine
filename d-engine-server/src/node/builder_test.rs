@@ -63,7 +63,7 @@ async fn test_set_raft_log_replaces_default() {
     insert_raft_log(&buffered_raft_log, expected_raft_log_ids.clone(), 1).await;
 
     let mock_state_machine =
-        Arc::new(FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap());
+        FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap();
 
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&mock_state_machine, expected_state_machine_ids.clone(), 1).await;
@@ -81,10 +81,16 @@ async fn test_set_raft_log_replaces_default() {
         builder.storage_engine.as_ref().unwrap().log_store().last_index(),
         expected_raft_log_ids[1]
     );
-    assert_eq!(
-        builder.state_machine.as_ref().unwrap().len(),
-        expected_state_machine_ids.len()
-    );
+    // Verify the builder kept the customized state machine: every pre-inserted entry is readable
+    let state_machine = builder.state_machine.as_ref().unwrap();
+    for id in &expected_state_machine_ids {
+        let key = id.to_be_bytes();
+        assert_eq!(
+            state_machine.get(&key).unwrap(),
+            Some(bytes::Bytes::from(key.to_vec())),
+            "pre-inserted entry {id} missing from the builder's state machine"
+        );
+    }
 }
 
 #[tokio::test]
@@ -102,7 +108,7 @@ async fn test_build_creates_node() {
         temp_dir.path().to_str().unwrap(),
         shutdown_rx,
     )
-    .state_machine(Arc::new(file_sm))
+    .state_machine(file_sm)
     .storage_engine(Arc::new(MockStorageEngine::new()))
     .build()
     .await
@@ -110,6 +116,52 @@ async fn test_build_creates_node() {
 
     // Verify that the node instance is generated
     assert!(builder.node.is_some());
+}
+
+/// A node that stopped between installing a snapshot and purging its log restarts with the state
+/// machine at the snapshot boundary (9, 4) and a log that still holds entries 1..=9 from term 2,
+/// a history the cluster dropped. `build()` must repair the log before the node starts: the
+/// first conflicting entry from the leader would otherwise be refused as a rewrite of committed
+/// history, and the node would stop on every restart.
+#[tokio::test]
+#[traced_test]
+async fn test_build_purges_a_raft_log_that_disagrees_with_the_state_machine() {
+    let temp_dir = tempdir().unwrap();
+    let storage_engine =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage_engine")).unwrap());
+
+    let raft_log = RaftLogCore::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
+        1,
+        storage_engine.clone(),
+        None,
+        5000,
+    );
+    insert_raft_log(&raft_log, (1..=9).collect(), 2).await;
+    let file_sm = FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap();
+    insert_state_machine(&file_sm, (1..=9).collect(), 4).await;
+
+    assert!(
+        storage_engine.log_store().entry(9).await.unwrap().is_some(),
+        "the log must hold the stale entry before the node is built"
+    );
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    NodeBuilder::<FileStorageEngine, FileStateMachine>::new_from_db_path(
+        temp_dir.path().join("db_path").to_str().unwrap(),
+        shutdown_rx,
+    )
+    .state_machine(file_sm)
+    .storage_engine(storage_engine.clone())
+    .build()
+    .await
+    .expect("build should succeed");
+
+    for index in 1..=9 {
+        assert!(
+            storage_engine.log_store().entry(index).await.unwrap().is_none(),
+            "entry {index} of the dropped history must be purged by build()"
+        );
+    }
 }
 
 #[tokio::test]
@@ -123,6 +175,37 @@ async fn test_start_fails_without_components() {
     // start() should fail if storage_engine or state_machine not set
     let result = builder.start().await;
     assert!(result.is_err());
+}
+
+/// A node whose RPC port is already taken must fail to start, not start without its RPC server.
+///
+/// Scenario: a node restarts while another process holds its listen port. If `start()` still
+/// returned `Ok`, the node would run without an RPC server: the leader could never reach it, so it
+/// would never catch up, while its owner believes it is a healthy cluster member.
+#[tokio::test]
+async fn test_start_fails_when_listen_address_is_taken() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let temp_dir = tempdir().unwrap();
+
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    config.cluster.listen_address = taken.local_addr().unwrap();
+
+    let file_sm = FileStateMachine::new(temp_dir.path().join("sm")).await.expect("create file sm");
+    let result = NodeBuilder::<MockStorageEngine, FileStateMachine>::from_node_config(
+        temp_dir.path().to_str().unwrap(),
+        config,
+        shutdown_rx,
+    )
+    .state_machine(file_sm)
+    .storage_engine(Arc::new(MockStorageEngine::new()))
+    .start()
+    .await;
+
+    assert!(
+        result.is_err(),
+        "start() must fail when the RPC listen address is already in use"
+    );
 }
 
 // Test helper function: create a temporary configuration file

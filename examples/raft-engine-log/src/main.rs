@@ -14,7 +14,7 @@ use raft_engine_log::{RaftEngineOptions, RaftEngineStorage};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-type Engine = EmbeddedEngine<RaftEngineStorage, RocksDBStateMachine>;
+type Engine = EmbeddedEngine;
 
 #[derive(Debug, Deserialize)]
 struct PutRequest {
@@ -67,8 +67,7 @@ async fn main() {
         RaftEngineStorage::open_with(format!("{}/log", cli.data_dir), &options)
             .expect("open log"),
     );
-    let sm =
-        Arc::new(RocksDBStateMachine::new(format!("{}/state", cli.data_dir)).expect("open state"));
+    let sm = RocksDBStateMachine::new(format!("{}/state", cli.data_dir)).expect("open state");
 
     let engine = Arc::new(
         Engine::start_custom(&cli.data_dir, storage, sm, Some(cli.config_path.as_str()))

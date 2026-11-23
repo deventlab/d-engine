@@ -73,7 +73,7 @@ async fn setup_standalone_cluster()
         tokio::fs::create_dir_all(&sm_path).await?;
 
         let storage = Arc::new(FileStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(FileStateMachine::new(sm_path).await?);
+        let state_machine = FileStateMachine::new(sm_path).await?;
 
         // Start node
         let (graceful_tx, node_handle) =

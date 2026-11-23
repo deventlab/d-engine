@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use d_engine_core::Error;
 use d_engine_core::MockStateMachine;
 use d_engine_core::ReadLease;
 use d_engine_core::config::ReadConsistencyPolicy;
@@ -14,14 +13,12 @@ use crate::read_actor::ReadCmd;
 use crate::read_actor::run_read_actor;
 
 fn make_sm_running() -> MockStateMachine {
-    let mut sm = MockStateMachine::new();
-    sm.expect_is_running().returning(|| true);
-    sm
+    MockStateMachine::new()
 }
 
-fn make_sm_stopped() -> MockStateMachine {
+fn make_sm_unavailable() -> MockStateMachine {
     let mut sm = MockStateMachine::new();
-    sm.expect_is_running().returning(|| false);
+    sm.expect_get_multi().returning(|_| Err(std::io::Error::other("stopped")));
     sm
 }
 
@@ -146,10 +143,11 @@ async fn test_read_actor_eventual_multi_key_returns_ordered_values() {
     handle.await.unwrap();
 }
 
-/// Eventual read fails when SM is stopped
+/// An eventual read is answered with the state machine's own error when the SM cannot serve it.
+/// There is no other place to read from, so it is not turned into a "try elsewhere" answer.
 #[tokio::test]
-async fn test_read_actor_eventual_sm_stopped_returns_error() {
-    let sm = make_sm_stopped();
+async fn test_read_actor_eventual_sm_not_serving_returns_the_sm_error() {
+    let sm = make_sm_unavailable();
     let (tx, rx) = mpsc::channel(8);
     let handle = tokio::spawn(run_read_actor(rx, valid_lease(), Arc::new(sm), 64));
 
@@ -157,7 +155,7 @@ async fn test_read_actor_eventual_sm_stopped_returns_error() {
     drop(tx);
 
     let err = reply_rx.await.unwrap().unwrap_err();
-    assert!(matches!(err, ReadActorError::SmStopped));
+    assert!(matches!(err, ReadActorError::SmError(_)), "got: {err:?}");
     handle.await.unwrap();
 }
 
@@ -211,10 +209,11 @@ async fn test_read_actor_lease_expired_returns_lease_invalid() {
     handle.await.unwrap();
 }
 
-/// LeaseRead returns LeaseInvalid when SM is stopped (even if lease is valid)
+/// A lease read with a valid lease is answered with the state machine's own error when the SM
+/// cannot serve it; only an invalid lease sends the read to the Raft path.
 #[tokio::test]
-async fn test_read_actor_lease_valid_but_sm_stopped_returns_error() {
-    let sm = make_sm_stopped();
+async fn test_read_actor_lease_valid_but_sm_not_serving_returns_the_sm_error() {
+    let sm = make_sm_unavailable();
     let (tx, rx) = mpsc::channel(8);
     let handle = tokio::spawn(run_read_actor(rx, valid_lease(), Arc::new(sm), 64));
 
@@ -222,7 +221,7 @@ async fn test_read_actor_lease_valid_but_sm_stopped_returns_error() {
     drop(tx);
 
     let err = reply_rx.await.unwrap().unwrap_err();
-    assert!(matches!(err, ReadActorError::LeaseInvalid));
+    assert!(matches!(err, ReadActorError::SmError(_)), "got: {err:?}");
     handle.await.unwrap();
 }
 
@@ -285,7 +284,7 @@ async fn test_read_actor_eventual_multi_key_uses_get_multi() {
 #[tokio::test]
 async fn test_read_actor_sm_get_multi_error_returns_sm_error() {
     let mut sm = make_sm_running();
-    sm.expect_get_multi().returning(|_| Err(Error::Fatal("disk failure".into())));
+    sm.expect_get_multi().returning(|_| Err(std::io::Error::other("disk failure")));
 
     let (tx, rx) = mpsc::channel(8);
     let handle = tokio::spawn(run_read_actor(rx, valid_lease(), Arc::new(sm), 64));

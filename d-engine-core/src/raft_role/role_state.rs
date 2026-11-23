@@ -44,13 +44,13 @@ use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
 use crate::SnapshotApplyResult;
+use crate::SnapshotError;
 use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::client::ClientReadRequest;
 use crate::client::ClientResponse;
-use crate::client::KvEntry;
 use crate::client::LeaderHint;
 use crate::event::ClientCmd;
 use crate::scoped_timer::ScopedTimer;
@@ -520,12 +520,9 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
     ) {
         // Read directly from local state machine without any consistency checks
-        let results: Vec<KvEntry> = ctx
-            .state_machine_handler()
-            .read_from_state_machine(req.keys)
-            .unwrap_or_default();
-
-        let response = ClientResponse::read_results(results);
+        let response = ClientResponse::from_read(
+            ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+        );
         let _ = sender.send(Ok(response));
     }
 
@@ -903,7 +900,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         // Recorded once per stream, on its first chunk; a very long transfer outlives the window.
         self.record_leader_contact();
 
-        self.commit_hard_state(
+        let is_new_leader = self.commit_hard_state(
             ctx,
             term_update,
             Some(VotedFor {
@@ -913,6 +910,21 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             }),
         )?;
         self.shared_state().set_current_leader(first_chunk.leader_id);
+
+        // The first chunk has proved that this leader is legitimate and its vote is on disk,
+        // whether or not the install that follows succeeds.
+        if is_new_leader {
+            internal_event_tx
+                .send(InternalEvent::LeaderDiscovered(
+                    first_chunk.leader_id,
+                    first_chunk.leader_term,
+                ))
+                .map_err(|e| {
+                    error!("Failed to send LeaderDiscovered: {e:?}");
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
+        }
+
         let my_term = first_chunk.leader_term.max(my_term);
 
         // ack_tx drained in background — push mode never reads it, avoids backpressure (#308).
@@ -944,6 +956,27 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 return Ok(());
             }
         };
+
+        // The local log may disagree with the snapshot at its boundary: the local entry there has
+        // another term, so the local log diverged from the leader's at or before that index and
+        // every local entry after it is on a branch that can never be committed. Drop those
+        // entries, durably, before installing, so a crash in between leaves a node that is only
+        // behind. If the conflicting local entry is already committed, two different entries are
+        // committed at one index: safety is already broken, so stop instead of repairing it.
+        if let Some(boundary) = prepared.metadata.last_included
+            && let Some(local_term) = ctx.raft_log().entry_term(boundary.index)
+            && local_term != boundary.term
+        {
+            if boundary.index <= self.commit_index() {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: boundary.index,
+                    local_term,
+                    incoming_term: boundary.term,
+                }
+                .into());
+            }
+            ctx.raft_log().truncate_from(boundary.index + 1).await?;
+        }
 
         // Sole write path: hand the received snapshot to the Worker, await the result.
         let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;

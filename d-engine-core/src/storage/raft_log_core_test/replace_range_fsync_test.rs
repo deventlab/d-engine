@@ -44,7 +44,7 @@ async fn test_replace_range_becomes_durable_without_a_following_append() {
     // call afterward.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(1, 1, vec![entry(2, 2), entry(3, 2), entry(4, 2)])
+        .filter_out_conflicts_and_append(1, 1, vec![entry(2, 2), entry(3, 2), entry(4, 2)], 0)
         .await
         .unwrap();
     assert_eq!(result.unwrap().index, 4);

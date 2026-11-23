@@ -793,7 +793,7 @@ async fn test_handle_append_entries_steps_down_to_follower() {
 
     assert!(matches!(
         internal_event_rx.try_recv(),
-        Ok(InternalEvent::BecomeFollower(None))
+        Ok(InternalEvent::BecomeFollower(Some(5)))
     ));
     assert!(matches!(
         internal_event_rx.try_recv().unwrap(),
@@ -1038,7 +1038,7 @@ async fn test_handle_append_entries_same_term_log_conflict_steps_down() {
     assert!(
         matches!(
             internal_event_rx.try_recv(),
-            Ok(InternalEvent::BecomeFollower(None))
+            Ok(InternalEvent::BecomeFollower(Some(5)))
         ),
         "Candidate must step down when receiving AppendEntries with term >= currentTerm (Raft §5.2)"
     );
@@ -1120,7 +1120,7 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
     assert!(
         matches!(
             internal_event_rx.try_recv(),
-            Ok(InternalEvent::BecomeFollower(None))
+            Ok(InternalEvent::BecomeFollower(Some(5)))
         ),
         "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
     );
@@ -1217,7 +1217,7 @@ async fn test_handle_append_entries_higher_term_persists_hard_state_before_stepp
     assert!(
         matches!(
             internal_event_rx.lock().unwrap().try_recv(),
-            Ok(InternalEvent::BecomeFollower(None))
+            Ok(InternalEvent::BecomeFollower(Some(5)))
         ),
         "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
     );
@@ -1287,7 +1287,7 @@ fn test_send_become_follower_and_replay_events() {
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
 
-    assert!(state.send_become_follower_event(&internal_event_tx).is_ok());
+    assert!(state.send_become_follower_event(None, &internal_event_tx).is_ok());
     assert!(
         state
             .send_replay_inbound_event(
@@ -1315,32 +1315,133 @@ fn test_send_become_follower_and_replay_events() {
     ));
 }
 
-/// Test: InstallSnapshotChunk returns PermissionDenied
+/// A Candidate that receives a snapshot from a legitimate leader must step down to Follower.
 ///
-/// Original: test_handle_inbound_event_case7
+/// Scenario: a node restarts after being offline so long that the leader has purged the log it
+/// needs. The leader sends it a snapshot and no AppendEntries, so the node hears no heartbeat,
+/// its election timer fires and it becomes a Candidate. When the snapshot then arrives from the
+/// leader of its own term, the node must accept the leader and become a Follower. If it refuses
+/// instead, it stays a Candidate (only a leader's message can end that), the leader backs off
+/// exponentially after every refused push, and the node does not catch up for tens of seconds.
+///
+/// Expected: the event is handled without a role-violation error, the node is told to become a
+/// Follower, and the leader does not receive `PermissionDenied`.
 #[tokio::test]
-async fn test_handle_install_snapshot_returns_permission_denied() {
+async fn test_candidate_steps_down_for_install_snapshot_from_legitimate_leader() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_install_snapshot", graceful_rx, None);
+    let mut context =
+        mock_raft_context("/tmp/test_candidate_snapshot_step_down", graceful_rx, None);
+
+    // Whether the snapshot is applied here or by the Follower after the step-down is not the
+    // point of this test, so a call to the state machine handler is tolerated, not required.
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().times(0..=1).returning(
+        |_first_chunk, _remaining, _ack_tx, _config| {
+            Err(Error::Fatal(
+                "snapshot content is not the subject of this test".into(),
+            ))
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let term = 2;
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().update_current_term(term);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (tx, rx) = mpsc::channel(32);
-    tx.send(create_test_chunk(0, b"chunk0", 1, 1, 2)).await.unwrap();
+    tx.send(create_test_chunk(0, b"chunk0", term, 2, 1)).await.unwrap();
     drop(tx);
-    let inbound_event = InboundEvent::InstallSnapshotChunk(rx, resp_tx);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     let result = state
-        .handle_inbound_event(inbound_event, &context, mpsc::unbounded_channel().0)
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
         .await;
 
-    assert!(result.is_err(), "Expected error");
-    let response = resp_rx.recv().await.expect("Response should be received");
-    assert!(response.is_err(), "Expected error response");
-    let status = response.unwrap_err();
+    assert!(
+        result.is_ok(),
+        "a snapshot from the leader of the Candidate's own term is not a role violation: {result:?}"
+    );
 
-    assert_eq!(status.code(), Code::PermissionDenied);
-    assert_eq!(status.message(), "Not Follower or Learner.");
+    let mut became_follower = false;
+    while let Ok(event) = internal_event_rx.try_recv() {
+        if matches!(event, InternalEvent::BecomeFollower(_)) {
+            became_follower = true;
+        }
+    }
+    assert!(
+        became_follower,
+        "the Candidate must step down to Follower for a legitimate leader's snapshot"
+    );
+
+    // A reply is optional here (the Follower may answer after the step-down), but a denial is not.
+    if let Ok(Ok(Err(status))) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), resp_rx.recv()).await
+    {
+        assert_ne!(
+            status.code(),
+            Code::PermissionDenied,
+            "the leader must not be told that its snapshot is refused because of the node's role"
+        );
+    }
+}
+
+/// A snapshot pushed by a stale leader (term below the Candidate's own) must not be installed and
+/// must not change the Candidate's term.
+///
+/// The Candidate does not read the stream: the leader's term is in the first chunk, and the stream
+/// must reach the Follower untouched. So it steps down and replays the event unchanged; the
+/// Follower then rejects the stale snapshot (covered by
+/// `test_follower_rejects_install_snapshot_from_stale_leader_term`). This guards the Candidate's
+/// half: nothing is installed and the term stays, so a deposed leader can neither overwrite the
+/// state machine nor move the term.
+#[tokio::test]
+async fn test_candidate_hands_stale_install_snapshot_to_follower_without_installing() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_candidate_snapshot_stale", graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().never();
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let own_term = 5;
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().update_current_term(own_term);
+
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(create_test_chunk(0, b"chunk0", own_term - 1, 2, 1)).await.unwrap();
+    drop(tx);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .expect("handing the event to the Follower is not an error");
+
+    let mut replayed = false;
+    while let Ok(event) = internal_event_rx.try_recv() {
+        if let InternalEvent::ReprocessEvent(event) = event {
+            replayed = matches!(*event, InboundEvent::InstallSnapshotChunk(_, _));
+        }
+    }
+    assert!(
+        replayed,
+        "the snapshot event must be replayed unchanged, so the Follower can check the term"
+    );
+    assert_eq!(
+        state.current_term(),
+        own_term,
+        "a stale leader's snapshot must not change the Candidate's term"
+    );
 }
 
 /// Test: DiscoverLeader returns PermissionDenied
@@ -1526,7 +1627,7 @@ mod handle_client_read_request {
         state_machine_handler
             .expect_read_from_state_machine()
             .times(1)
-            .returning(|_| Some(vec![]));
+            .returning(|_| Ok(vec![]));
         context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2176,7 +2277,6 @@ async fn candidate_with_unapplied_range(
     let temp_dir = tempfile::tempdir().unwrap();
     let nc = node_config(temp_dir.path().to_str().unwrap());
     let mut state_machine = crate::MockStateMachine::new();
-    state_machine.expect_is_running().returning(|| true);
     state_machine.expect_last_applied().return_const(d_engine_proto::common::LogId {
         index: applied,
         term: 1,
@@ -2512,7 +2612,6 @@ async fn test_candidate_tick_does_not_campaign_when_the_unapplied_range_cannot_b
     let temp_dir = tempfile::tempdir().unwrap();
     let nc = node_config(temp_dir.path().to_str().unwrap());
     let mut state_machine = crate::MockStateMachine::new();
-    state_machine.expect_is_running().returning(|| true);
     state_machine
         .expect_last_applied()
         .return_const(d_engine_proto::common::LogId { index: 5, term: 1 });

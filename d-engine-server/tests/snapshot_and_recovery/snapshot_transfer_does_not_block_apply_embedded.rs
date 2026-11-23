@@ -21,6 +21,7 @@ use d_engine_server::install_snapshot_transfer_gate;
 use serial_test::serial;
 use tracing::info;
 
+use crate::common::SharedStateMachine;
 use crate::common::get_available_ports;
 
 /// Deterministic, incompressible payload so the snapshot does not shrink under gzip —
@@ -166,7 +167,7 @@ push_queue_size = 1
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            sm,
+            SharedStateMachine::new(sm),
             Some(config_path.to_str().unwrap()),
         )
         .await?;
@@ -295,7 +296,7 @@ push_queue_size = 1
     let learner_engine = DefaultEmbeddedEngine::start_custom(
         &learner_db_path,
         Arc::new(learner_storage),
-        Arc::<RocksDBStateMachine>::clone(&learner_sm),
+        SharedStateMachine::new(Arc::<RocksDBStateMachine>::clone(&learner_sm)),
         Some(learner_config_path.to_str().unwrap()),
     )
     .await?;

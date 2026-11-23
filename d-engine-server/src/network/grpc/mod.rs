@@ -19,7 +19,6 @@ mod grpc_raft_service_fast_path_test;
 #[cfg(test)]
 mod grpc_transport_test;
 
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,7 +54,7 @@ use crate::Node;
 /// Request The server itself knows its peers.
 pub(crate) async fn start_rpc_server<T>(
     node: Arc<Node<T>>,
-    listen_address: SocketAddr,
+    incoming: tonic::transport::server::TcpIncoming,
     config: RaftNodeConfig,
     mut shutdown_signal: watch::Receiver<()>,
 ) -> Result<()>
@@ -89,9 +88,7 @@ where
         )))
         // Data-plane parameters for stream performance
         .initial_stream_window_size(server_config.initial_stream_window_size)
-        .initial_connection_window_size(server_config.initial_connection_window_size)
-        // Common TCP parameters
-        .tcp_nodelay(config.network.tcp_nodelay);
+        .initial_connection_window_size(server_config.initial_connection_window_size);
 
     if config.tls.enable_tls {
         if config.tls.generate_self_signed_certificates {
@@ -186,11 +183,10 @@ where
                 server
             }
         })
-        .serve_with_shutdown(
-            // SocketAddr::from_str(&listen_address).map_err(|e| Error::AddrParseError(e))?,
-            listen_address,
+        .serve_with_incoming_shutdown(
+            incoming,
             shutdown_signal.changed().map(|_s| {
-                info!("Stopping RPC server. {}", listen_address);
+                info!("Stopping RPC server. {}", config.cluster.listen_address);
             }),
         )
         .await

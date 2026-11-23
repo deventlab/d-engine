@@ -66,6 +66,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     term: 1,
                     payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
                 }],
+                0,
             )
             .await
             .unwrap();
@@ -136,6 +137,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     term: 1,
                     payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
                 }],
+                0,
             )
             .await
             .unwrap();

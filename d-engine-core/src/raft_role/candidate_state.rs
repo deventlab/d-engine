@@ -191,7 +191,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 higher_term,
             )))) => {
                 self.commit_hard_state(ctx, Some(higher_term), None)?;
-                self.send_become_follower_event(internal_event_tx)?;
+                self.send_become_follower_event(None, internal_event_tx)?;
                 return Ok(());
             }
             Err(e) => {
@@ -237,7 +237,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             )))) => {
                 self.commit_hard_state(ctx, Some(higher_term), None)?;
 
-                self.send_become_follower_event(internal_event_tx)?;
+                self.send_become_follower_event(None, internal_event_tx)?;
             }
             Err(e) => {
                 info!("candidate broadcast_vote_requests with error: {:?}", e);
@@ -308,7 +308,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     )
                 {
                     self.commit_hard_state(ctx, Some(vote_request.term), None)?;
-                    self.send_become_follower_event(&internal_event_tx)?;
+                    self.send_become_follower_event(None, &internal_event_tx)?;
 
                     info!(
                         "Candidate will not process ReceiveVoteRequest, it should let Follower do it."
@@ -415,7 +415,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         self.commit_hard_state(ctx, Some(append_entries_request.term), None)?;
                     }
                     // Step down as Follower
-                    self.send_become_follower_event(&internal_event_tx)?;
+                    self.send_become_follower_event(
+                        Some(append_entries_request.leader_id),
+                        &internal_event_tx,
+                    )?;
 
                     info!(
                         "Candidate will not process AppendEntries request, it should let Follower do it."
@@ -445,23 +448,17 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
             }
 
-            InboundEvent::InstallSnapshotChunk(_streaming, sender) => {
-                sender
-                    .send(Err(Status::permission_denied("Not Follower or Learner.")))
-                    .map_err(|e| {
-                        error!("Failed to send: {:?}", e);
-                        NetworkError::SingalSendFailed(format!("{:?}", e))
-                    })?;
+            InboundEvent::InstallSnapshotChunk(streaming, sender) => {
+                // The leader's term is in the first chunk, and the stream must reach the
+                // Follower untouched. Step down and let the Follower check the term: it rejects
+                // a stale leader's snapshot without installing it or changing the term.
+                self.send_become_follower_event(None, &internal_event_tx)?;
 
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Follower or Learner",
-                    context: format!(
-                        "Candidate node {} receives InboundEvent::InstallSnapshotChunk",
-                        ctx.node_id
-                    ),
-                }
-                .into());
+                info!("Candidate will not process a snapshot push, it should let Follower do it.");
+                self.send_replay_inbound_event(
+                    &internal_event_tx,
+                    InboundEvent::InstallSnapshotChunk(streaming, sender),
+                )?;
             }
 
             InboundEvent::JoinCluster(_join_request, sender) => {
@@ -541,9 +538,10 @@ impl<T: TypeConfig> CandidateState<T> {
 
     pub fn send_become_follower_event(
         &self,
+        leader_id: Option<u32>,
         internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
-        internal_event_tx.send(InternalEvent::BecomeFollower(None)).map_err(|e| {
+        internal_event_tx.send(InternalEvent::BecomeFollower(leader_id)).map_err(|e| {
             error!("Failed to send: {:?}", e);
             NetworkError::SingalSendFailed(format!("{:?}", e)).into()
         })

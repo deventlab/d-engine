@@ -166,22 +166,13 @@ pub use d_engine_core::Result;
 pub use d_engine_core::ScanResult;
 /// Client-facing prefix scan result, returned by `EmbeddedClient::scan_prefix()`.
 pub use d_engine_core::ScanResults;
-/// Outcome of installing a snapshot via [`StateMachine::apply_snapshot_from_file`].
-///
-/// Distinguishes "the install actually ran" (`Applied`) from two no-op cases that are not
-/// errors: the incoming snapshot is behind what's already applied (`IgnoredStale`), or is an
-/// idempotent retry of the currently-applied boundary (`IgnoredDuplicate`). A genuine problem
-/// (checksum mismatch, corrupted data, conflicting boundary) should be returned as `Err`, not
-/// encoded as a variant here.
-pub use d_engine_core::SnapshotApplyResult;
-/// Snapshot-specific error type. Construct these in
-/// [`StateMachine::apply_snapshot_from_file`] (e.g. `SnapshotError::ChecksumMismatch`) to
-/// report a genuine install failure — the no-op cases are already covered by
-/// [`SnapshotApplyResult`], not this type.
+/// Snapshot-specific error type (internal to the engine).
 pub use d_engine_core::SnapshotError;
-/// Storage trait for implementing custom storage backends
+/// Your application's data, kept identical on every node.
 ///
-/// Implement this trait to create your own storage engine.
+/// d-engine hands each committed write to `apply_chunk`, in the same order on every node, and
+/// answers reads through `get`. Implement this trait to store the data in your own database
+/// instead of the built-in file or RocksDB state machines.
 pub use d_engine_core::StateMachine;
 /// Storage trait for implementing custom storage backends
 ///
