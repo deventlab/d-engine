@@ -1103,19 +1103,27 @@ where
         &self,
         applied: LogId,
     ) -> Result<()> {
+        let purged_index = self.last_purged_index.load(Ordering::Acquire);
+        let purged_term = self.last_purged_term.load(Ordering::Acquire);
+
+        // Entries up to the purge boundary exist only in the state machine. A state machine that
+        // reports less, including one that reports nothing applied, has lost them, and no other
+        // copy is left on this node.
+        if applied.index < purged_index {
+            return Err(Error::Fatal(format!(
+                "state machine reports applied index {} but the log was purged up to {}: the \
+                 state machine did not persist its position, or its data was lost. If this \
+                 node's data was lost, delete its raft log directory so it rejoins from a \
+                 snapshot",
+                applied.index, purged_index
+            )));
+        }
+
         // Nothing has been applied, or the term of the applied entry is unknown.
         if applied.index == 0 || applied.term == 0 {
             return Ok(());
         }
 
-        let purged_index = self.last_purged_index.load(Ordering::Acquire);
-        let purged_term = self.last_purged_term.load(Ordering::Acquire);
-        if applied.index < purged_index {
-            return Err(Error::Fatal(format!(
-                "state machine applied index {} is behind the log purge boundary {}",
-                applied.index, purged_index
-            )));
-        }
         if applied.index == purged_index {
             if applied.term != purged_term {
                 return Err(Error::Fatal(format!(

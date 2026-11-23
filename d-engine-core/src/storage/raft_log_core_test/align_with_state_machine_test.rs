@@ -183,3 +183,45 @@ async fn test_align_fails_when_the_purge_boundary_disagrees_with_the_state_machi
     );
     assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(12, 2)));
 }
+
+/// The log was purged through (100, 5), and the state machine reports nothing applied: it did not
+/// persist its position, or its data was lost. Entries 1..=100 exist nowhere on this node, so
+/// startup fails, and the error tells the operator what to do. The log is not touched.
+#[tokio::test]
+async fn test_align_fails_when_nothing_is_applied_but_the_log_is_purged() {
+    let ctx = RaftLogCoreTestContext::new("align_nothing_applied_log_purged");
+    ctx.append_entries(1, 120, 5).await;
+    ctx.raft_log.purge_logs_up_to(log_id(100, 5)).await.unwrap();
+
+    let err = ctx
+        .raft_log
+        .align_with_state_machine(log_id(0, 0))
+        .await
+        .expect_err("an empty state machine behind a purged log must stop startup");
+
+    assert!(err.is_fatal(), "expected a fatal error, got {err:?}");
+    assert!(
+        format!("{err:?}").contains("raft log directory"),
+        "the error must say what to do: {err:?}"
+    );
+    assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(120, 5)));
+    assert_eq!(ctx.raft_log.entry_term(100), Some(5));
+}
+
+/// An applied position whose term is unknown is skipped only when it cannot be behind the purge
+/// boundary. Index 50 is behind a boundary at 100 whatever its term, so startup still fails.
+#[tokio::test]
+async fn test_align_fails_when_an_applied_position_without_a_term_is_behind_the_purge_boundary() {
+    let ctx = RaftLogCoreTestContext::new("align_no_term_behind_boundary");
+    ctx.append_entries(1, 120, 5).await;
+    ctx.raft_log.purge_logs_up_to(log_id(100, 5)).await.unwrap();
+
+    let err = ctx
+        .raft_log
+        .align_with_state_machine(log_id(50, 0))
+        .await
+        .expect_err("a position behind the purge boundary must stop startup");
+
+    assert!(err.is_fatal(), "expected a fatal error, got {err:?}");
+    assert_eq!(ctx.raft_log.last_log_id(), Some(log_id(120, 5)));
+}
