@@ -20,18 +20,18 @@
 
 The trait went from 17 methods to 8, and the engine now owns snapshots. Go through this list.
 
-| If you have | Do this |
-| --- | --- |
-| `start`, `is_running`, `len`, `is_empty`, `reset`, `entry_term`, `lease_background_cleanup` | Delete. Do `start`'s setup in your constructor. Keep `len` as a plain method if you need it. |
-| `stop`, `close_storage` | Delete `stop`. Rename `close_storage` to `close`. |
-| `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async` | Delete. The engine never called them. |
-| `snapshot_metadata`, `persist_last_snapshot_metadata` | Delete. The engine records the snapshots it holds. |
-| Methods that return `d_engine::Error` | Return `std::io::Result` (see Errors below). |
-| `generate_snapshot_data(dir, last_included)` | Drop `last_included`. Return the position of the last entry the exported data contains. |
-| A snapshot checksum, or stale / duplicate / conflict checks in `apply_snapshot_from_file` | Delete. The engine does them and calls you only for a newer snapshot. |
-| `Arc<MyStateMachine>` passed to the engine | Pass `MyStateMachine` by value. |
+| If you have                                                                                                               | Do this                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `start`, `is_running`, `len`, `is_empty`, `reset`, `entry_term`, `lease_background_cleanup`                               | Delete. Do `start`'s setup in your constructor. Keep `len` as a plain method if you need it. |
+| `stop`, `close_storage`                                                                                                   | Delete `stop`. Rename `close_storage` to `close`.                                            |
+| `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async` | Delete. The engine never called them.                                                        |
+| `snapshot_metadata`, `persist_last_snapshot_metadata`                                                                     | Delete. The engine records the snapshots it holds.                                           |
+| Methods that return `d_engine::Error`                                                                                     | Return `std::io::Result` (see Errors below).                                                 |
+| `generate_snapshot_data(dir, last_included)`                                                                              | Drop `last_included`. Return the position of the last entry the exported data contains.      |
+| A snapshot checksum, or stale / duplicate / conflict checks in `apply_snapshot_from_file`                                 | Delete. The engine does them and calls you only for a newer snapshot.                        |
+| `Arc<MyStateMachine>` passed to the engine                                                                                | Pass `MyStateMachine` by value.                                                              |
 
-**Errors.** Every method returns `std::io::Result`. You no longer build `d_engine::Error` or `StorageError`. `?` works on an `io::Error` as is; convert any other error with `io::Error::other`:
+**Errors.** Every method except `last_applied()`, which returns a `LogId` and cannot fail, returns `std::io::Result`. You no longer build `d_engine::Error` or `StorageError`. `?` works on an `io::Error` as is; convert any other error with `io::Error::other`:
 
 ```rust
 // before

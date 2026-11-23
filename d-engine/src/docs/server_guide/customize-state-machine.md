@@ -91,6 +91,9 @@ impl StateMachine for CustomStateMachine {
             };
             results.push(result);
         }
+        // Persist `last_applied` (the index of the last entry of `chunk`) together with the
+        // writes above, in the same transaction. If it is written separately, a crash between
+        // the two leaves a position older than the data, and the engine applies entries twice.
         Ok(results)
     }
 
