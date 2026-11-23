@@ -1175,6 +1175,57 @@ mod check_cluster_is_ready_test {
         );
     }
 
+    /// Shutdown during startup drops the readiness check before it finishes, and the check cannot
+    /// abort the peer checks it started: dropping a Tokio task handle only detaches the task. A
+    /// detached check goes on retrying for the whole retry budget, which can be hours.
+    ///
+    /// Both peers accept the connection and never answer. Once the check is cancelled the peer
+    /// connections must be closed, which only happens when the tasks holding them are gone.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_stops_peer_checks_when_it_is_cancelled() {
+        use tokio::io::AsyncReadExt;
+
+        let mut config = quick_failing_config();
+        // A peer check that is left running holds its connection this long: the peer accepts the
+        // connection and never answers the health request.
+        config.retry.membership.timeout_ms = 30_000;
+        config.network.control.connect_timeout_in_ms = 30_000;
+        config.network.control.request_timeout_in_ms = 30_000;
+        let (membership, _stops, silent) = membership_with_peers(&[], 2, config).await;
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(300),
+            membership.check_cluster_is_ready(),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the check must still be waiting when it is cancelled"
+        );
+
+        for listener in &silent {
+            let (mut connection, _) =
+                tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                    .await
+                    .expect("each peer check must have connected before it was cancelled")
+                    .unwrap();
+            let closed = tokio::time::timeout(Duration::from_secs(2), async {
+                let mut buffer = [0u8; 1024];
+                loop {
+                    match connection.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            })
+            .await;
+            assert!(
+                closed.is_ok(),
+                "a peer check kept its connection open after the readiness check was cancelled"
+            );
+        }
+    }
+
     /// #428: `run_as_voter` wraps `check_cluster_is_ready()` in
     /// `tokio::time::timeout(startup_quorum_timeout, ...)` so a genuinely
     /// unreachable cluster fails fast at startup instead of waiting out

@@ -35,7 +35,6 @@ use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use tokio::task;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
@@ -189,7 +188,7 @@ where
             let cluster_healthcheck_probe_service_name =
                 raft.membership.cluster_healthcheck_probe_service_name.clone();
 
-            let task_handle = task::spawn(async move {
+            tasks.push(async move {
                 match task_with_timeout_and_exponential_backoff(
                     move || {
                         HealthChecker::check_peer_is_ready(
@@ -213,7 +212,6 @@ where
                     }
                 }
             });
-            tasks.push(task_handle);
         }
 
         // This node counts as one member of the cluster, so the peers still needed for a
@@ -230,14 +228,13 @@ where
                 }
                 while let Some(result) = tasks.next().await {
                     match result {
-                        Ok(Ok(_)) => {
+                        Ok(_) => {
                             healthy_peers += 1;
                             if healthy_peers >= peers_needed {
                                 return true;
                             }
                         }
-                        Ok(Err(e)) => error!("Task failed with error: {:?}", e),
-                        Err(e) => error!("Task failed with error: {:?}", e),
+                        Err(e) => error!("Peer check failed: {:?}", e),
                     }
                 }
                 false
@@ -250,11 +247,6 @@ where
                 false
             }
         };
-
-        // Whatever the outcome, no per-peer retry may outlive this call.
-        for task in tasks.iter() {
-            task.abort();
-        }
 
         if reached {
             info!(
