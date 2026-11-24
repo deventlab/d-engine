@@ -145,6 +145,8 @@ All notable changes to this project will be documented in this file.
 
 - **TTL and per-key lease** (#464): d-engine now does consensus and replication only. Removed `put_with_ttl`, the `Lease` trait, `TtlLease`, the `[raft.state_machine.lease]` config section and `StateMachine::lease_background_cleanup`. `Command::Insert` no longer has `ttl_secs`. In the proto, `WriteCommand.Insert.ttl_secs` (field 3) is removed and the number is reserved. Key expiry is now the job of the layer above d-engine. The leader read lease (`LeaseRead`) is a different feature and is unchanged.
 
+- **⚠️ RocksDB unified single-DB mode** (#466): `RocksDBUnifiedEngine`, the `[storage] unified_db` setting and the `[storage]` section itself (`RaftNodeConfig::storage`, `StorageConfig`) are removed. The Raft log and the state machine are always two databases, so the write load of one cannot stall the other. `open_rocksdb(data_dir)` opens both (`data_dir/storage` and `data_dir/state_machine`, the layout a default start has always used); to choose the directories yourself, open `RocksDBStorageEngine::new` and `RocksDBStateMachine::new` separately. A data directory written with `unified_db = true` (it was in `data_dir/db`) is not read, and a `unified_db` key left in a config file is ignored without an error. `atomic_flush` is now on for the state machine database only.
+
 - **File state machine storage format** (#464): The WAL record no longer has an `expire_at` slot, and `snapshot.bin` no longer ends with a TTL section. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 ---

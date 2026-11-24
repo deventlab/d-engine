@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 
 use crate::common::get_available_ports;
@@ -44,8 +44,7 @@ watcher_buffer_size = 100
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
     // Create storage and state machine
-    let (storage, state_machine) =
-        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    let (storage, state_machine) = open_rocksdb(&db_path).expect("Failed to open unified DB");
 
     let engine = DefaultEmbeddedEngine::start_custom(
         temp_dir.path(),

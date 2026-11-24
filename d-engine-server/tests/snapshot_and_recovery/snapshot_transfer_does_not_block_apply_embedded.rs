@@ -15,9 +15,9 @@ use d_engine_core::capture_logs_globally_filtered;
 use d_engine_core::logs_contain_globally_since;
 use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::StateMachine;
 use d_engine_server::install_snapshot_transfer_gate;
+use d_engine_server::open_rocksdb;
 use serial_test::serial;
 use tracing::info;
 
@@ -160,7 +160,7 @@ push_queue_size = 1
         let db_path = data_dir.join(format!("node{node_id}/db"));
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
         let sm = Arc::new(sm);
         voter_sms.push(Arc::<RocksDBStateMachine>::clone(&sm));
 
@@ -285,7 +285,7 @@ push_queue_size = 1
     let learner_db_path = data_dir.join("node4/db");
     tokio::fs::create_dir_all(&learner_db_path).await?;
 
-    let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
+    let (learner_storage, learner_sm) = open_rocksdb(&learner_db_path)?;
     let learner_sm = Arc::new(learner_sm);
 
     // Register the transfer gate for the Learner's node id *before* starting it, so the

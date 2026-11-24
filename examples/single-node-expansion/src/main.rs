@@ -1,7 +1,7 @@
 use d_engine::StandaloneEngine;
 // use d_engine::FileStateMachine;
 // use d_engine::FileStorageEngine;
-use d_engine::RocksDBUnifiedEngine;
+use d_engine::open_rocksdb;
 use std::env;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -98,7 +98,7 @@ async fn start_dengine_server(
     // let state_machine = FileStateMachine::new(db_path.join("state_machine")).await.unwrap();
 
     // Option 2: ROCKSDB (unified engine — single DB instance, 4 column families)
-    let (storage_engine, state_machine) = RocksDBUnifiedEngine::open(db_path.join("db")).unwrap();
+    let (storage_engine, state_machine) = open_rocksdb(db_path.join("db")).unwrap();
 
     // Start Node — blocks until shutdown.
     if let Err(e) = StandaloneEngine::run_custom(

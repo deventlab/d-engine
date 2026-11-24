@@ -49,7 +49,7 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let path = self.temp_dir.path().join(format!("rocksdb-{}", self.instance_id));
-        let (engine, sm) = RocksDBUnifiedEngine::open(&path)?;
+        let (engine, sm) = open_rocksdb(&path)?;
         *self.sm.lock().unwrap() = Some(sm);
 
         // Ensure the engine is fully initialized before returning
@@ -120,7 +120,7 @@ fn make_entry(
 async fn build_engine() -> (Arc<RocksDBStorageEngine>, tempfile::TempDir) {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let path = temp_dir.path().join("rocksdb");
-    let (engine, _sm) = RocksDBUnifiedEngine::open(&path).unwrap();
+    let (engine, _sm) = open_rocksdb(&path).unwrap();
     (Arc::new(engine), temp_dir)
 }
 
@@ -200,4 +200,31 @@ fn create_test_command_payload(index: u64) -> d_engine_proto::common::EntryPaylo
             write_cmd.encode_to_vec().into(),
         )),
     }
+}
+
+/// Purpose: the Raft log database does not run with `atomic_flush`. It exists for the state
+/// machine, whose data and `last_applied` live in two column families. With it on in the log
+/// database, a flush triggered by the busy log column family would flush the metadata column family
+/// as well, for no benefit.
+///
+/// RocksDB records the options a database was opened with in its `OPTIONS-*` file, so the setting
+/// is read back from there instead of being assumed.
+#[test]
+fn test_log_database_opens_without_atomic_flush() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let _storage = RocksDBStorageEngine::new(dir.path()).expect("open");
+
+    let options_file = std::fs::read_dir(dir.path())
+        .expect("read db dir")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("OPTIONS-")))
+        .max()
+        .expect("RocksDB writes an OPTIONS file when it opens a database");
+    let text = std::fs::read_to_string(options_file).expect("read options");
+
+    assert!(
+        text.contains("atomic_flush=false"),
+        "atomic_flush must be off for the Raft log database"
+    );
 }

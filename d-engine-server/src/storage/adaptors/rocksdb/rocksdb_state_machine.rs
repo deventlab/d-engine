@@ -108,10 +108,13 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 
 impl RocksDBStateMachine {
     /// Opens (or creates) a dedicated RocksDB instance for state machine storage.
-    ///
-    /// Used when `unified_db = false` (default): each engine owns its own DB instance.
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let db_opts = super::base_db_options();
+        let mut db_opts = super::base_db_options();
+        // State machine writes skip the WAL, so its data and `last_applied` column families must
+        // reach disk together; otherwise a flush of one without the other leaves `last_applied`
+        // ahead of the data. Checkpoints rely on the same guarantee. The Raft log database does
+        // not need it, so it is not part of the shared options.
+        db_opts.set_atomic_flush(true);
 
         let cache = Cache::new_lru_cache(128 * 1024 * 1024);
         let sm_cf = ColumnFamilyDescriptor::new(STATE_MACHINE_CF, super::sm_cf_options(&cache));
@@ -126,20 +129,6 @@ impl RocksDBStateMachine {
 
         Ok(Self {
             db: ArcSwapOption::new(Some(db_arc)),
-            is_serving: AtomicBool::new(true),
-            last_applied_index: AtomicU64::new(last_applied_index),
-            last_applied_term: AtomicU64::new(last_applied_term),
-        })
-    }
-
-    /// Creates a state machine sharing an existing `Arc<DB>` (unified mode).
-    ///
-    /// Called by `RocksDBUnifiedEngine::open()`. The DB must already have
-    /// `STATE_MACHINE_CF` and `STATE_MACHINE_META_CF` column families open.
-    pub(super) fn from_shared_db(db: Arc<DB>) -> io::Result<Self> {
-        let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db)?;
-        Ok(Self {
-            db: ArcSwapOption::new(Some(db)),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),

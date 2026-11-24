@@ -211,7 +211,7 @@ pub use node::Node;
 pub use storage::{FileStateMachine, FileStorageEngine};
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
-pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
+pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, open_rocksdb};
 
 // -------------------- Data Types --------------------
 

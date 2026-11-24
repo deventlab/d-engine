@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 
 use crate::common::SharedStateMachine;
@@ -85,7 +85,7 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
         let config_path = format!("/tmp/d-engine-test-sm-crash-follower-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
@@ -196,7 +196,7 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
     // replays missing entries.
     info!("Restarting crashed follower node {}", follower_id);
 
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&crash_snapshot_path)?;
+    let (storage, state_machine) = open_rocksdb(&crash_snapshot_path)?;
 
     // Rejoining node needs a longer election timeout than a fresh node — must
     // outlast the replication worker's max reconnect backoff (1000ms default),
@@ -295,7 +295,7 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
         let config_path = format!("/tmp/d-engine-test-sm-crash-leader-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
@@ -423,7 +423,7 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
         initial_leader_info.leader_id
     );
 
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&crashed_leader_snapshot_path)?;
+    let (storage, state_machine) = open_rocksdb(&crashed_leader_snapshot_path)?;
 
     let rejoined = DefaultEmbeddedEngine::start_custom(
         &crashed_leader_snapshot_path,

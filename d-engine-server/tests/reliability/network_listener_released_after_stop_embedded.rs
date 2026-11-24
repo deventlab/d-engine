@@ -7,7 +7,7 @@ use std::time::Duration;
 use d_engine_core::capture_logs_globally_filtered;
 use d_engine_core::logs_contain_globally;
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 
 use crate::common::get_available_ports;
@@ -65,7 +65,7 @@ general_raft_timeout_duration_in_ms = 5000
         let db_path = data_dir.join(format!("node{node_id}/db"));
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),

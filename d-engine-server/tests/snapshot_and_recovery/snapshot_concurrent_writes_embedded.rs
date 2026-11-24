@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -110,7 +110,7 @@ retained_log_entries = 10
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,

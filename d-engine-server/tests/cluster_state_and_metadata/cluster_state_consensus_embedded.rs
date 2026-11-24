@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -102,7 +102,7 @@ listen_address = '127.0.0.1:{}'
     let node1_data_dir = data_dir.join("node1");
     let db_path1 = node1_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path1).await?;
-    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
+    let (storage1, sm1) = open_rocksdb(&db_path1)?;
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
@@ -114,7 +114,7 @@ listen_address = '127.0.0.1:{}'
     let node2_data_dir = data_dir.join("node2");
     let db_path2 = node2_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path2).await?;
-    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
+    let (storage2, sm2) = open_rocksdb(&db_path2)?;
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
@@ -126,7 +126,7 @@ listen_address = '127.0.0.1:{}'
     let node3_data_dir = data_dir.join("node3");
     let db_path3 = node3_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path3).await?;
-    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
+    let (storage3, sm3) = open_rocksdb(&db_path3)?;
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),
@@ -250,7 +250,7 @@ general_raft_timeout_duration_in_ms = 3000
     let node1_data_dir = data_dir.join("node1");
     let db_path1 = node1_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path1).await?;
-    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
+    let (storage1, sm1) = open_rocksdb(&db_path1)?;
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
@@ -262,7 +262,7 @@ general_raft_timeout_duration_in_ms = 3000
     let node2_data_dir = data_dir.join("node2");
     let db_path2 = node2_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path2).await?;
-    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
+    let (storage2, sm2) = open_rocksdb(&db_path2)?;
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
@@ -274,7 +274,7 @@ general_raft_timeout_duration_in_ms = 3000
     let node3_data_dir = data_dir.join("node3");
     let db_path3 = node3_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path3).await?;
-    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
+    let (storage3, sm3) = open_rocksdb(&db_path3)?;
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),
@@ -430,7 +430,7 @@ general_raft_timeout_duration_in_ms = 3000
     let node1_data_dir = data_dir.join("node1");
     let db_path1 = node1_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path1).await?;
-    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
+    let (storage1, sm1) = open_rocksdb(&db_path1)?;
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
@@ -442,7 +442,7 @@ general_raft_timeout_duration_in_ms = 3000
     let node2_data_dir = data_dir.join("node2");
     let db_path2 = node2_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path2).await?;
-    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
+    let (storage2, sm2) = open_rocksdb(&db_path2)?;
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
@@ -454,7 +454,7 @@ general_raft_timeout_duration_in_ms = 3000
     let node3_data_dir = data_dir.join("node3");
     let db_path3 = node3_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path3).await?;
-    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
+    let (storage3, sm3) = open_rocksdb(&db_path3)?;
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::watch::WatchEventType;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -34,7 +34,7 @@ watcher_buffer_size = 10
     std::fs::write(&config_path, config_content)?;
 
     // Start engine with RocksDB storage
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,
@@ -117,7 +117,7 @@ listen_address = "127.0.0.1:{port}"
     std::fs::write(&config_path, config_content)?;
 
     // Start engine with RocksDB storage
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,
@@ -360,7 +360,7 @@ watcher_buffer_size = 10
     )?;
 
     // Start engine with RocksDB storage
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,

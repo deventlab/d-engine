@@ -4,8 +4,8 @@ use std::time::Duration;
 use d_engine_core::client::ClientApiError;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::client::LeaderHint;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -53,7 +53,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-failover-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -242,7 +242,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-rejoin-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -314,7 +314,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_err: Option<Box<dyn std::error::Error>> = None;
         let mut opened = None;
         for attempt in 0..50 {
-            match RocksDBUnifiedEngine::open(&db_path) {
+            match open_rocksdb(&db_path) {
                 Ok(ok) => {
                     opened = Some(ok);
                     break;
@@ -400,7 +400,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-minority-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -552,7 +552,7 @@ async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::e
         let node_db_root = db_root.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
         let config_path = format!("/tmp/d-engine-test-isolated-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
         Ok(DefaultEmbeddedEngine::start_custom(

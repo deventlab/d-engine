@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -58,7 +58,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     tokio::fs::create_dir_all(&db_path).await?;
 
-    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage1, sm1) = open_rocksdb(&db_path)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
@@ -115,7 +115,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     tokio::fs::create_dir_all(&db_path2).await?;
 
-    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
+    let (storage2, sm2) = open_rocksdb(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
@@ -160,7 +160,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     tokio::fs::create_dir_all(&db_path3).await?;
 
-    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
+    let (storage3, sm3) = open_rocksdb(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
@@ -323,7 +323,7 @@ election_timeout_max = 600
 
     tokio::fs::create_dir_all(&db_path1).await?;
 
-    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
+    let (storage1, sm1) = open_rocksdb(&db_path1)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_db_root,
@@ -385,7 +385,7 @@ election_timeout_max = 6000
 
     tokio::fs::create_dir_all(&db_path2).await?;
 
-    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
+    let (storage2, sm2) = open_rocksdb(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_db_root,
@@ -431,7 +431,7 @@ election_timeout_max = 6000
 
     tokio::fs::create_dir_all(&db_path3).await?;
 
-    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
+    let (storage3, sm3) = open_rocksdb(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_db_root,
@@ -600,7 +600,7 @@ election_timeout_max = 6000
     let node1_db_path = node1_db_root.join("db");
 
     // Reuse existing db directory (preserved from earlier phases)
-    let (node1_storage, node1_state_machine) = RocksDBUnifiedEngine::open(&node1_db_path)?;
+    let (node1_storage, node1_state_machine) = open_rocksdb(&node1_db_path)?;
 
     // Node 1 config: rejoining as existing follower
     let node1_config_str =

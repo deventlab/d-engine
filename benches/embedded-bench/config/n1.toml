@@ -22,9 +22,6 @@ enable_batch = false
 [raft.snapshot]
 enable = false
 
-[storage]
-unified_db = false
-
 [raft.replication]
 max_inflight_append_requests = 256
 append_entries_max_entries_per_replication = 256

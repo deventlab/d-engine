@@ -47,8 +47,8 @@ pub struct RocksDBMetaStore {
 /// High-performance storage engine using RocksDB for durability.
 /// Recommended for production deployments.
 ///
-/// Obtain an instance via [`super::RocksDBUnifiedEngine::open`], which shares a single
-/// `Arc<DB>` with [`super::RocksDBStateMachine`] to halve resource usage.
+/// Open it together with the state machine with [`super::open_rocksdb`], or on its own with
+/// [`RocksDBStorageEngine::new`] when the log should live in a directory of your choice.
 ///
 /// # Features
 ///
@@ -64,8 +64,6 @@ pub struct RocksDBStorageEngine {
 
 impl RocksDBStorageEngine {
     /// Opens (or creates) a dedicated RocksDB instance for log + meta storage.
-    ///
-    /// Used when `unified_db = false` (default): each engine owns its own DB instance.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db_opts = super::base_db_options();
 
@@ -79,19 +77,6 @@ impl RocksDBStorageEngine {
 
         let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db_arc))?);
         let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db_arc))?);
-        Ok(Self {
-            log_store,
-            meta_store,
-        })
-    }
-
-    /// Creates a storage engine sharing an existing `Arc<DB>` (unified mode).
-    ///
-    /// Called by `RocksDBUnifiedEngine::open()` — the caller owns the DB lifecycle.
-    /// The DB must already have `LOG_CF` and `META_CF` column families open.
-    pub(super) fn from_shared_db(db: Arc<DB>) -> Result<Self, Error> {
-        let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db))?);
-        let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db))?);
         Ok(Self {
             log_store,
             meta_store,

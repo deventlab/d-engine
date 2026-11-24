@@ -23,8 +23,8 @@ use criterion::criterion_main;
 use d_engine_core::ApplyEntry;
 use d_engine_core::Command;
 use d_engine_core::StateMachine;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -99,7 +99,7 @@ watcher_buffer_size = 100
     let db_open_path = db_path.join("db");
     tokio::fs::create_dir_all(&db_open_path).await?;
 
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_open_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_open_path)?;
     let storage = Arc::new(storage);
 
     let engine = DefaultEmbeddedEngine::start_custom(
@@ -334,7 +334,7 @@ fn bench_apply_chunk_baseline(c: &mut Criterion) {
 
             // Create state machine (storage kept alive for duration of benchmark iter)
             let (_storage, state_machine) =
-                RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+                open_rocksdb(&db_path).expect("Failed to open unified DB");
             let state_machine = Arc::new(state_machine);
 
             // Create test entries

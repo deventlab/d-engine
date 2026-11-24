@@ -72,6 +72,17 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 
 ---
 
+## Upgrading to v0.3.0: RocksDB unified mode removed
+
+If you never set `[storage] unified_db = true`, nothing changes: delete the `[storage]` section if you have one, it is ignored.
+
+If you did, the data of that node is in `data_dir/db` and v0.3.0 does not read it. Start the node from an empty data directory and let it catch up from the leader's snapshot.
+
+| If you have | Do this |
+| --- | --- |
+| `RocksDBUnifiedEngine::open(path)` | `open_rocksdb(data_dir)`: it opens `data_dir/storage` and `data_dir/state_machine` |
+| `[storage] unified_db = ...` in a config file | Delete it |
+
 ## For v0.2.4 Users: Wire Protocol Changes in v0.3.0
 
 v0.3.0 nodes and clients cannot talk to v0.2.4 ones. There is no rolling upgrade: stop the whole cluster, upgrade every node, then upgrade every client.

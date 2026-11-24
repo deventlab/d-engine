@@ -591,13 +591,10 @@ mod run_custom_tests {
     }
 }
 
-/// Tests for unified RocksDB path (`unified_db = true`) in `run_with()` and `run()`.
-///
-/// All existing tests use configs without a `[storage]` section, so `unified_db`
-/// defaults to `false` (separate RocksDB instances). These tests exercise the
-/// `unified_db = true` branch introduced in #295 to ensure both paths are verified.
+/// Tests that `run_with()` on the RocksDB default opens the log and the state machine as two
+/// databases, serves, and shuts down cleanly.
 #[cfg(all(test, feature = "rocksdb"))]
-mod unified_db_tests {
+mod rocksdb_start_tests {
     use std::time::Duration;
 
     use tokio::sync::watch;
@@ -605,7 +602,7 @@ mod unified_db_tests {
     use crate::api::StandaloneEngine;
     use crate::test_utils::free_listen_address;
 
-    fn make_config(unified: bool) -> String {
+    fn make_config() -> String {
         format!(
             r#"
 [cluster]
@@ -616,62 +613,21 @@ listen_address = "{}"
 heartbeat_idle_flush_interval_ms = 500
 election_timeout_min_ms = 1500
 election_timeout_max_ms = 3000
-
-[storage]
-unified_db = {unified}
 "#,
             free_listen_address()
         )
     }
 
-    /// `run_with()` with `unified_db = true` should start a single shared RocksDB,
-    /// serve traffic, and shut down cleanly on shutdown signal.
+    /// `run_with()` should start and shut down cleanly.
     ///
-    /// Business scenario: Operator deploys a standalone node with `unified_db = true`
-    /// to reduce memory/FD usage. The server must start and stop without errors.
-    #[tokio::test]
-    #[cfg(debug_assertions)]
-    async fn test_run_with_unified_db_starts_and_shuts_down_cleanly() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let config_path = temp_dir.path().join("config.toml");
-        std::fs::write(&config_path, make_config(true)).expect("write config");
-        let data_dir = temp_dir.path().join("engine");
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-
-        let config_path_str = config_path.to_str().unwrap().to_string();
-        let data_dir_str = data_dir.to_str().unwrap().to_string();
-        let handle = tokio::spawn(async move {
-            StandaloneEngine::run_with(&data_dir_str, &config_path_str, shutdown_rx).await
-        });
-
-        // Give the server enough time to open RocksDB and start the Raft loop.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        shutdown_tx.send(()).expect("send shutdown signal");
-
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("server must stop within 5 s")
-            .expect("server task must not panic");
-
-        assert!(
-            result.is_ok(),
-            "run_with(unified_db=true) must exit cleanly on shutdown signal"
-        );
-    }
-
-    /// `run_with()` with `unified_db = false` (separate RocksDB) should also start
-    /// and shut down cleanly, confirming parity between the two storage paths.
-    ///
-    /// Business scenario: Default deployment — operator does not set `unified_db`,
-    /// so the server opens two separate RocksDB instances.
+    /// Business scenario: Default deployment — the server opens the log and the state machine
+    /// as two RocksDB databases.
     #[tokio::test]
     #[cfg(debug_assertions)]
     async fn test_run_with_separate_db_starts_and_shuts_down_cleanly() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config_path = temp_dir.path().join("config.toml");
-        std::fs::write(&config_path, make_config(false)).expect("write config");
+        std::fs::write(&config_path, make_config()).expect("write config");
         let data_dir = temp_dir.path().join("engine");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -693,7 +649,7 @@ unified_db = {unified}
 
         assert!(
             result.is_ok(),
-            "run_with(unified_db=false) must exit cleanly on shutdown signal"
+            "run_with() must exit cleanly on shutdown signal"
         );
     }
 }

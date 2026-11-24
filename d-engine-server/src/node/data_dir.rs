@@ -42,36 +42,6 @@ impl DataDir {
         Ok(dir)
     }
 
-    /// Path for unified single-DB mode (`storage.unified_db = true`).
-    /// Validated eagerly so a permission problem fails loudly here, at
-    /// startup, instead of surfacing later as an opaque storage-engine IO
-    /// error. Backend-agnostic path convention — not RocksDB-specific;
-    /// any storage engine's `start_custom`/`run_custom` caller can use it.
-    #[allow(dead_code)]
-    pub(crate) fn unified_db_path(&self) -> Result<PathBuf> {
-        let dir = self.path.join("db");
-        validate_directory(&dir, "db")?;
-        Ok(dir)
-    }
-
-    /// Storage engine path (separate-DB mode). Same eager validation and
-    /// backend-agnostic intent as `unified_db_path` — see its doc comment.
-    #[allow(dead_code)]
-    pub(crate) fn storage_path(&self) -> Result<PathBuf> {
-        let dir = self.path.join("storage");
-        validate_directory(&dir, "storage")?;
-        Ok(dir)
-    }
-
-    /// State machine path (separate-DB mode). Same eager validation and
-    /// backend-agnostic intent as `unified_db_path` — see its doc comment.
-    #[allow(dead_code)]
-    pub(crate) fn state_machine_path(&self) -> Result<PathBuf> {
-        let dir = self.path.join("state_machine");
-        validate_directory(&dir, "state_machine")?;
-        Ok(dir)
-    }
-
     /// Test-only: a fresh, uniquely-generated temp directory — for mocks that
     /// don't care about a real node identity, just need a valid `DataDir`.
     /// The backing `TempDir` is owned by this `DataDir` and cleaned up

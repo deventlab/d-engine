@@ -50,7 +50,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use tracing_test::traced_test;
@@ -188,7 +188,7 @@ async fn start_engine(
     let node_data_dir = db_root.join(format!("node{node_id}"));
     let db_path = node_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path).await?;
-    let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, sm) = open_rocksdb(&db_path)?;
     Ok(DefaultEmbeddedEngine::start_custom(
         &node_data_dir,
         Arc::new(storage),
