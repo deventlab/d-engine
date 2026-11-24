@@ -117,11 +117,6 @@ pub trait LogStore: Send + Sync + 'static {
         Ok(()) // Default no-op for engines with auto-flush
     }
 
-    /// Optional: Flush pending writes (use with caution)
-    async fn flush_async(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
-
     async fn reset(&self) -> Result<(), Error>;
 
     /// Get last log index (optimized for frequent access)
@@ -157,11 +152,6 @@ pub trait MetaStore: Send + Sync + 'static {
 
     /// Optional: Flush pending writes (use with caution)
     fn flush(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
-
-    /// Optional: Flush pending writes (use with caution)
-    async fn flush_async(&self) -> Result<(), Error> {
         Ok(()) // Default no-op for engines with auto-flush
     }
 }

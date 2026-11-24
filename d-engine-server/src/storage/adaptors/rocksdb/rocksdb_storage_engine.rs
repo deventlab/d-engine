@@ -437,10 +437,6 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
-    }
-
     async fn reset(&self) -> Result<(), Error> {
         let cf = self
             .db
@@ -542,9 +538,5 @@ impl MetaStore for RocksDBMetaStore {
             .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
         Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
     }
 }

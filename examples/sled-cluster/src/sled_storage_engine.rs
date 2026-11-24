@@ -179,15 +179,6 @@ impl LogStore for SledLogStore {
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<()> {
-        trace!("LogStore flush");
-        self.tree
-            .flush_async()
-            .await
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
     async fn reset(&self) -> Result<()> {
         self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
@@ -289,15 +280,6 @@ impl MetaStore for SledMetaStore {
 
     fn flush(&self) -> Result<()> {
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<()> {
-        trace!("MetaStore flush");
-        self.tree
-            .flush_async()
-            .await
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 }

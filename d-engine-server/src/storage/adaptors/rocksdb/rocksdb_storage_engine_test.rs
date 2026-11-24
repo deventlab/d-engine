@@ -53,7 +53,7 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
         *self.sm.lock().unwrap() = Some(sm);
 
         // Ensure the engine is fully initialized before returning
-        engine.log_store().flush_async().await?;
+        engine.log_store().flush()?;
         Ok(Arc::new(engine))
     }
 

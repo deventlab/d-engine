@@ -341,10 +341,6 @@ impl LogStore for RaftEngineLogStore {
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
-    }
-
     async fn reset(&self) -> Result<(), Error> {
         let mut batch = LogBatch::default();
         batch.add_command(LOG_REGION_ID, Command::Clean);
@@ -398,9 +394,5 @@ impl MetaStore for RaftEngineMetaStore {
     fn flush(&self) -> Result<(), Error> {
         self.engine.sync().map_err(|e| StorageError::LogStorage(e.to_string()))?;
         Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
     }
 }

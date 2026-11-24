@@ -474,13 +474,11 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| true);
     log_store.expect_flush().returning(|| Ok(()));
-    log_store.expect_flush_async().returning(|| Ok(()));
 
     let mut meta_store = MockMetaStore::new();
     meta_store.expect_save_hard_state().returning(|_| Ok(()));
     meta_store.expect_load_hard_state().returning(|| Ok(None));
     meta_store.expect_flush().returning(|| Ok(()));
-    meta_store.expect_flush_async().returning(|| Ok(()));
 
     let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);

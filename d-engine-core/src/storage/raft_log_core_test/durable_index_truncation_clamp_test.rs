@@ -223,13 +223,11 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| false);
     log_store.expect_flush().returning(|| Ok(()));
-    log_store.expect_flush_async().returning(|| Ok(()));
 
     let mut meta_store = MockMetaStore::new();
     meta_store.expect_save_hard_state().returning(|_| Ok(()));
     meta_store.expect_load_hard_state().returning(|| Ok(None));
     meta_store.expect_flush().returning(|| Ok(()));
-    meta_store.expect_flush_async().returning(|| Ok(()));
 
     let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -311,13 +309,11 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| false);
     log_store.expect_flush().returning(|| Ok(()));
-    log_store.expect_flush_async().returning(|| Ok(()));
 
     let mut meta_store = MockMetaStore::new();
     meta_store.expect_save_hard_state().returning(|_| Ok(()));
     meta_store.expect_load_hard_state().returning(|| Ok(None));
     meta_store.expect_flush().returning(|| Ok(()));
-    meta_store.expect_flush_async().returning(|| Ok(()));
 
     let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -390,13 +386,11 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| false);
     log_store.expect_flush().returning(|| Ok(()));
-    log_store.expect_flush_async().returning(|| Ok(()));
 
     let mut meta_store = MockMetaStore::new();
     meta_store.expect_save_hard_state().returning(|_| Ok(()));
     meta_store.expect_load_hard_state().returning(|| Ok(None));
     meta_store.expect_flush().returning(|| Ok(()));
-    meta_store.expect_flush_async().returning(|| Ok(()));
 
     let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -460,13 +454,11 @@ async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| false);
     log_store.expect_flush().returning(|| Ok(()));
-    log_store.expect_flush_async().returning(|| Ok(()));
 
     let mut meta_store = MockMetaStore::new();
     meta_store.expect_save_hard_state().returning(|_| Ok(()));
     meta_store.expect_load_hard_state().returning(|| Ok(None));
     meta_store.expect_flush().returning(|| Ok(()));
-    meta_store.expect_flush_async().returning(|| Ok(()));
 
     let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);

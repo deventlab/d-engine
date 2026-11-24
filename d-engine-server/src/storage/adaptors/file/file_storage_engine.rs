@@ -397,10 +397,6 @@ impl LogStore for FileLogStore {
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
-    }
-
     async fn reset(&self) -> Result<(), Error> {
         let mut inner = self.inner.lock().unwrap();
         inner.file.set_len(0)?;
@@ -518,9 +514,5 @@ impl MetaStore for FileMetaStore {
 
     fn flush(&self) -> Result<(), Error> {
         Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
     }
 }

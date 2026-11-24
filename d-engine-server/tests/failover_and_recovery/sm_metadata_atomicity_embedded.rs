@@ -102,7 +102,7 @@ async fn start_single_node(
 ///
 /// `get_linearizable()` on the last write guarantees the SM has fully applied
 /// the whole batch (both the data and the atomically-written last_applied
-/// metadata are already in the MemTable) before `flush_async()` runs.
+/// metadata are already in the MemTable) before `flush()` runs.
 #[tokio::test]
 #[traced_test]
 async fn test_flush_then_crash_preserves_data_and_last_applied_together()
@@ -162,7 +162,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
         assert_eq!(
             recovered_sm.get(key.as_bytes())?,
             Some(Bytes::from(format!("val-{i:02}").into_bytes())),
-            "key {key} was applied before flush_async() — must survive the crash"
+            "key {key} was applied before flush() — must survive the crash"
         );
     }
 

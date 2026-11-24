@@ -198,7 +198,6 @@ impl MockStorageEngine {
             }
         });
         meta_store.expect_flush().returning(|| Ok(()));
-        meta_store.expect_flush_async().returning(|| Ok(()));
     }
 
     /// Default `persist_entries()`: always succeeds, writes into
@@ -341,7 +340,6 @@ impl MockStorageEngine {
             .returning(|| Err(crate::Error::Fatal("simulated fsync failure".into())));
         // All subsequent flushes succeed.
         mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
 
         Self {
             log_store: Arc::new(mock_log_store),
@@ -371,7 +369,6 @@ impl MockStorageEngine {
         Self::configure_save_hard_state_success(&mut mock_meta_store, &id);
         mock_log_store.expect_is_write_durable().returning(|| false);
         mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
 
         // First persist_entries() call fails. Registered before the
         // always-succeeds fallback below — mockall tries expectations in
@@ -403,7 +400,6 @@ impl MockStorageEngine {
         Self::configure_persist_entries_success(&mut mock_log_store, &id);
         mock_log_store.expect_is_write_durable().returning(|| false);
         mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
         mock_log_store.expect_replace_range().returning(|_, _| {
             Err(crate::Error::Fatal(
                 "simulated replace_range failure".into(),
@@ -430,7 +426,6 @@ impl MockStorageEngine {
         Self::configure_save_hard_state_success(&mut mock_meta_store, &id);
         mock_log_store.expect_is_write_durable().returning(|| false);
         mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
         mock_log_store
             .expect_purge()
             .returning(|_| Err(crate::Error::Fatal("simulated purge failure".into())));
@@ -454,7 +449,6 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock_log_store);
         mock_log_store.expect_is_write_durable().returning(|| false);
         mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
         mock_log_store
             .expect_reset()
             .returning(|| Err(crate::Error::Fatal("simulated reset failure".into())));
@@ -479,7 +473,6 @@ impl MockStorageEngine {
         Self::configure_reset_success(&mut mock_log_store, &id);
         mock_log_store.expect_is_write_durable().returning(|| false);
         mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
         mock_meta_store.expect_save_hard_state().returning(|_| {
             Err(crate::Error::Fatal(
                 "simulated save_hard_state failure".into(),
@@ -512,7 +505,6 @@ impl MockStorageEngine {
         mock_log_store
             .expect_flush()
             .returning(|| Err(crate::Error::Fatal("simulated fsync failure".into())));
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
 
         Self {
             log_store: Arc::new(mock_log_store),
@@ -549,7 +541,6 @@ impl MockStorageEngine {
             }
             Ok(())
         });
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
 
         let engine = Self {
             log_store: Arc::new(mock_log_store),
@@ -589,7 +580,6 @@ impl MockStorageEngine {
             }
             Ok(())
         });
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
 
         let engine = Self {
             log_store: Arc::new(mock_log_store),
@@ -624,7 +614,6 @@ impl MockStorageEngine {
             }
             Err(crate::Error::Fatal("simulated fsync failure".into()))
         });
-        mock_log_store.expect_flush_async().returning(|| Ok(()));
 
         let engine = Self {
             log_store: Arc::new(mock_log_store),
@@ -690,7 +679,6 @@ impl MockStorageEngine {
     fn configure_durable(log_store: &mut MockLogStore) {
         log_store.expect_is_write_durable().returning(|| true);
         log_store.expect_flush().returning(|| Ok(()));
-        log_store.expect_flush_async().returning(|| Ok(()));
     }
 
     /// Configure `is_write_durable=false` with a flush counter.
@@ -702,11 +690,6 @@ impl MockStorageEngine {
         let counter = flush_count.clone();
         log_store.expect_flush().returning(move || {
             counter.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        });
-        let counter2 = flush_count.clone();
-        log_store.expect_flush_async().returning(move || {
-            counter2.fetch_add(1, Ordering::Relaxed);
             Ok(())
         });
     }
