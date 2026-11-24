@@ -144,13 +144,11 @@ pub use d_engine_core::Command;
 pub use d_engine_core::Error;
 // Internal types required by storage implementations — not part of user API
 /// Persisted Raft hard state (current term + voted-for). Required by
-/// [`MetaStore::save_hard_state`]/[`MetaStore::load_hard_state`] — implement these if
+/// [`LogStore::save_hard_state`]/[`LogStore::load_hard_state`] — implement these if
 /// you're building a custom storage engine.
 pub use d_engine_core::HardState;
-/// Log storage trait
+/// Log and hard state storage trait
 pub use d_engine_core::LogStore;
-/// Metadata storage trait
-pub use d_engine_core::MetaStore;
 // Purely internal — only reachable via `?`/`From` conversions inside `Error`.
 // No public trait method requires implementors to construct this directly.
 #[doc(hidden)]

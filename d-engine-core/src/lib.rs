@@ -44,8 +44,7 @@
 //!
 //! - [`StorageEngine`] - Persistent storage for Raft logs
 //! - [`StateMachine`] - Application-specific state transitions
-//! - [`LogStore`] - Log entry persistence
-//! - [`MetaStore`] - Metadata persistence (term, voted_for)
+//! - [`LogStore`] - Log entry and hard state (term, voted_for) persistence
 //!
 //! ## Documentation
 //!

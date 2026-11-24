@@ -18,23 +18,17 @@ use crate::HardState;
 ///
 /// Design principles:
 /// - Zero-cost abstractions through static dispatch
-/// - Physical separation of log and metadata stores
 /// - Async-ready for I/O parallelism
 /// - Minimal interface for maximum performance
 pub trait StorageEngine: Send + Sync + 'static {
     /// Associated log store type
     type LogStore: LogStore;
 
-    /// Associated metadata store type
-    type MetaStore: MetaStore;
-
     /// Get log storage handle
     fn log_store(&self) -> Arc<Self::LogStore>;
-
-    /// Get metadata storage handle
-    fn meta_store(&self) -> Arc<Self::MetaStore>;
 }
 
+/// Where a node keeps its Raft log and its hard state (current term and vote).
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait LogStore: Send + Sync + 'static {
@@ -101,6 +95,18 @@ pub trait LogStore: Send + Sync + 'static {
         Ok(new_last)
     }
 
+    /// Persist the hard state (current term and votedFor).
+    ///
+    /// It becomes durable with the next `flush()`: the engine calls `save_hard_state` and then
+    /// `flush()` before it answers a vote or an AppendEntries that changed the term.
+    fn save_hard_state(
+        &self,
+        state: &HardState,
+    ) -> Result<(), Error>;
+
+    /// Load the persisted hard state, or `None` on a node that has never saved one.
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error>;
+
     /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
     ///
     /// Return `true` if your backend writes are immediately durable (e.g. any backend
@@ -112,11 +118,15 @@ pub trait LogStore: Send + Sync + 'static {
     /// before data is crash-safe, silently breaking Raft's durability guarantee.
     fn is_write_durable(&self) -> bool;
 
-    /// Optional: Flush pending writes (use with caution)
-    fn flush(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
+    /// Make everything written so far durable: log entries and the hard state.
+    ///
+    /// The engine calls it before it answers an RPC that depends on what was written. A store
+    /// whose writes are already durable when they return still implements it, as `Ok(())`.
+    fn flush(&self) -> Result<(), Error>;
 
+    /// Delete every log entry and start again from an empty log: `last_index()` becomes 0.
+    ///
+    /// Only the log is affected. Return only when the deletion is done.
     async fn reset(&self) -> Result<(), Error>;
 
     /// Get last log index (optimized for frequent access)
@@ -134,24 +144,5 @@ pub trait LogStore: Send + Sync + 'static {
     /// the entry has been removed from the in-memory log.
     fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
         Ok(None) // Default: not persisted
-    }
-}
-
-/// Metadata storage operations
-#[cfg_attr(any(test, feature = "__test_support"), automock)]
-#[async_trait]
-pub trait MetaStore: Send + Sync + 'static {
-    /// Atomically persist hard state (current term and votedFor)
-    fn save_hard_state(
-        &self,
-        state: &HardState,
-    ) -> Result<(), Error>;
-
-    /// Load persisted hard state
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error>;
-
-    /// Optional: Flush pending writes (use with caution)
-    fn flush(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
     }
 }

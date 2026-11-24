@@ -4,7 +4,6 @@ use std::sync::Arc;
 use bytes::Bytes;
 use d_engine_core::HardState;
 use d_engine_core::LogStore;
-use d_engine_core::MetaStore;
 use d_engine_core::StorageEngine;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
@@ -179,7 +178,7 @@ async fn test_corrupted_data_handling() {
 #[test]
 fn test_hard_state_persistence() {
     let (storage, dir) = setup_storage();
-    let meta_store = storage.meta_store();
+    let store = storage.log_store();
     let hard_state = HardState {
         current_term: 5,
         voted_for: Some(VotedFor {
@@ -190,16 +189,16 @@ fn test_hard_state_persistence() {
     };
 
     // Save and verify in-memory
-    meta_store.save_hard_state(&hard_state).unwrap();
-    let loaded = meta_store.load_hard_state().unwrap().unwrap();
+    store.save_hard_state(&hard_state).unwrap();
+    let loaded = store.load_hard_state().unwrap().unwrap();
     assert_eq!(loaded.current_term, 5);
 
     // Test durability after restart
-    drop(meta_store); // Release resources
+    drop(store); // Release resources
     drop(storage);
 
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
-    let reloaded = storage2.meta_store().load_hard_state().unwrap().unwrap();
+    let reloaded = storage2.log_store().load_hard_state().unwrap().unwrap();
     assert_eq!(reloaded.current_term, 5);
 }
 
@@ -208,7 +207,7 @@ fn test_hard_state_persistence() {
 async fn test_reset_preserves_meta() {
     let (storage, _dir) = setup_storage();
     let log_store = storage.log_store();
-    let meta_store = storage.meta_store();
+    let store = storage.log_store();
 
     let hard_state = HardState {
         current_term: 3,
@@ -218,12 +217,12 @@ async fn test_reset_preserves_meta() {
             committed: false,
         }),
     };
-    meta_store.save_hard_state(&hard_state).unwrap();
+    store.save_hard_state(&hard_state).unwrap();
 
     // Reset should clear logs but keep meta
     log_store.reset().await.unwrap();
 
-    let loaded = meta_store.load_hard_state().unwrap();
+    let loaded = store.load_hard_state().unwrap();
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap().current_term, 3);
 }
@@ -233,11 +232,11 @@ async fn test_reset_preserves_meta() {
 async fn test_flush_persists_all_data() {
     let (storage, dir) = setup_storage();
     let log_store = storage.log_store();
-    let meta_store = storage.meta_store();
+    let store = storage.log_store();
 
     // Write to both stores
     log_store.persist_entries(create_entries(1..=5)).await.unwrap();
-    meta_store
+    store
         .save_hard_state(&HardState {
             current_term: 2,
             voted_for: Some(VotedFor {
@@ -251,7 +250,7 @@ async fn test_flush_persists_all_data() {
     // Manually flush and reopen
     log_store.flush().unwrap();
     drop(log_store);
-    drop(meta_store);
+    drop(store);
     drop(storage);
 
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
@@ -259,7 +258,7 @@ async fn test_flush_persists_all_data() {
     // Verify both stores
     assert_eq!(storage2.log_store().last_index(), 5);
     assert_eq!(
-        storage2.meta_store().load_hard_state().unwrap().unwrap().current_term,
+        storage2.log_store().load_hard_state().unwrap().unwrap().current_term,
         2
     );
 }
@@ -267,11 +266,11 @@ async fn test_flush_persists_all_data() {
 #[test]
 fn test_corrupted_meta_data() {
     let (storage, _dir) = setup_storage();
-    let meta_store = storage.meta_store();
+    let store = storage.log_store();
 
     // This test is challenging for file storage as we don't have direct access to modify the file
     // We'll verify that loading non-existent state returns None
-    assert!(meta_store.load_hard_state().unwrap().is_none());
+    assert!(store.load_hard_state().unwrap().is_none());
 }
 
 #[test]
@@ -288,14 +287,14 @@ fn test_drop_impl_flushes() {
 
     {
         let storage = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
-        storage.meta_store().save_hard_state(&hs).unwrap();
+        storage.log_store().save_hard_state(&hs).unwrap();
         // No explicit flush - rely on Drop
     } // Storage dropped here
 
     // Reopen and verify
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
     assert_eq!(
-        storage2.meta_store().load_hard_state().unwrap().unwrap().current_term,
+        storage2.log_store().load_hard_state().unwrap().unwrap().current_term,
         7
     );
 }
@@ -731,4 +730,58 @@ mod tests {
 
         assert_eq!(range.len(), 1001);
     }
+}
+
+/// The hard state file is replaced, never rewritten in place.
+///
+/// A vote must survive a crash. Rewriting `hard_state.bin` in place truncates it first, so a crash
+/// midway leaves an empty or partial file; the node then starts without its term and vote and can
+/// vote twice in one term. Writing a new file and renaming it over the old one leaves either the
+/// old file or the new one. The inode changes only when the file was replaced, so it tells the two
+/// apart without crashing anything.
+#[cfg(unix)]
+#[test]
+fn test_save_hard_state_replaces_the_file_instead_of_rewriting_it() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
+    let store = engine.log_store();
+    let hard_state = |term| HardState {
+        current_term: term,
+        voted_for: None,
+    };
+    let path = dir.path().join("meta").join("hard_state.bin");
+
+    store.save_hard_state(&hard_state(1)).unwrap();
+    let first = std::fs::metadata(&path).unwrap().ino();
+    store.save_hard_state(&hard_state(2)).unwrap();
+    let second = std::fs::metadata(&path).unwrap().ino();
+
+    assert_ne!(
+        first, second,
+        "the hard state file was rewritten in place: a crash midway loses the vote"
+    );
+}
+
+/// Saving the hard state leaves nothing behind but `hard_state.bin`: the temporary file the new
+/// content is written to must be gone, or every save would leak one.
+#[test]
+fn test_save_hard_state_leaves_no_temporary_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
+    engine
+        .log_store()
+        .save_hard_state(&HardState {
+            current_term: 3,
+            voted_for: None,
+        })
+        .unwrap();
+
+    let files: Vec<String> = std::fs::read_dir(dir.path().join("meta"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+
+    assert_eq!(files, vec!["hard_state.bin".to_string()]);
 }

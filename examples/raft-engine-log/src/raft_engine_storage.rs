@@ -15,7 +15,7 @@ use crate::entry_record::EntryRecord;
 use crate::options::RaftEngineOptions;
 use async_trait::async_trait;
 use d_engine::common::{Entry, LogId};
-use d_engine::{Error, HardState, LogStore, MetaStore, StorageEngine, StorageError};
+use d_engine::{Error, HardState, LogStore, StorageEngine, StorageError};
 use prost::Message as _;
 use raft_engine::{Command, Config, Engine, LogBatch, MessageExt, ReadableSize};
 
@@ -94,13 +94,8 @@ pub struct RaftEngineLogStore {
     _purge_worker: PurgeWorker,
 }
 
-pub struct RaftEngineMetaStore {
-    engine: Arc<Engine>,
-}
-
 pub struct RaftEngineStorage {
     log_store: Arc<RaftEngineLogStore>,
-    meta_store: Arc<RaftEngineMetaStore>,
     path: String,
 }
 
@@ -137,10 +132,9 @@ impl RaftEngineStorage {
         )?;
         Ok(Self {
             log_store: Arc::new(RaftEngineLogStore {
-                engine: engine.clone(),
+                engine,
                 _purge_worker: purge_worker,
             }),
-            meta_store: Arc::new(RaftEngineMetaStore { engine }),
             path: path.to_string_lossy().into_owned(),
         })
     }
@@ -157,14 +151,9 @@ impl std::fmt::Debug for RaftEngineStorage {
 
 impl StorageEngine for RaftEngineStorage {
     type LogStore = RaftEngineLogStore;
-    type MetaStore = RaftEngineMetaStore;
 
     fn log_store(&self) -> Arc<Self::LogStore> {
         self.log_store.clone()
-    }
-
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
     }
 }
 
@@ -336,6 +325,31 @@ impl LogStore for RaftEngineLogStore {
         false
     }
 
+    fn save_hard_state(
+        &self,
+        state: &HardState,
+    ) -> Result<(), Error> {
+        let bytes = bincode::serialize(state).map_err(StorageError::BincodeError)?;
+        let mut batch = LogBatch::default();
+        batch
+            .put(META_REGION_ID, HARD_STATE_KEY.to_vec(), bytes)
+            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
+        // Not synced here: the caller calls `flush()` right after this call.
+        self.engine
+            .write(&mut batch, false)
+            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+        match self.engine.get(META_REGION_ID, HARD_STATE_KEY) {
+            Some(bytes) => Ok(Some(
+                bincode::deserialize(&bytes).map_err(StorageError::BincodeError)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     fn flush(&self) -> Result<(), Error> {
         self.engine.sync().map_err(|e| StorageError::LogStorage(e.to_string()))?;
         Ok(())
@@ -361,38 +375,5 @@ impl LogStore for RaftEngineLogStore {
                 .map_err(|e| StorageError::SerializationError(e.to_string()).into()),
             None => Ok(None),
         }
-    }
-}
-
-#[async_trait]
-impl MetaStore for RaftEngineMetaStore {
-    fn save_hard_state(
-        &self,
-        state: &HardState,
-    ) -> Result<(), Error> {
-        let bytes = bincode::serialize(state).map_err(StorageError::BincodeError)?;
-        let mut batch = LogBatch::default();
-        batch
-            .put(META_REGION_ID, HARD_STATE_KEY.to_vec(), bytes)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        // Not synced here: the caller flushes the meta store right after this call.
-        self.engine
-            .write(&mut batch, false)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(())
-    }
-
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
-        match self.engine.get(META_REGION_ID, HARD_STATE_KEY) {
-            Some(bytes) => Ok(Some(
-                bincode::deserialize(&bytes).map_err(StorageError::BincodeError)?,
-            )),
-            None => Ok(None),
-        }
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.engine.sync().map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(())
     }
 }

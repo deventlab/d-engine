@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::HardState;
 use d_engine_core::LogStore;
-use d_engine_core::MetaStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
@@ -36,12 +35,6 @@ pub struct RocksDBLogStore {
     last_index: AtomicU64,
 }
 
-/// RocksDB-based metadata store implementation
-#[derive(Debug)]
-pub struct RocksDBMetaStore {
-    db: Arc<DB>,
-}
-
 /// RocksDB-based Raft log storage
 ///
 /// High-performance storage engine using RocksDB for durability.
@@ -59,7 +52,6 @@ pub struct RocksDBMetaStore {
 #[derive(Debug)]
 pub struct RocksDBStorageEngine {
     log_store: Arc<RocksDBLogStore>,
-    meta_store: Arc<RocksDBMetaStore>,
 }
 
 impl RocksDBStorageEngine {
@@ -75,12 +67,8 @@ impl RocksDBStorageEngine {
             .map_err(|e| StorageError::DbError(e.to_string()))?;
         let db_arc = Arc::new(db);
 
-        let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db_arc))?);
-        let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db_arc))?);
-        Ok(Self {
-            log_store,
-            meta_store,
-        })
+        let log_store = Arc::new(RocksDBLogStore::new(db_arc)?);
+        Ok(Self { log_store })
     }
 
     /// Helper: convert index to big-endian bytes
@@ -102,38 +90,34 @@ impl RocksDBStorageEngine {
 
 impl StorageEngine for RocksDBStorageEngine {
     type LogStore = RocksDBLogStore;
-    type MetaStore = RocksDBMetaStore;
 
     #[inline]
     fn log_store(&self) -> Arc<Self::LogStore> {
         self.log_store.clone()
     }
-
-    #[inline]
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
-    }
 }
 
 impl Drop for RocksDBLogStore {
     fn drop(&mut self) {
-        // WAL fsync makes LOG_CF durable — memtable content survives via WAL
-        // replay on next open even without the flush below. The flush is an
-        // optimization only: it shrinks the WAL that must be replayed on the
-        // next restart. db.flush() (no CF argument) targets RocksDB's unused
-        // "default" CF and would be a no-op here — LOG_CF must be named explicitly.
+        // WAL fsync makes LOG_CF and META_CF (hard_state, purge boundary) durable — memtable
+        // content survives via WAL replay on next open even without the flushes below. They are an
+        // optimization only: they shrink the WAL that must be replayed on the next restart.
+        // db.flush() (no CF argument) targets RocksDB's unused "default" CF and would be a no-op
+        // here — each CF must be named explicitly.
         if let Err(e) = self.db.flush_wal(true) {
             tracing::error!("Failed to flush WAL on drop: {}", e);
         }
-        match self.db.cf_handle(LOG_CF) {
-            Some(cf) => {
-                if let Err(e) = self.db.flush_cf(&cf) {
-                    tracing::error!("Failed to flush LOG_CF memtable on drop: {}", e);
-                } else {
-                    tracing::debug!("RocksDBLogStore flushed successfully on drop");
+        for cf_name in [LOG_CF, META_CF] {
+            match self.db.cf_handle(cf_name) {
+                Some(cf) => {
+                    if let Err(e) = self.db.flush_cf(&cf) {
+                        tracing::error!("Failed to flush {} memtable on drop: {}", cf_name, e);
+                    } else {
+                        tracing::debug!("RocksDBLogStore flushed {} on drop", cf_name);
+                    }
                 }
+                None => tracing::error!("Failed to flush on drop: {} not found", cf_name),
             }
-            None => tracing::error!("Failed to flush on drop: LOG_CF not found"),
         }
     }
 }
@@ -425,75 +409,6 @@ impl LogStore for RocksDBLogStore {
         }
     }
 
-    fn flush(&self) -> Result<(), Error> {
-        // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.
-        // memtable flush is RocksDB's internal concern — triggered automatically in background.
-        let t0 = std::time::Instant::now();
-        self.db
-            .flush_wal(true)
-            .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        metrics::histogram!("server.storage.rocksdb.wal_flush_ms").record(ms);
-        Ok(())
-    }
-
-    async fn reset(&self) -> Result<(), Error> {
-        let cf = self
-            .db
-            .cf_handle(LOG_CF)
-            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
-
-        // Delete all keys in the log column family
-        let mut batch = WriteBatch::default();
-        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
-
-        for item in iter {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.delete_cf(&cf, &key);
-        }
-
-        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.last_index.store(0, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn last_index(&self) -> u64 {
-        self.last_index.load(Ordering::SeqCst)
-    }
-}
-
-impl Drop for RocksDBMetaStore {
-    fn drop(&mut self) {
-        // WAL fsync makes META_CF (hard_state) durable — memtable content
-        // survives via WAL replay on next open even without the flush below.
-        // The flush is an optimization only: it shrinks the WAL that must be
-        // replayed on the next restart. db.flush() (no CF argument) targets
-        // RocksDB's unused "default" CF and would be a no-op here — META_CF
-        // must be named explicitly.
-        if let Err(e) = self.db.flush_wal(true) {
-            tracing::error!("Failed to flush meta WAL on drop: {}", e);
-        }
-        match self.db.cf_handle(META_CF) {
-            Some(cf) => {
-                if let Err(e) = self.db.flush_cf(&cf) {
-                    tracing::error!("Failed to flush META_CF memtable on drop: {}", e);
-                } else {
-                    tracing::debug!("RocksDBMetaStore flushed successfully on drop");
-                }
-            }
-            None => tracing::error!("Failed to flush on drop: META_CF not found"),
-        }
-    }
-}
-
-impl RocksDBMetaStore {
-    fn new(db: Arc<DB>) -> Result<Self, Error> {
-        Ok(Self { db })
-    }
-}
-
-#[async_trait]
-impl MetaStore for RocksDBMetaStore {
     #[instrument(skip(self, state))]
     fn save_hard_state(
         &self,
@@ -532,11 +447,38 @@ impl MetaStore for RocksDBMetaStore {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        // WAL fsync is sufficient: HardState in WAL survives crashes.
+        // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.
         // memtable flush is RocksDB's internal concern — triggered automatically in background.
+        let t0 = std::time::Instant::now();
         self.db
             .flush_wal(true)
-            .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
+            .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        metrics::histogram!("server.storage.rocksdb.wal_flush_ms").record(ms);
         Ok(())
+    }
+
+    async fn reset(&self) -> Result<(), Error> {
+        let cf = self
+            .db
+            .cf_handle(LOG_CF)
+            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
+
+        // Delete all keys in the log column family
+        let mut batch = WriteBatch::default();
+        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+
+        for item in iter {
+            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            batch.delete_cf(&cf, &key);
+        }
+
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.last_index.store(0, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn last_index(&self) -> u64 {
+        self.last_index.load(Ordering::SeqCst)
     }
 }

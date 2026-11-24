@@ -9,7 +9,7 @@ use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::Command;
 use d_engine_core::HardState;
-use d_engine_core::MetaStore;
+use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_proto::common::LogId;
 use tempfile::TempDir;
@@ -100,13 +100,13 @@ async fn test_open_rocksdb_finds_what_the_previous_open_wrote() {
     let dir = TempDir::new().expect("temp dir");
     {
         let (storage, sm) = open_rocksdb(dir.path()).expect("first open");
-        let meta = storage.meta_store();
-        meta.save_hard_state(&HardState {
+        let log = storage.log_store();
+        log.save_hard_state(&HardState {
             current_term: 5,
             voted_for: None,
         })
         .expect("save hard state");
-        meta.flush().expect("flush hard state");
+        log.flush().expect("flush hard state");
         sm.apply_chunk(&[ApplyEntry {
             index: 1,
             term: 5,
@@ -122,7 +122,7 @@ async fn test_open_rocksdb_finds_what_the_previous_open_wrote() {
 
     let (storage, sm) = open_rocksdb(dir.path()).expect("second open");
 
-    let hard_state = storage.meta_store().load_hard_state().expect("load hard state");
+    let hard_state = storage.log_store().load_hard_state().expect("load hard state");
     assert_eq!(hard_state.map(|s| s.current_term), Some(5));
     assert_eq!(sm.get(b"k").expect("get"), Some(Bytes::from_static(b"v")));
     assert_eq!(sm.last_applied(), LogId { index: 1, term: 5 });

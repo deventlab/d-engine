@@ -29,6 +29,13 @@ impl StorageEngineBuilder for FileStorageEngineBuilder {
         ))
     }
 
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<Self::Engine>>, Error> {
+        let image = self.temp_dir.path().join("storage_engine_crash_image");
+        let _ = std::fs::remove_dir_all(&image);
+        copy_storage_dir(&self.temp_dir.path().join("storage_engine"), &image)?;
+        Ok(Some(Arc::new(FileStorageEngine::new(image)?)))
+    }
+
     async fn cleanup(&self) -> Result<(), Error> {
         // TempDir automatically cleans up when dropped, so no need for explicit cleanup
         Ok(())

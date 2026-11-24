@@ -23,6 +23,8 @@ pub struct RocksDBStorageEngineBuilder {
     instance_id: String,
     // Partner SM kept alive alongside storage; must be dropped before the next build().
     sm: Mutex<Option<RocksDBStateMachine>>,
+    // Partner SM of the crash image; keeps its database open as long as the image is in use.
+    image_sm: Mutex<Option<RocksDBStateMachine>>,
 }
 
 impl RocksDBStorageEngineBuilder {
@@ -33,6 +35,7 @@ impl RocksDBStorageEngineBuilder {
             temp_dir,
             instance_id,
             sm: Mutex::new(None),
+            image_sm: Mutex::new(None),
         }
     }
 }
@@ -57,8 +60,20 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
         Ok(Arc::new(engine))
     }
 
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<Self::Engine>>, Error> {
+        *self.image_sm.lock().unwrap() = None;
+        let image = self.temp_dir.path().join("rocksdb-crash-image");
+        let _ = std::fs::remove_dir_all(&image);
+        let live = self.temp_dir.path().join(format!("rocksdb-{}", self.instance_id));
+        d_engine_core::state_machine_test::copy_storage_dir(&live, &image)?;
+        let (engine, sm) = open_rocksdb(&image)?;
+        *self.image_sm.lock().unwrap() = Some(sm);
+        Ok(Some(Arc::new(engine)))
+    }
+
     async fn cleanup(&self) -> Result<(), Error> {
         *self.sm.lock().unwrap() = None;
+        *self.image_sm.lock().unwrap() = None;
         let delay = if std::env::var("CI").is_ok() {
             std::time::Duration::from_millis(500)
         } else {

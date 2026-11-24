@@ -12,7 +12,6 @@ use prost::Message;
 use crate::Error;
 use crate::HardState;
 use crate::LogStore;
-use crate::MetaStore;
 use crate::storage::StorageEngine;
 
 /// Test suite for StorageEngine implementations
@@ -31,6 +30,21 @@ pub trait StorageEngineBuilder: Send + Sync {
 
     /// Create a new StorageEngine instance for testing
     async fn build(&self) -> Result<Arc<Self::Engine>, Error>;
+
+    /// Opens an engine on a copy of the files the last `build()` used, exactly as they are on disk
+    /// right now, without closing or dropping the live engine: what a restart after a crash (the
+    /// process killed, no `close()`, no `Drop`) would find. Return `None` if the builder cannot do
+    /// this; the crash test is then skipped.
+    /// [`copy_storage_dir`](crate::state_machine_test::copy_storage_dir) copies a directory.
+    ///
+    /// A copy of the files reads what the operating system holds in its page cache, so this
+    /// finds data a store keeps only in the memory of the process (a write buffer that `flush()`
+    /// forgot to write out, data written only at `Drop`). It cannot tell whether `fsync` happened,
+    /// nor what a crash in the middle of a write leaves behind: only a fake disk that drops
+    /// unsynced data and cuts writes short can (#473).
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<Self::Engine>>, Error> {
+        Ok(None)
+    }
 
     /// Clean up any resources after testing
     async fn cleanup(&self) -> Result<(), Error>;
@@ -58,6 +72,7 @@ impl StorageEngineTestSuite {
         Self::test_hard_state_crash_recovery(&builder).await?;
         Self::test_truncate_durability(&builder).await?;
         Self::test_purge_durability(&builder).await?;
+        Self::test_flush_makes_log_and_hard_state_survive_a_crash(&builder).await?;
 
         builder.cleanup().await?;
         Ok(())
@@ -68,7 +83,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
 
@@ -84,7 +98,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         let entries = create_test_entries(1..=1);
@@ -103,7 +116,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         let entries = create_test_entries(1..=100);
@@ -132,7 +144,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         log_store.persist_entries(create_test_entries(1..=100)).await?;
@@ -157,7 +168,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         log_store.reset().await?;
@@ -182,7 +192,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         log_store.reset().await?;
@@ -218,7 +227,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         log_store.reset().await?;
@@ -238,7 +246,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
         log_store.persist_entries(create_test_entries(1..=50)).await?;
@@ -256,7 +263,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
 
@@ -277,7 +283,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
 
@@ -304,14 +309,13 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
-        let meta_store = engine.meta_store();
+        let store = engine.log_store();
         let hard_state = create_test_hard_state(5, Some((10, 4)));
 
         // Save and verify
-        meta_store.save_hard_state(&hard_state)?;
-        let loaded = meta_store.load_hard_state()?.unwrap();
+        store.save_hard_state(&hard_state)?;
+        let loaded = store.load_hard_state()?.unwrap();
         assert_eq!(loaded.current_term, 5);
 
         Ok(())
@@ -322,18 +326,17 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
-        let meta_store = engine.meta_store();
+        let store = engine.log_store();
         let hard_state = create_test_hard_state(3, Some((5, 4)));
 
-        meta_store.save_hard_state(&hard_state)?;
+        store.save_hard_state(&hard_state)?;
 
         // Reset should clear logs but keep meta
         log_store.reset().await?;
 
-        let loaded = meta_store.load_hard_state()?;
+        let loaded = store.load_hard_state()?;
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().current_term, 3);
 
@@ -345,18 +348,17 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
-        E::MetaStore: Send + Sync,
     {
         let log_store = engine.log_store();
-        let meta_store = engine.meta_store();
+        let store = engine.log_store();
 
         // Write to both stores
         log_store.persist_entries(create_test_entries(1..=5)).await?;
-        meta_store.save_hard_state(&create_test_hard_state(2, Some((1, 2))))?;
+        store.save_hard_state(&create_test_hard_state(2, Some((1, 2))))?;
 
         // Flush both stores
         log_store.flush()?;
-        meta_store.flush()?;
+        store.flush()?;
 
         Ok(())
     }
@@ -411,10 +413,63 @@ impl StorageEngineTestSuite {
         Ok(())
     }
 
-    /// Test save_hard_state guarantees durability (crash recovery)
+    /// After `flush()` returns, the log entries and the hard state are in the files, not only in
+    /// the memory of the process.
+    ///
+    /// A node answers a vote or an AppendEntries only after `flush()` returned. If the term, the
+    /// vote or an acknowledged entry were still in a write buffer of the process and the node is
+    /// killed, it restarts with an older term: it can vote twice in one term, or forget an entry
+    /// it told the leader it had stored. The other durability tests close the engine before they
+    /// reopen it, and closing writes out whatever was still in memory; here the node is killed
+    /// instead, so only what `flush()` itself wrote is found.
+    ///
+    /// Skipped, with a message, when the builder does not implement
+    /// [`StorageEngineBuilder::build_from_crash_image`]. It does not prove that the data
+    /// survives a power loss; see that method.
+    pub async fn test_flush_makes_log_and_hard_state_survive_a_crash<B: StorageEngineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        let engine = builder.build().await?;
+        let store = engine.log_store();
+        // The builder may hand out storage an earlier test wrote to: append after what is there.
+        let last = store.last_index() + 10;
+        store.persist_entries(create_test_entries(last - 9..=last)).await?;
+        store.save_hard_state(&create_test_hard_state(7, Some((3, 7))))?;
+        store.flush()?;
+
+        // The node is killed here: no close(), no drop.
+        let Some(restarted) = builder.build_from_crash_image().await? else {
+            eprintln!("crash image not supported by this builder; crash test skipped");
+            return Ok(());
+        };
+        let restarted_store = restarted.log_store();
+
+        assert_eq!(
+            restarted_store.last_index(),
+            last,
+            "flush() must write the log entries out of the process: after a crash the log is shorter"
+        );
+        assert!(
+            restarted_store.entry(last).await?.is_some(),
+            "entry {last} was flushed and must be readable after a crash"
+        );
+        let hard_state = restarted_store
+            .load_hard_state()?
+            .expect("flush() must write the hard state out of the process");
+        assert_eq!(hard_state.current_term, 7, "the term must survive a crash");
+        assert_eq!(
+            hard_state.voted_for.as_ref().map(|v| v.voted_for_id),
+            Some(3),
+            "the vote must survive a crash"
+        );
+        Ok(())
+    }
+
+    /// Test save_hard_state followed by flush() survives a restart
     ///
     /// Critical Raft requirement: HardState (current_term, voted_for) MUST survive crashes.
-    /// This prevents voting for multiple candidates in same term.
+    /// This prevents voting for multiple candidates in same term. The node always calls `flush()`
+    /// after `save_hard_state()` and before it answers, so that is the sequence checked here.
     pub async fn test_hard_state_crash_recovery<B: StorageEngineBuilder>(
         builder: &B
     ) -> Result<(), Error> {
@@ -424,11 +479,12 @@ impl StorageEngineTestSuite {
         // Step 1: Save hard state and drop
         {
             let engine = builder.build().await?;
-            let meta_store = engine.meta_store();
+            let store = engine.log_store();
 
             let hard_state =
                 create_test_hard_state(expected_term, Some((expected_node_id, expected_term)));
-            meta_store.save_hard_state(&hard_state)?;
+            store.save_hard_state(&hard_state)?;
+            store.flush()?;
         }
 
         // Small delay for filesystem sync
@@ -436,9 +492,9 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify
         let engine2 = builder.build().await?;
-        let meta_store2 = engine2.meta_store();
+        let store2 = engine2.log_store();
 
-        let loaded = meta_store2.load_hard_state()?.unwrap();
+        let loaded = store2.load_hard_state()?.unwrap();
         assert_eq!(
             loaded.current_term, expected_term,
             "BUG: save_hard_state() must guarantee durability! \

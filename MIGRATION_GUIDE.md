@@ -72,6 +72,19 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 
 ---
 
+## Upgrading to v0.3.0: your `StorageEngine`
+
+The Raft log and the hard state (current term and vote) are one store now. Implement `LogStore` only.
+
+| If you have | Do this |
+| --- | --- |
+| `impl MetaStore for ...` | Delete it. Move `save_hard_state` and `load_hard_state` into your `LogStore` |
+| `type MetaStore` and `fn meta_store()` in your `StorageEngine` | Delete both |
+| `flush()` left to its default | Implement it. Make log entries and the hard state durable; `Ok(())` if your writes already are |
+| `flush_async()` | Delete it. The engine never called it |
+
+`save_hard_state` is followed by `flush()` before the node answers a vote, so `flush()` must cover the hard state.
+
 ## Upgrading to v0.3.0: RocksDB unified mode removed
 
 If you never set `[storage] unified_db = true`, nothing changes: delete the `[storage]` section if you have one, it is ignored.

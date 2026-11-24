@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::fs::{self};
@@ -19,7 +18,6 @@ use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::HardState;
 use d_engine_core::LogStore;
-use d_engine_core::MetaStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
@@ -29,7 +27,6 @@ use tracing::info;
 
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
-pub(crate) const HARD_STATE_KEY: &[u8] = b"hard_state";
 
 /// All mutable state for the log store, protected by a single Mutex.
 ///
@@ -54,13 +51,10 @@ pub struct FileLogStore {
     inner: Mutex<FileLogStoreInner>,
     /// Cached last index for hot-path reads without locking.
     last_index: AtomicU64,
-}
-
-/// File-based metadata store implementation
-#[derive(Debug)]
-pub struct FileMetaStore {
-    data_dir: PathBuf,
-    data: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+    /// Directory of the hard state file.
+    meta_dir: PathBuf,
+    /// The serialized hard state, kept in memory so a read does not touch the file.
+    hard_state: Mutex<Option<Vec<u8>>>,
 }
 
 /// File-based Raft log storage
@@ -83,22 +77,15 @@ pub struct FileMetaStore {
 #[derive(Debug)]
 pub struct FileStorageEngine {
     log_store: Arc<FileLogStore>,
-    meta_store: Arc<FileMetaStore>,
     data_dir: PathBuf,
 }
 
 impl StorageEngine for FileStorageEngine {
     type LogStore = FileLogStore;
-    type MetaStore = FileMetaStore;
 
     #[inline]
     fn log_store(&self) -> Arc<Self::LogStore> {
         self.log_store.clone()
-    }
-
-    #[inline]
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
     }
 }
 
@@ -106,11 +93,12 @@ impl FileStorageEngine {
     /// Creates new file-based storage engine
     pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
         fs::create_dir_all(&data_dir)?;
-        let log_store = Arc::new(FileLogStore::new(data_dir.join("logs"))?);
-        let meta_store = Arc::new(FileMetaStore::new(data_dir.join("meta"))?);
+        let log_store = Arc::new(FileLogStore::new(
+            data_dir.join("logs"),
+            data_dir.join("meta"),
+        )?);
         Ok(Self {
             log_store,
-            meta_store,
             data_dir,
         })
     }
@@ -122,9 +110,13 @@ impl FileStorageEngine {
 }
 
 impl FileLogStore {
-    /// Creates new file-based log store
-    pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
+    /// Creates new file-based log store: the log in `data_dir`, the hard state in `meta_dir`.
+    pub fn new(
+        data_dir: PathBuf,
+        meta_dir: PathBuf,
+    ) -> Result<Self, Error> {
         fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(&meta_dir)?;
 
         let log_file_path = data_dir.join("log.data");
         let file = OpenOptions::new()
@@ -142,11 +134,53 @@ impl FileLogStore {
 
         let last_index = inner.load_from_file()?;
 
-        Ok(Self {
+        let store = Self {
             data_dir,
             inner: Mutex::new(inner),
             last_index: AtomicU64::new(last_index),
-        })
+            meta_dir,
+            hard_state: Mutex::new(None),
+        };
+        store.load_hard_state_from_file()?;
+
+        Ok(store)
+    }
+
+    /// Load the hard state from its file on startup.
+    fn load_hard_state_from_file(&self) -> Result<(), Error> {
+        let hard_state_path = self.meta_dir.join(HARD_STATE_FILE_NAME);
+
+        if hard_state_path.exists() {
+            let mut file = File::open(hard_state_path)?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer)?;
+
+            match bincode::deserialize::<HardState>(&buffer) {
+                Ok(_hard_state) => {
+                    *self.hard_state.lock().unwrap() = Some(buffer);
+                    info!("Loaded hard state from file");
+                }
+                Err(e) => {
+                    eprintln!("Failed to decode hard state: {e}",);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write the serialized hard state to its file.
+    fn write_hard_state_file(
+        &self,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        // The vote must survive a crash and a power loss: replace the file atomically, synced to
+        // disk, so a crash midway leaves the old hard state, never an empty or partial file.
+        super::file_state_machine::write_file_atomically(
+            &self.meta_dir.join(HARD_STATE_FILE_NAME),
+            value,
+        )?;
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -381,6 +415,34 @@ impl LogStore for FileLogStore {
         Ok(new_last)
     }
 
+    fn save_hard_state(
+        &self,
+        state: &HardState,
+    ) -> Result<(), Error> {
+        let serialized = bincode::serialize(state).map_err(StorageError::BincodeError)?;
+
+        *self.hard_state.lock().unwrap() = Some(serialized.clone());
+
+        self.write_hard_state_file(&serialized)?;
+
+        info!("Persisted hard state to file");
+        Ok(())
+    }
+
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+        match self.hard_state.lock().unwrap().as_deref() {
+            Some(bytes) => {
+                let state = bincode::deserialize(bytes).map_err(StorageError::BincodeError)?;
+                info!("Loaded hard state from memory");
+                Ok(Some(state))
+            }
+            None => {
+                info!("No hard state found");
+                Ok(None)
+            }
+        }
+    }
+
     fn is_write_durable(&self) -> bool {
         // File writes are buffered by the OS; sync_all() is required for crash-safety.
         false
@@ -420,99 +482,5 @@ impl Drop for FileLogStore {
         } else {
             tracing::debug!("FileLogStore flushed successfully on drop");
         }
-    }
-}
-
-impl FileMetaStore {
-    /// Creates new file-based metadata store
-    pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        fs::create_dir_all(&data_dir)?;
-
-        let store = Self {
-            data_dir,
-            data: Mutex::new(HashMap::new()),
-        };
-
-        store.load_from_file()?;
-
-        Ok(store)
-    }
-
-    /// Load metadata from file
-    fn load_from_file(&self) -> Result<(), Error> {
-        let hard_state_path = self.data_dir.join(HARD_STATE_FILE_NAME);
-
-        if hard_state_path.exists() {
-            let mut file = File::open(hard_state_path)?;
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer)?;
-
-            match bincode::deserialize::<HardState>(&buffer) {
-                Ok(_hard_state) => {
-                    let mut data = self.data.lock().unwrap();
-                    data.insert(HARD_STATE_KEY.to_vec(), buffer);
-                    info!("Loaded hard state from file");
-                }
-                Err(e) => {
-                    eprintln!("Failed to decode hard state: {e}",);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Save metadata to file
-    fn save_to_file(
-        &self,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), Error> {
-        if key == HARD_STATE_KEY {
-            let hard_state_path = self.data_dir.join(HARD_STATE_FILE_NAME);
-            let mut file = File::create(hard_state_path)?;
-            file.write_all(value)?;
-            file.flush()?;
-        }
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl MetaStore for FileMetaStore {
-    fn save_hard_state(
-        &self,
-        state: &HardState,
-    ) -> Result<(), Error> {
-        let serialized = bincode::serialize(state).map_err(StorageError::BincodeError)?;
-
-        let mut data = self.data.lock().unwrap();
-        data.insert(HARD_STATE_KEY.to_vec(), serialized.clone());
-
-        self.save_to_file(HARD_STATE_KEY, &serialized)?;
-
-        info!("Persisted hard state to file");
-        Ok(())
-    }
-
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
-        let data = self.data.lock().unwrap();
-
-        match data.get(HARD_STATE_KEY) {
-            Some(bytes) => {
-                let state = bincode::deserialize(bytes).map_err(StorageError::BincodeError)?;
-                info!("Loaded hard state from memory");
-                Ok(Some(state))
-            }
-            None => {
-                info!("No hard state found");
-                Ok(None)
-            }
-        }
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        Ok(())
     }
 }

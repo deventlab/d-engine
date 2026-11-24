@@ -27,7 +27,6 @@ use crate::Error;
 use crate::HardState;
 use crate::InternalEvent;
 use crate::LogStore;
-use crate::MetaStore;
 use crate::NetworkError;
 use crate::RaftLog;
 use crate::ReplicationError;
@@ -45,7 +44,6 @@ where
     node_id: u32,
 
     pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
-    pub(crate) meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
 
     /// Max time `close()` waits for a final flush before giving up. The
     /// in-flight fsync task itself is never cancelled — it keeps running in
@@ -536,7 +534,7 @@ where
     }
 
     fn load_hard_state(&self) -> Result<Option<HardState>> {
-        self.meta_store.load_hard_state()
+        self.log_store.load_hard_state()
     }
 
     fn save_hard_state(
@@ -546,9 +544,9 @@ where
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
-        self.meta_store
+        self.log_store
             .save_hard_state(hard_state)
-            .and_then(|()| self.meta_store.flush())
+            .and_then(|()| self.log_store.flush())
             .inspect_err(|e| {
                 error!(?self.node_id, "save_hard_state failed (fatal): {e:?}");
                 self.mark_poisoned_and_notify(format!("save_hard_state failed: {e:?}"));
@@ -571,7 +569,12 @@ where
                 self.shutdown_timeout_ms
             );
         }
-        let _ = self.meta_store.flush();
+        // After a timeout the in-flight fsync still holds the store, and flushing again would wait
+        // for it and hang the shutdown. The hard state needs no flush here: every `save_hard_state`
+        // flushes it before it returns.
+        if !timed_out {
+            let _ = self.log_store.flush();
+        }
     }
 }
 
@@ -586,7 +589,6 @@ where
         shutdown_timeout_ms: u64,
     ) -> Arc<Self> {
         let log_store = storage.log_store();
-        let meta_store = storage.meta_store();
         let disk_len = log_store.last_index();
 
         let entries = SkipMap::new();
@@ -674,7 +676,6 @@ where
         Arc::new(Self {
             node_id,
             log_store,
-            meta_store,
             shutdown_timeout_ms,
             entries: RwLock::new(entries),
             min_index: AtomicU64::new(min_index),

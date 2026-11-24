@@ -133,6 +133,8 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
 
+- **⚠️ `MetaStore` merged into `LogStore`; `flush_async` removed** (#470): the Raft log and the hard state (current term and vote) are written and made durable together, so a custom storage engine implements one store, not two. `LogStore` gains `save_hard_state` and `load_hard_state`; the `MetaStore` trait, `StorageEngine::MetaStore` and `StorageEngine::meta_store()` are removed. `LogStore::flush` has no default any more and must be implemented, as `Ok(())` when your writes are already durable; it makes both log entries and the hard state durable. `flush_async` is removed from both traits. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
 - **⚠️ `scan_prefix` rejects an empty prefix** (#400): it returns `InvalidRequest` instead of the whole keyspace (file state machine) or nothing (RocksDB).
 
 - **A node starts once a majority of the cluster is healthy** (#400): the startup health check no longer waits for every peer, so a node can restart while one peer is down.

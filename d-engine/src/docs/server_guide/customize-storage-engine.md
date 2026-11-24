@@ -5,7 +5,7 @@ d-engine supports **pluggable storage** through the `StorageEngine` trait. This 
 ## Architecture Context
 
 - The **StorageEngine** trait provides a **generic interface** for storage backends
-- **Physical separation** between log storage (`LogStore`) and metadata storage (`MetaStore`)
+- One store, `LogStore`, keeps both the Raft log and the hard state (current term and vote)
 - **Built-in implementations** include:
   - **File-based**: Production-ready file system storage
   - **RocksDB**: High-performance embedded database (requires `features = ["rocksdb"]`)
@@ -16,11 +16,10 @@ d-engine supports **pluggable storage** through the `StorageEngine` trait. This 
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::storage::{StorageEngine, LogStore, MetaStore};
+use d_engine::storage::{StorageEngine, LogStore};
 use async_trait::async_trait;
 
 struct CustomLogStore;
-struct CustomMetaStore;
 
 #[async_trait]
 impl LogStore for CustomLogStore {
@@ -34,49 +33,41 @@ impl LogStore for CustomLogStore {
         Ok(None)
     }
 
+    fn save_hard_state(&self, state: &HardState) -> Result<(), Error> {
+        // Persist the hard state (term and vote); it is made durable by the next flush()
+        Ok(())
+    }
+
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+        // Load the persisted hard state, or None on a node that never saved one
+        Ok(None)
+    }
+
     /// Return true only if a single persist_entries() call is crash-safe without flush().
     /// Examples: sled (synchronous commit), any backend with write-through to stable storage.
     /// Return false if durability requires an explicit flush() call (e.g. RocksDB, file I/O).
     fn is_write_durable(&self) -> bool {
-        false // conservative default; override to true only when writes are immediately durable
+        false // return true only when writes are immediately durable
     }
 
     fn flush(&self) -> Result<(), Error> {
-        // Sync pending writes to stable storage (called by RaftLogCore when is_write_durable() == false)
+        // Make everything written so far durable: log entries and the hard state.
+        // A store whose writes are already durable still implements it, as Ok(()).
         Ok(())
     }
 
     // Implement all required methods...
 }
 
-impl MetaStore for CustomMetaStore {
-    fn save_hard_state(&self, state: &HardState) -> Result<(), Error> {
-        // Persist hard state atomically
-        Ok(())
-    }
-
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
-        // Load persisted hard state
-        Ok(None)
-    }
-}
-
-// Combine log and metadata stores
 struct CustomStorageEngine {
     log_store: Arc<CustomLogStore>,
-    meta_store: Arc<CustomMetaStore>,
 }
 
 impl StorageEngine for CustomStorageEngine {
     type LogStore = CustomLogStore;
-    type MetaStore = CustomMetaStore;
 
     fn log_store(&self) -> Arc<Self::LogStore> {
         self.log_store.clone()
-    }
-
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
     }
 }
 
@@ -88,6 +79,8 @@ impl StorageEngine for CustomStorageEngine {
 - **Durability**: Implement `is_write_durable()` accurately—this controls whether `RaftLogCore`
   calls `flush()` after each batch. A wrong `true` advances `durable_index` before data is
   crash-safe, silently breaking Raft's durability guarantee.
+- **Hard state**: `save_hard_state()` is always followed by `flush()` before the node answers a
+  vote or an AppendEntries that changed the term, so both must make the hard state durable
 - **Consistency**: Maintain exactly-once semantics for log entries
 - **Performance**: Target >100k ops/sec for log persistence. Do not call `fsync` inside
   `persist_entries()`—the framework batches entries and calls `flush()` once per batch,
@@ -106,18 +99,12 @@ impl StorageEngine for CustomStorageEngine {
 | `purge()`            | Remove logs up to index                                                                                         | <100ms for 10k entries |
 | `truncate()`         | Remove entries from index                                                                                       | <100ms                 |
 | `replace_range()`    | Atomically truncate + persist new entries (default: truncate then persist; override for single-batch atomicity) | Varies by backend      |
+| `save_hard_state()`  | Persist term/vote state (durable after the next `flush()`)                                                      | High - atomic required |
+| `load_hard_state()`  | Load persisted term/vote state                                                                                  | High                   |
 | `is_write_durable()` | Whether persist_entries() is crash-safe without flush()                                                         | sync, no I/O           |
-| `flush()`            | Sync writes to stable storage (called when `is_write_durable() == false`)                                       | Varies by backend      |
+| `flush()`            | Make log entries and the hard state durable; required, `Ok(())` if writes are already durable                  | Varies by backend      |
 | `reset()`            | Clear all data                                                                                                  | <1s                    |
 | `last_index()`       | Get highest persisted index                                                                                     | <100μs                 |
-
-### MetaStore Methods
-
-| Method              | Purpose                 | Criticality            |
-| ------------------- | ----------------------- | ---------------------- |
-| `save_hard_state()` | Persist term/vote state | High - atomic required |
-| `load_hard_state()` | Load persisted state    | High                   |
-| `flush()`           | Sync metadata writes    | Medium                 |
 
 ## 4. Testing Your Implementation
 

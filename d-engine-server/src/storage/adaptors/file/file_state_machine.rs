@@ -234,7 +234,7 @@ pub struct FileStateMachine {
 /// The bytes go to a sibling temporary file and are synced to disk; the temporary file is then
 /// renamed over `path` (atomic on one filesystem), and the directory is synced so the rename
 /// itself survives a power loss. A temporary file left behind by an earlier crash is overwritten.
-fn write_file_atomically(
+pub(super) fn write_file_atomically(
     path: &std::path::Path,
     contents: &[u8],
 ) -> io::Result<()> {

@@ -13,7 +13,6 @@ use tokio::sync::Barrier;
 use tokio::time::Instant;
 
 use crate::MockLogStore;
-use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLog;
@@ -36,7 +35,7 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
         Ok(())
     });
 
-    Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new()))
+    Arc::new(MockStorageEngine::from(log_store))
 }
 
 // Tests reset performance during active flush
@@ -160,7 +159,7 @@ async fn test_fresh_cluster_performance_consistency() {
 
     let log = RaftLogCore::<MockTypeConfig>::new(
         1,
-        Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
+        Arc::new(MockStorageEngine::from(log_store)),
         None,
         5000,
     );

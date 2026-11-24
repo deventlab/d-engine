@@ -6,7 +6,6 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 
 use crate::MockLogStore;
-use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLogCore;
@@ -183,12 +182,10 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
     log_store.expect_is_write_durable().returning(|| true);
     log_store.expect_flush().returning(|| Ok(()));
 
-    let mut meta_store = MockMetaStore::new();
-    meta_store.expect_save_hard_state().returning(|_| Ok(()));
-    meta_store.expect_load_hard_state().returning(|| Ok(None));
-    meta_store.expect_flush().returning(|| Ok(()));
+    log_store.expect_save_hard_state().returning(|_| Ok(()));
+    log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let storage = Arc::new(MockStorageEngine::from(log_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Append [1..4] term=1 — persisted inline.

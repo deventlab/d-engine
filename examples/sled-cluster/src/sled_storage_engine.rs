@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    Error, HardState, LogStore, MetaStore, ProstError, Result, StorageEngine, StorageError,
+    Error, HardState, LogStore, ProstError, Result, StorageEngine, StorageError,
     common::{Entry, LogId},
 };
 use prost::Message;
@@ -19,34 +19,23 @@ const HARD_STATE_KEY: &[u8] = b"hard_state";
 const RAFT_LOG_NAMESPACE: &str = "raft_log";
 const RAFT_META_NAMESPACE: &str = "raft_meta";
 
-/// Dedicated log store implementation
+/// The log store: the Raft log in one tree, the hard state in another
 pub struct SledLogStore {
     tree: sled::Tree,
-}
-
-/// Dedicated metadata store implementation
-pub struct SledMetaStore {
-    tree: sled::Tree,
+    meta_tree: sled::Tree,
 }
 
 /// Unified storage engine
 pub struct SledStorageEngine {
     log_store: Arc<SledLogStore>,
-    meta_store: Arc<SledMetaStore>,
 }
 
 impl StorageEngine for SledStorageEngine {
     type LogStore = SledLogStore;
-    type MetaStore = SledMetaStore;
 
     #[inline]
     fn log_store(&self) -> Arc<Self::LogStore> {
         self.log_store.clone()
-    }
-
-    #[inline]
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
     }
 }
 
@@ -168,41 +157,6 @@ impl LogStore for SledLogStore {
         Ok(new_last)
     }
 
-    fn is_write_durable(&self) -> bool {
-        // apply_batch writes to sled's in-memory log; tree.flush() in flush() provides crash-safety.
-        false
-    }
-
-    fn flush(&self) -> Result<()> {
-        trace!("LogStore flush");
-        self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn reset(&self) -> Result<()> {
-        self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    fn last_index(&self) -> u64 {
-        match self.tree.last() {
-            Ok(Some((key, _))) => {
-                if key.len() >= 8 {
-                    let mut bytes = [0u8; 8];
-                    bytes.copy_from_slice(&key[0..8]);
-                    u64::from_be_bytes(bytes)
-                } else {
-                    tracing::warn!("Invalid key format in sled: key too short");
-                    0
-                }
-            }
-            _ => 0,
-        }
-    }
-}
-
-#[async_trait]
-impl MetaStore for SledMetaStore {
     fn save_hard_state(
         &self,
         state: &HardState,
@@ -210,7 +164,7 @@ impl MetaStore for SledMetaStore {
         let config = config::standard();
         match bincode::serde::encode_to_vec(state, config) {
             Ok(v) => {
-                self.tree
+                self.meta_tree
                     .insert(HARD_STATE_KEY, IVec::from(v.as_ref() as &[u8]))
                     .map_err(|e| StorageError::DbError(e.to_string()))?;
 
@@ -278,9 +232,37 @@ impl MetaStore for SledMetaStore {
         }
     }
 
+    fn is_write_durable(&self) -> bool {
+        // apply_batch writes to sled's in-memory log; tree.flush() in flush() provides crash-safety.
+        false
+    }
+
     fn flush(&self) -> Result<()> {
+        trace!("LogStore flush");
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.meta_tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
+    }
+
+    async fn reset(&self) -> Result<()> {
+        self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
+    }
+
+    fn last_index(&self) -> u64 {
+        match self.tree.last() {
+            Ok(Some((key, _))) => {
+                if key.len() >= 8 {
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&key[0..8]);
+                    u64::from_be_bytes(bytes)
+                } else {
+                    tracing::warn!("Invalid key format in sled: key too short");
+                    0
+                }
+            }
+            _ => 0,
+        }
     }
 }
 
@@ -298,10 +280,6 @@ impl Drop for SledStorageEngine {
         match self.log_store.flush() {
             Ok(_) => info!("Successfully flush log_store"),
             Err(e) => error!(?e, "Failed to flush log_store"),
-        }
-        match self.meta_store.flush() {
-            Ok(_) => info!("Successfully flush meta_store"),
-            Err(e) => error!(?e, "Failed to flush meta_store"),
         }
     }
 }
@@ -324,8 +302,10 @@ impl SledStorageEngine {
         );
 
         Ok(Self {
-            log_store: Arc::new(SledLogStore { tree: log_tree }),
-            meta_store: Arc::new(SledMetaStore { tree: meta_tree }),
+            log_store: Arc::new(SledLogStore {
+                tree: log_tree,
+                meta_tree,
+            }),
         })
     }
 
@@ -390,9 +370,10 @@ impl SledLogStore {
     }
 }
 
-impl SledMetaStore {
+impl SledLogStore {
+    /// Test helper: write a raw key into the hard state tree.
     #[cfg(test)]
-    pub fn insert<K, V>(
+    pub fn insert_meta<K, V>(
         &self,
         key: K,
         value: V,
@@ -402,37 +383,13 @@ impl SledMetaStore {
         V: AsRef<[u8]> + 'static,
     {
         match self
-            .tree
+            .meta_tree
             .insert(key, IVec::from(value.as_ref()))
             .map_err(|e| StorageError::DbError(e.to_string()))?
         {
             Some(ivec) => Ok(Some(ivec.to_vec())),
             None => Ok(None),
         }
-    }
-
-    #[cfg(test)]
-    pub fn get<K>(
-        &self,
-        key: K,
-    ) -> Result<Option<Bytes>>
-    where
-        K: AsRef<[u8]> + Send + 'static,
-    {
-        match self.tree.get(key.as_ref()).map_err(|e| StorageError::DbError(e.to_string()))? {
-            Some(ivec) => Ok(Some(Bytes::copy_from_slice(ivec.as_ref()))),
-            None => Ok(None),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.tree.len()
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 

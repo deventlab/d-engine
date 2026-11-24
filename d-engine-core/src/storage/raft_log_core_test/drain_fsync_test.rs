@@ -26,7 +26,6 @@ use tokio::time::timeout;
 use crate::Error;
 use crate::HardState;
 use crate::MockLogStore;
-use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLog;
@@ -544,7 +543,7 @@ async fn test_save_hard_state_failure_poisons() {
 }
 
 /// Once already poisoned, `save_hard_state()` must be rejected immediately
-/// without ever calling `meta_store.save_hard_state()`.
+/// without ever calling `log_store.save_hard_state()`.
 #[tokio::test]
 async fn test_poisoned_rejects_save_hard_state() {
     let storage = Arc::new(MockStorageEngine::with_id(
@@ -887,12 +886,10 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     log_store.expect_is_write_durable().returning(|| false);
     log_store.expect_flush().returning(|| Ok(()));
 
-    let mut meta_store = MockMetaStore::new();
-    meta_store.expect_save_hard_state().returning(|_| Ok(()));
-    meta_store.expect_load_hard_state().returning(|| Ok(None));
-    meta_store.expect_flush().returning(|| Ok(()));
+    log_store.expect_save_hard_state().returning(|_| Ok(()));
+    log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let storage = Arc::new(MockStorageEngine::from(log_store));
     // No log_flush_tx: FsyncCompleted is never consumed, so durable_index
     // stays pinned at 0 for the whole test.
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -966,12 +963,10 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     log_store.expect_is_write_durable().returning(|| false);
     log_store.expect_flush().returning(|| Ok(()));
 
-    let mut meta_store = MockMetaStore::new();
-    meta_store.expect_save_hard_state().returning(|_| Ok(()));
-    meta_store.expect_load_hard_state().returning(|| Ok(None));
-    meta_store.expect_flush().returning(|| Ok(()));
+    log_store.expect_save_hard_state().returning(|_| Ok(()));
+    log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let storage = Arc::new(MockStorageEngine::from(log_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 
@@ -1013,9 +1008,9 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
 /// without it.
 ///
 /// Expected:
-/// - The meta store is flushed after the hard state is saved, before the call returns.
+/// - The store is flushed after the hard state is saved, before the call returns.
 #[tokio::test]
-async fn test_save_hard_state_flushes_meta_store_before_returning() {
+async fn test_save_hard_state_flushes_before_returning() {
     let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
     let mut log_store = MockLogStore::new();
@@ -1031,22 +1026,20 @@ async fn test_save_hard_state_flushes_meta_store_before_returning() {
     log_store.expect_load_purge_boundary().returning(|| Ok(None));
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
 
-    let mut meta_store = MockMetaStore::new();
     let saved = Arc::clone(&events);
-    meta_store.expect_save_hard_state().returning(move |_| {
+    log_store.expect_save_hard_state().returning(move |_| {
         saved.lock().unwrap().push("save");
         Ok(())
     });
     let flushed = Arc::clone(&events);
-    meta_store.expect_flush().returning(move || {
+    log_store.expect_flush().returning(move || {
         flushed.lock().unwrap().push("flush");
         Ok(())
     });
-    meta_store.expect_load_hard_state().returning(|| Ok(None));
+    log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let storage = Arc::new(MockStorageEngine::from(log_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     raft_log
@@ -1083,16 +1076,14 @@ async fn test_save_hard_state_flush_failure_poisons() {
     log_store.expect_get_entries().returning(|_| Ok(vec![]));
     log_store.expect_load_purge_boundary().returning(|| Ok(None));
     log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
 
-    let mut meta_store = MockMetaStore::new();
-    meta_store.expect_save_hard_state().returning(|_| Ok(()));
-    meta_store.expect_load_hard_state().returning(|| Ok(None));
-    meta_store
+    log_store.expect_save_hard_state().returning(|_| Ok(()));
+    log_store.expect_load_hard_state().returning(|| Ok(None));
+    log_store
         .expect_flush()
         .returning(|| Err(crate::StorageError::DbError("fsync failed".to_string()).into()));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let storage = Arc::new(MockStorageEngine::from(log_store));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     let result = raft_log.save_hard_state(&HardState {

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use d_engine::common::{Entry, EntryPayload, LogId, entry_payload};
-use d_engine::{HardState, LogStore, MetaStore, StorageEngine};
+use d_engine::{HardState, LogStore, StorageEngine};
 use prost::bytes::Bytes;
 
 use crate::options::RaftEngineOptions;
@@ -323,26 +323,25 @@ async fn test_log_reset_keeps_hard_state_and_purge_boundary() {
     {
         let storage = RaftEngineStorage::open(dir.path()).unwrap();
         append_durable(&storage, entries(1..=5, 2)).await;
-        let meta = storage.meta_store();
-        meta.save_hard_state(&HardState {
+        let log = storage.log_store();
+        log.save_hard_state(&HardState {
             current_term: 9,
             voted_for: None,
         })
         .unwrap();
-        let log = storage.log_store();
         log.purge(boundary).await.unwrap();
 
         log.reset().await.unwrap();
         log.flush().unwrap();
 
         assert_eq!(log.last_index(), 0);
-        assert_eq!(meta.load_hard_state().unwrap().unwrap().current_term, 9);
+        assert_eq!(log.load_hard_state().unwrap().unwrap().current_term, 9);
         assert_eq!(log.load_purge_boundary().unwrap(), Some(boundary));
     }
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.log_store().last_index(), 0);
-    assert_eq!(storage.meta_store().load_hard_state().unwrap().unwrap().current_term, 9);
+    assert_eq!(storage.log_store().load_hard_state().unwrap().unwrap().current_term, 9);
     assert_eq!(storage.log_store().load_purge_boundary().unwrap(), Some(boundary));
 }
 
@@ -362,19 +361,19 @@ async fn test_meta_hard_state_survives_reopen() {
     let dir = TestDir::new("hard-state");
     {
         let storage = RaftEngineStorage::open(dir.path()).unwrap();
-        let meta = storage.meta_store();
-        assert!(meta.load_hard_state().unwrap().is_none());
+        let log = storage.log_store();
+        assert!(log.load_hard_state().unwrap().is_none());
 
-        meta.save_hard_state(&HardState {
+        log.save_hard_state(&HardState {
             current_term: 42,
             voted_for: None,
         })
         .unwrap();
-        meta.flush().unwrap();
+        log.flush().unwrap();
     }
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
-    let loaded = storage.meta_store().load_hard_state().unwrap().unwrap();
+    let loaded = storage.log_store().load_hard_state().unwrap().unwrap();
     assert_eq!(loaded.current_term, 42);
     assert!(loaded.voted_for.is_none());
 }
@@ -387,19 +386,19 @@ async fn test_log_and_hard_state_are_independent_after_reopen() {
     {
         let storage = RaftEngineStorage::open(dir.path()).unwrap();
         append_durable(&storage, entries(1..=3, 7)).await;
-        let meta = storage.meta_store();
-        meta.save_hard_state(&HardState {
+        let log = storage.log_store();
+        log.save_hard_state(&HardState {
             current_term: 7,
             voted_for: None,
         })
         .unwrap();
-        meta.flush().unwrap();
+        log.flush().unwrap();
         storage.log_store().purge(LogId { term: 7, index: 1 }).await.unwrap();
         storage.log_store().flush().unwrap();
     }
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
-    assert_eq!(storage.meta_store().load_hard_state().unwrap().unwrap().current_term, 7);
+    assert_eq!(storage.log_store().load_hard_state().unwrap().unwrap().current_term, 7);
     assert_eq!(storage.log_store().last_index(), 3);
 }
 

@@ -30,7 +30,6 @@ use d_engine_server::FileStorageEngine;
 use d_engine_server::HardState;
 use d_engine_server::LeaderInfo;
 use d_engine_server::LogStore;
-use d_engine_server::MetaStore;
 use d_engine_server::StandaloneEngine;
 use d_engine_server::StorageEngine;
 use d_engine_server::node::RaftTypeConfig;
@@ -392,7 +391,7 @@ pub fn init_hard_state(
 ) {
     assert!(
         storage_engine
-            .meta_store()
+            .log_store()
             .save_hard_state(&HardState {
                 current_term,
                 voted_for,

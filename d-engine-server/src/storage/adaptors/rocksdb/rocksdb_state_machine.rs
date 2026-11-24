@@ -520,9 +520,8 @@ impl RocksDBStateMachine {
     /// crash would never get). Callers copy the data directory to a fresh path
     /// immediately after calling this, then open the copy to simulate restart —
     /// `cancel_all_background_work` stops SST files from being renamed/deleted
-    /// mid-copy. This is DB-wide: since `RocksDBLogStore`/`RocksDBMetaStore` share
-    /// the same underlying `rocksdb::DB`, calling this via the SM handle alone
-    /// quiesces the whole physical DB.
+    /// mid-copy. This covers the whole state machine database; the Raft log is a separate
+    /// database and is not affected.
     ///
     /// Do not use on any graceful-shutdown path — use `close_db()` for that.
     #[cfg(any(test, feature = "__test_support"))]
