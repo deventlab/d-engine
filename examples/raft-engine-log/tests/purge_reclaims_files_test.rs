@@ -54,23 +54,22 @@ async fn test_purge_thread_releases_files_after_purge() {
         },
     )
     .unwrap();
-    let log = &storage;
 
     for chunk in 0..60u64 {
         let batch: Vec<Entry> = (1..=100).map(|i| entry(chunk * 100 + i)).collect();
-        log.persist_entries(batch).await.unwrap();
-        log.flush().unwrap();
+        storage.persist_entries(batch).await.unwrap();
+        storage.flush().unwrap();
     }
     let before = log_file_seqs(&log_dir);
     assert!(before.len() >= 4, "expected several log files, got {before:?}");
 
-    log.purge(LogId {
+    storage.purge(LogId {
         term: 1,
         index: 5_900,
     })
     .await
     .unwrap();
-    log.flush().unwrap();
+    storage.flush().unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {

@@ -35,46 +35,43 @@ fn setup_storage() -> (Arc<FileStorageEngine>, TempDir) {
 #[traced_test]
 async fn test_empty_storage() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
 
-    assert_eq!(log_store.last_index(), 0);
-    assert!(log_store.entry(1).await.unwrap().is_none());
-    assert!(log_store.get_entries(1..=5).unwrap().is_empty());
+    assert_eq!(storage.last_index(), 0);
+    assert!(storage.entry(1).await.unwrap().is_none());
+    assert!(storage.get_entries(1..=5).unwrap().is_empty());
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_single_entry_persistence() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
     let entries = create_entries(1..=1);
 
     // Persist and retrieve
-    log_store.persist_entries(entries.clone()).await.unwrap();
-    assert_eq!(log_store.last_index(), 1);
-    assert_eq!(log_store.entry(1).await.unwrap().unwrap(), entries[0]);
-    assert_eq!(log_store.get_entries(1..=1).unwrap(), entries);
+    storage.persist_entries(entries.clone()).await.unwrap();
+    assert_eq!(storage.last_index(), 1);
+    assert_eq!(storage.entry(1).await.unwrap().unwrap(), entries[0]);
+    assert_eq!(storage.get_entries(1..=1).unwrap(), entries);
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_batch_persistence() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
     let entries = create_entries(1..=100);
 
-    log_store.persist_entries(entries.clone()).await.unwrap();
+    storage.persist_entries(entries.clone()).await.unwrap();
 
     // Verify all entries
-    assert_eq!(log_store.last_index(), 100);
+    assert_eq!(storage.last_index(), 100);
 
     // Spot check random entries
-    assert_eq!(log_store.entry(1).await.unwrap().unwrap(), entries[0]);
-    assert_eq!(log_store.entry(50).await.unwrap().unwrap(), entries[49]);
-    assert_eq!(log_store.entry(100).await.unwrap().unwrap(), entries[99]);
+    assert_eq!(storage.entry(1).await.unwrap().unwrap(), entries[0]);
+    assert_eq!(storage.entry(50).await.unwrap().unwrap(), entries[49]);
+    assert_eq!(storage.entry(100).await.unwrap().unwrap(), entries[99]);
 
     // Verify range query
-    let range = log_store.get_entries(25..=75).unwrap();
+    let range = storage.get_entries(25..=75).unwrap();
     assert_eq!(range.len(), 51);
     assert_eq!(range[0], entries[24]);
     assert_eq!(range[50], entries[74]);
@@ -84,11 +81,10 @@ async fn test_batch_persistence() {
 #[traced_test]
 async fn test_purge_logs() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
-    log_store.persist_entries(create_entries(1..=100)).await.unwrap();
+    storage.persist_entries(create_entries(1..=100)).await.unwrap();
 
     // Purge first 50 entries
-    log_store
+    storage
         .purge(LogId {
             index: 50,
             term: 50,
@@ -96,53 +92,50 @@ async fn test_purge_logs() {
         .await
         .unwrap();
 
-    assert_eq!(log_store.last_index(), 100); // Last index should remain
-    assert!(log_store.entry(1).await.unwrap().is_none());
-    assert!(log_store.entry(50).await.unwrap().is_none());
-    assert!(log_store.entry(51).await.unwrap().is_some());
+    assert_eq!(storage.last_index(), 100); // Last index should remain
+    assert!(storage.entry(1).await.unwrap().is_none());
+    assert!(storage.entry(50).await.unwrap().is_none());
+    assert!(storage.entry(51).await.unwrap().is_some());
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_truncation() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
-    log_store.persist_entries(create_entries(1..=100)).await.unwrap();
+    storage.persist_entries(create_entries(1..=100)).await.unwrap();
 
     // Truncate from index 76 onward
-    log_store.truncate(76).await.unwrap();
+    storage.truncate(76).await.unwrap();
 
-    assert_eq!(log_store.last_index(), 75);
-    assert!(log_store.entry(76).await.unwrap().is_none());
-    assert!(log_store.entry(100).await.unwrap().is_none());
-    assert!(log_store.entry(75).await.unwrap().is_some());
+    assert_eq!(storage.last_index(), 75);
+    assert!(storage.entry(76).await.unwrap().is_none());
+    assert!(storage.entry(100).await.unwrap().is_none());
+    assert!(storage.entry(75).await.unwrap().is_some());
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_reset_operation() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
-    log_store.persist_entries(create_entries(1..=50)).await.unwrap();
+    storage.persist_entries(create_entries(1..=50)).await.unwrap();
 
-    log_store.reset().await.unwrap();
+    storage.reset().await.unwrap();
 
-    assert_eq!(log_store.last_index(), 0);
-    assert!(log_store.entry(1).await.unwrap().is_none());
+    assert_eq!(storage.last_index(), 0);
+    assert!(storage.entry(1).await.unwrap().is_none());
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_edge_cases() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
 
     // Empty persistence
-    log_store.persist_entries(vec![]).await.unwrap();
-    assert_eq!(log_store.last_index(), 0);
+    storage.persist_entries(vec![]).await.unwrap();
+    assert_eq!(storage.last_index(), 0);
 
     // Out-of-range access
-    assert!(log_store.get_entries(100..=200).unwrap().is_empty());
+    assert!(storage.get_entries(100..=200).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -168,16 +161,14 @@ async fn test_corrupted_data_handling() {
     // This test is less relevant for file storage as we don't directly manipulate the file bytes
     // But we can test error handling for invalid operations
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
 
     // Try to access non-existent entry
-    assert!(log_store.entry(999).await.unwrap().is_none());
+    assert!(storage.entry(999).await.unwrap().is_none());
 }
 
 #[test]
 fn test_hard_state_persistence() {
     let (storage, dir) = setup_storage();
-    let store = storage.clone();
     let hard_state = HardState {
         current_term: 5,
         voted_for: Some(VotedFor {
@@ -188,13 +179,12 @@ fn test_hard_state_persistence() {
     };
 
     // Save and verify in-memory
-    store.save_hard_state(&hard_state).unwrap();
-    let loaded = store.load_hard_state().unwrap().unwrap();
+    storage.save_hard_state(&hard_state).unwrap();
+    let loaded = storage.load_hard_state().unwrap().unwrap();
     assert_eq!(loaded.current_term, 5);
 
     // Test durability after restart
-    drop(store); // Release resources
-    drop(storage);
+    drop(storage); // Release resources
 
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
     let reloaded = storage2.load_hard_state().unwrap().unwrap();
@@ -205,8 +195,6 @@ fn test_hard_state_persistence() {
 #[traced_test]
 async fn test_reset_preserves_meta() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
-    let store = storage.clone();
 
     let hard_state = HardState {
         current_term: 3,
@@ -216,12 +204,12 @@ async fn test_reset_preserves_meta() {
             committed: false,
         }),
     };
-    store.save_hard_state(&hard_state).unwrap();
+    storage.save_hard_state(&hard_state).unwrap();
 
     // Reset should clear logs but keep meta
-    log_store.reset().await.unwrap();
+    storage.reset().await.unwrap();
 
-    let loaded = store.load_hard_state().unwrap();
+    let loaded = storage.load_hard_state().unwrap();
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap().current_term, 3);
 }
@@ -230,12 +218,10 @@ async fn test_reset_preserves_meta() {
 #[traced_test]
 async fn test_flush_persists_all_data() {
     let (storage, dir) = setup_storage();
-    let log_store = storage.clone();
-    let store = storage.clone();
 
-    // Write to both stores
-    log_store.persist_entries(create_entries(1..=5)).await.unwrap();
-    store
+    // Write log entries and the hard state
+    storage.persist_entries(create_entries(1..=5)).await.unwrap();
+    storage
         .save_hard_state(&HardState {
             current_term: 2,
             voted_for: Some(VotedFor {
@@ -247,14 +233,12 @@ async fn test_flush_persists_all_data() {
         .unwrap();
 
     // Manually flush and reopen
-    log_store.flush().unwrap();
-    drop(log_store);
-    drop(store);
+    storage.flush().unwrap();
     drop(storage);
 
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
 
-    // Verify both stores
+    // Verify the log entries and the hard state
     assert_eq!(storage2.last_index(), 5);
     assert_eq!(storage2.load_hard_state().unwrap().unwrap().current_term, 2);
 }
@@ -262,11 +246,10 @@ async fn test_flush_persists_all_data() {
 #[test]
 fn test_corrupted_meta_data() {
     let (storage, _dir) = setup_storage();
-    let store = storage.clone();
 
     // This test is challenging for file storage as we don't have direct access to modify the file
     // We'll verify that loading non-existent state returns None
-    assert!(store.load_hard_state().unwrap().is_none());
+    assert!(storage.load_hard_state().unwrap().is_none());
 }
 
 #[test]
@@ -298,29 +281,25 @@ fn test_drop_impl_flushes() {
 #[traced_test]
 async fn test_file_recovery_after_crash() {
     let (storage, dir) = setup_storage();
-    let log_store = storage.clone();
 
     // Write some data
-    log_store.persist_entries(create_entries(1..=10)).await.unwrap();
+    storage.persist_entries(create_entries(1..=10)).await.unwrap();
 
     // Simulate crash by dropping without explicit flush
-    drop(log_store);
     drop(storage);
 
     // Reopen and check if data was recovered
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
-    let log_store2 = &storage2;
 
     // File storage should recover all data since we flush on each write
-    assert_eq!(log_store2.last_index(), 10);
-    assert!(log_store2.entry(5).await.unwrap().is_some());
+    assert_eq!(storage2.last_index(), 10);
+    assert!(storage2.entry(5).await.unwrap().is_some());
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_large_entry_persistence() {
     let (storage, _dir) = setup_storage();
-    let log_store = storage.clone();
 
     // Create a large entry (100KB)
     let large_entry = Entry {
@@ -329,9 +308,9 @@ async fn test_large_entry_persistence() {
         payload: Some(EntryPayload::command(Bytes::from(vec![42; 1024 * 100]))),
     };
 
-    log_store.persist_entries(vec![large_entry.clone()]).await.unwrap();
+    storage.persist_entries(vec![large_entry.clone()]).await.unwrap();
 
-    let retrieved = log_store.entry(1).await.unwrap().unwrap();
+    let retrieved = storage.entry(1).await.unwrap().unwrap();
     assert_eq!(retrieved.index, 1);
     assert_eq!(retrieved.term, 1);
     assert_eq!(retrieved.payload, large_entry.payload);
@@ -510,9 +489,8 @@ mod tests {
         // Phase 1: write [1..5 term=1], truncate(3), write [3,4 term=2]
         {
             let storage = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
-            let log_store = &storage;
 
-            log_store
+            storage
                 .persist_entries(
                     (1..=5)
                         .map(|i| Entry {
@@ -525,9 +503,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            log_store.truncate(3).await.unwrap();
+            storage.truncate(3).await.unwrap();
 
-            log_store
+            storage
                 .persist_entries(vec![
                     Entry {
                         index: 3,
@@ -543,37 +521,35 @@ mod tests {
                 .await
                 .unwrap();
 
-            log_store.flush().unwrap();
+            storage.flush().unwrap();
         } // storage dropped here
 
         // Phase 2: reopen and verify — no stale entries from old tail
         let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
-        let log_store2 = &storage2;
 
-        assert_eq!(log_store2.last_index(), 4);
-        assert_eq!(log_store2.entry(1).await.unwrap().unwrap().term, 1);
-        assert_eq!(log_store2.entry(2).await.unwrap().unwrap().term, 1);
-        assert_eq!(log_store2.entry(3).await.unwrap().unwrap().term, 2);
-        assert_eq!(log_store2.entry(4).await.unwrap().unwrap().term, 2);
+        assert_eq!(storage2.last_index(), 4);
+        assert_eq!(storage2.entry(1).await.unwrap().unwrap().term, 1);
+        assert_eq!(storage2.entry(2).await.unwrap().unwrap().term, 1);
+        assert_eq!(storage2.entry(3).await.unwrap().unwrap().term, 2);
+        assert_eq!(storage2.entry(4).await.unwrap().unwrap().term, 2);
         assert!(
-            log_store2.entry(5).await.unwrap().is_none(),
+            storage2.entry(5).await.unwrap().is_none(),
             "stale entry 5 must not appear after reopen"
         );
     }
 
     /// replace_range removes stale tail and persists new entries.
     ///
-    /// File adaptor uses the default LogStore::replace_range() implementation
+    /// File adaptor uses the default StorageEngine::replace_range() implementation
     /// (truncate + persist_entries sequentially). This test verifies the correct
     /// behavior is preserved, and acts as a regression guard if the default impl changes.
     #[tokio::test]
     #[traced_test]
     async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
         let (storage, _dir) = setup_storage();
-        let log_store = storage.clone();
 
         // Arrange: [1..5] all term=1
-        log_store
+        storage
             .persist_entries(
                 (1..=5)
                     .map(|i| Entry {
@@ -587,7 +563,7 @@ mod tests {
             .unwrap();
 
         // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
-        log_store
+        storage
             .replace_range(
                 3,
                 vec![
@@ -606,15 +582,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(log_store.entry(1).await.unwrap().unwrap().term, 1);
-        assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
-        assert_eq!(log_store.entry(3).await.unwrap().unwrap().term, 2);
-        assert_eq!(log_store.entry(4).await.unwrap().unwrap().term, 2);
+        assert_eq!(storage.entry(1).await.unwrap().unwrap().term, 1);
+        assert_eq!(storage.entry(2).await.unwrap().unwrap().term, 1);
+        assert_eq!(storage.entry(3).await.unwrap().unwrap().term, 2);
+        assert_eq!(storage.entry(4).await.unwrap().unwrap().term, 2);
         assert!(
-            log_store.entry(5).await.unwrap().is_none(),
+            storage.entry(5).await.unwrap().is_none(),
             "entry 5 must be removed"
         );
-        assert_eq!(log_store.last_index(), 4);
+        assert_eq!(storage.last_index(), 4);
     }
 
     /// replace_range with empty new_entries truncates only.
@@ -622,9 +598,8 @@ mod tests {
     #[traced_test]
     async fn test_replace_range_with_empty_entries_truncates_only() {
         let (storage, _dir) = setup_storage();
-        let log_store = storage.clone();
 
-        log_store
+        storage
             .persist_entries(
                 (1..=5)
                     .map(|i| Entry {
@@ -636,11 +611,11 @@ mod tests {
             )
             .await
             .unwrap();
-        log_store.replace_range(3, vec![]).await.unwrap();
+        storage.replace_range(3, vec![]).await.unwrap();
 
-        assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
-        assert!(log_store.entry(3).await.unwrap().is_none());
-        assert_eq!(log_store.last_index(), 2);
+        assert_eq!(storage.entry(2).await.unwrap().unwrap().term, 1);
+        assert!(storage.entry(3).await.unwrap().is_none());
+        assert_eq!(storage.last_index(), 2);
     }
 
     #[tokio::test]
@@ -655,13 +630,12 @@ mod tests {
     #[traced_test]
     async fn test_file_storage_performance_batch_write() {
         let (storage, _dir) = setup_storage();
-        let log_store = storage.clone();
 
         let start = std::time::Instant::now();
         let batch_size = 1000;
 
         // Write 1000 entries
-        log_store.persist_entries(create_entries(1..=batch_size)).await.unwrap();
+        storage.persist_entries(create_entries(1..=batch_size)).await.unwrap();
 
         let duration = start.elapsed();
         let ops_per_sec = batch_size as f64 / duration.as_secs_f64();
@@ -671,17 +645,16 @@ mod tests {
         println!("  - Duration: {duration:?}");
         println!("  - Ops/sec: {ops_per_sec:.2}");
 
-        assert_eq!(log_store.last_index(), batch_size);
+        assert_eq!(storage.last_index(), batch_size);
     }
 
     #[tokio::test]
     #[traced_test]
     async fn test_file_storage_performance_random_read() {
         let (storage, _dir) = setup_storage();
-        let log_store = storage.clone();
 
         let total_entries = 1000u64;
-        log_store.persist_entries(create_entries(1..=total_entries)).await.unwrap();
+        storage.persist_entries(create_entries(1..=total_entries)).await.unwrap();
 
         let start = std::time::Instant::now();
         let read_count = 100;
@@ -689,7 +662,7 @@ mod tests {
         // Random reads
         for i in 1..=read_count {
             let index = (i * 7) % total_entries + 1; // Pseudo-random access
-            let _ = log_store.entry(index).await.unwrap();
+            let _ = storage.entry(index).await.unwrap();
         }
 
         let duration = start.elapsed();
@@ -705,15 +678,14 @@ mod tests {
     #[traced_test]
     async fn test_file_storage_performance_range_query() {
         let (storage, _dir) = setup_storage();
-        let log_store = storage.clone();
 
         let total_entries = 10000u64;
-        log_store.persist_entries(create_entries(1..=total_entries)).await.unwrap();
+        storage.persist_entries(create_entries(1..=total_entries)).await.unwrap();
 
         let start = std::time::Instant::now();
 
         // Range query
-        let range = log_store.get_entries(1000..=2000).unwrap();
+        let range = storage.get_entries(1000..=2000).unwrap();
 
         let duration = start.elapsed();
 
@@ -739,16 +711,15 @@ fn test_save_hard_state_replaces_the_file_instead_of_rewriting_it() {
 
     let dir = tempfile::tempdir().unwrap();
     let engine = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
-    let store = &engine;
     let hard_state = |term| HardState {
         current_term: term,
         voted_for: None,
     };
     let path = dir.path().join("meta").join("hard_state.bin");
 
-    store.save_hard_state(&hard_state(1)).unwrap();
+    engine.save_hard_state(&hard_state(1)).unwrap();
     let first = std::fs::metadata(&path).unwrap().ino();
-    store.save_hard_state(&hard_state(2)).unwrap();
+    engine.save_hard_state(&hard_state(2)).unwrap();
     let second = std::fs::metadata(&path).unwrap().ino();
 
     assert_ne!(

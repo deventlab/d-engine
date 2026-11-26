@@ -99,13 +99,13 @@ async fn test_open_rocksdb_finds_what_the_previous_open_wrote() {
     let dir = TempDir::new().expect("temp dir");
     {
         let (storage, sm) = open_rocksdb(dir.path()).expect("first open");
-        let log = &storage;
-        log.save_hard_state(&HardState {
-            current_term: 5,
-            voted_for: None,
-        })
-        .expect("save hard state");
-        log.flush().expect("flush hard state");
+        storage
+            .save_hard_state(&HardState {
+                current_term: 5,
+                voted_for: None,
+            })
+            .expect("save hard state");
+        storage.flush().expect("flush hard state");
         sm.apply_chunk(&[ApplyEntry {
             index: 1,
             term: 5,

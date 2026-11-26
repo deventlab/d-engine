@@ -19,22 +19,22 @@ use crate::RaftLogCore;
 
 // Test helper: Creates storage with controllable delay
 fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| true);
-    log_store.expect_flush().returning(|| Ok(()));
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| true);
+    mock.expect_flush().returning(|| Ok(()));
 
     // Add controllable delay to persist_entries
-    log_store.expect_persist_entries().returning(move |_| {
+    mock.expect_persist_entries().returning(move |_| {
         let delay = Duration::from_millis(delay_ms);
         std::thread::sleep(delay);
         Ok(())
     });
 
-    Arc::new(log_store)
+    Arc::new(mock)
 }
 
 // Tests reset performance during active flush
@@ -147,16 +147,16 @@ async fn test_fresh_cluster_performance_consistency() {
     // Relax time limit in CI environment
     let max_duration_ms = if is_ci { 50 } else { 5 };
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_is_write_durable().returning(|| true);
-    log_store.expect_flush().return_once(|| Ok(()));
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_persist_entries().returning(|_| Ok(()));
-    log_store.expect_reset().returning(|| Ok(()));
+    let mut mock = MockStorageEngine::new();
+    mock.expect_is_write_durable().returning(|| true);
+    mock.expect_flush().return_once(|| Ok(()));
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_persist_entries().returning(|_| Ok(()));
+    mock.expect_reset().returning(|| Ok(()));
 
-    let log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(log_store), None, 5000);
+    let log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(mock), None, 5000);
 
     // Measure reset performance in fresh cluster
     let start = Instant::now();

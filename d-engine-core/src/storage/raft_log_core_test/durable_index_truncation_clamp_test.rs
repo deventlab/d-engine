@@ -201,31 +201,31 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     // Records the index list of every persist_entries() call.
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
     {
         let calls = persist_calls.clone();
-        log_store.expect_persist_entries().returning(move |entries| {
+        mock.expect_persist_entries().returning(move |entries| {
             calls.lock().unwrap().push(entries.iter().map(|e| e.index).collect());
             Ok(())
         });
     }
-    log_store.expect_replace_range().returning(|from, new_entries| {
+    mock.expect_replace_range().returning(|from, new_entries| {
         Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
     });
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Old leader (term 1): entries 1..=10, persisted.
@@ -285,31 +285,31 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
 async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
     {
         let calls = persist_calls.clone();
-        log_store.expect_persist_entries().returning(move |entries| {
+        mock.expect_persist_entries().returning(move |entries| {
             calls.lock().unwrap().push(entries.iter().map(|e| e.index).collect());
             Ok(())
         });
     }
-    log_store.expect_replace_range().returning(|from, new_entries| {
+    mock.expect_replace_range().returning(|from, new_entries| {
         Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
     });
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Old leader (term 1): 1..=10, all persisted — persisted_index reaches 10.
@@ -357,12 +357,12 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
     let persist_should_fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
     {
         let calls = persist_calls.clone();
         let should_fail = persist_should_fail.clone();
-        log_store.expect_persist_entries().returning(move |entries| {
+        mock.expect_persist_entries().returning(move |entries| {
             calls.lock().unwrap().push(entries.iter().map(|e| e.index).collect());
             if should_fail.load(std::sync::atomic::Ordering::Acquire) {
                 Err(crate::Error::Fatal("simulated disk failure".into()))
@@ -371,20 +371,20 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
             }
         });
     }
-    log_store.expect_replace_range().returning(|_, _| Ok(0));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_replace_range().returning(|_, _| Ok(0));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // First append succeeds — persisted_index catches up to memory_max_index (1).
@@ -432,25 +432,24 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
 /// on that indirect chain and hid the root cause.
 #[tokio::test]
 async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
-    log_store
-        .expect_persist_entries()
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries()
         .returning(|_| Err(crate::Error::Fatal("simulated disk failure".into())));
-    log_store.expect_replace_range().returning(|_, _| Ok(0));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_replace_range().returning(|_, _| Ok(0));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // In memory only: persisted_index (0) < memory_max_index (1), log not poisoned yet.

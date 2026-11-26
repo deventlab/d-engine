@@ -74,7 +74,7 @@ async fn test_writes_become_durable_via_io_thread() {
         "durable_index must advance via FsyncWorker fsync"
     );
 
-    // FsyncWorker called log_store.flush() at least once.
+    // FsyncWorker called storage.flush() at least once.
     assert!(
         flush_count.load(Ordering::Relaxed) >= 1,
         "FsyncWorker must have called flush at least once"
@@ -254,7 +254,7 @@ async fn test_flush_is_strict_durability_barrier() {
 /// within bounded time.
 #[tokio::test]
 async fn test_flush_propagates_io_error() {
-    // Every flush() call on the underlying log store returns an error.
+    // Every flush() call on the underlying storage engine returns an error.
     // This covers both the auto-fsync triggered by append_entries and the explicit
     // flush() call, so timing between the two does not affect the outcome.
     let storage = Arc::new(MockStorageEngine::not_durable_always_failing_flush(
@@ -542,7 +542,7 @@ async fn test_save_hard_state_failure_poisons() {
 }
 
 /// Once already poisoned, `save_hard_state()` must be rejected immediately
-/// without ever calling `log_store.save_hard_state()`.
+/// without ever calling `storage.save_hard_state()`.
 #[tokio::test]
 async fn test_poisoned_rejects_save_hard_state() {
     let storage = Arc::new(MockStorageEngine::with_id(
@@ -575,7 +575,7 @@ async fn test_poisoned_rejects_save_hard_state() {
 // ============================================================================
 
 /// Once already poisoned, `ReplaceRange` must be rejected immediately
-/// without ever calling `log_store.replace_range()`. Proven by checking the
+/// without ever calling `storage.replace_range()`. Proven by checking the
 /// error message: if the underlying mock's own failure ("simulated
 /// replace_range failure") had been reached, the message would differ from
 /// the immediate "raft log storage is poisoned" rejection.
@@ -647,7 +647,7 @@ async fn test_poisoned_skips_replace_range() {
 /// clean wipe, not a write the cluster will rely on), so it's allowed to run
 /// even when poisoned, letting the node reach a known-clean state before it
 /// exits. This test proves `reset()` actually executes (reaches
-/// `log_store.reset()`) instead of being rejected — using a mock whose
+/// `storage.reset()`) instead of being rejected — using a mock whose
 /// `reset()` always succeeds, so the call completing with `Ok(())` is proof
 /// it wasn't skipped.
 #[tokio::test]
@@ -672,7 +672,7 @@ async fn test_poisoned_does_not_skip_reset() {
 }
 
 /// Once already poisoned, `Purge` must be rejected immediately without ever
-/// calling `log_store.purge()`. Proven by checking the error message: if the
+/// calling `storage.purge()`. Proven by checking the error message: if the
 /// underlying mock's own failure had been reached, the message would differ
 /// from the immediate "raft log storage is poisoned" rejection — the same
 /// pattern `test_poisoned_skips_replace_range` uses. `purge_and_advance` now
@@ -867,28 +867,28 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     let persisted_total = Arc::new(AtomicU64::new(0));
     let persisted_total_c = persisted_total.clone();
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_persist_entries().returning(move |entries| {
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries().returning(move |entries| {
         persisted_total_c.fetch_add(entries.len() as u64, Ordering::Relaxed);
         Ok(())
     });
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_replace_range().returning(|from, new_entries| {
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_replace_range().returning(|from, new_entries| {
         Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
     });
-    log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     // No log_flush_tx: FsyncCompleted is never consumed, so durable_index
     // stays pinned at 0 for the whole test.
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -933,9 +933,9 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
 async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 5); // disk already holds 1..=5
-    log_store.expect_get_entries().returning(|range| {
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 5); // disk already holds 1..=5
+    mock.expect_get_entries().returning(|range| {
         Ok(range
             .map(|i| Entry {
                 index: i,
@@ -946,26 +946,25 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     });
     {
         let calls = persist_calls.clone();
-        log_store.expect_persist_entries().returning(move |entries| {
+        mock.expect_persist_entries().returning(move |entries| {
             calls.lock().unwrap().push(entries.iter().map(|e| e.index).collect());
             Ok(())
         });
     }
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store
-        .expect_replace_range()
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_replace_range()
         .returning(|from, e| Ok(e.last().map(|x| x.index).unwrap_or(from.saturating_sub(1))));
-    log_store.expect_is_write_durable().returning(|| false);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 
@@ -1002,7 +1001,7 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
 /// and two candidates can each collect a majority (two leaders in one term).
 ///
 /// The RocksDB engine opens with `manual_wal_flush`, so a plain `put` stays in the WAL buffer
-/// until someone calls `flush_wal`; the meta store's `flush()` is that barrier. A vote answered
+/// until someone calls `flush_wal`; the engine's `flush()` is that barrier. A vote answered
 /// between two log fsyncs, or while the node is idle (no log writes at all), is not durable
 /// without it.
 ///
@@ -1012,33 +1011,33 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
 async fn test_save_hard_state_flushes_before_returning() {
     let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_persist_entries().returning(|_| Ok(()));
-    log_store.expect_replace_range().returning(|from, entries| {
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries().returning(|_| Ok(()));
+    mock.expect_replace_range().returning(|from, entries| {
         Ok(entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
     });
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| false);
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| false);
 
     let saved = Arc::clone(&events);
-    log_store.expect_save_hard_state().returning(move |_| {
+    mock.expect_save_hard_state().returning(move |_| {
         saved.lock().unwrap().push("save");
         Ok(())
     });
     let flushed = Arc::clone(&events);
-    log_store.expect_flush().returning(move || {
+    mock.expect_flush().returning(move || {
         flushed.lock().unwrap().push("flush");
         Ok(())
     });
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     raft_log
@@ -1068,21 +1067,20 @@ async fn test_save_hard_state_flushes_before_returning() {
 /// - `save_hard_state()` returns an error and the log is poisoned (the Raft loop is told to exit).
 #[tokio::test]
 async fn test_save_hard_state_flush_failure_poisons() {
-    let mut log_store = MockStorageEngine::new();
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_persist_entries().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_is_write_durable().returning(|| false);
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_is_write_durable().returning(|| false);
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
-    log_store
-        .expect_flush()
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_flush()
         .returning(|| Err(crate::StorageError::DbError("fsync failed".to_string()).into()));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     let result = raft_log.save_hard_state(&HardState {

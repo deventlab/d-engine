@@ -45,7 +45,7 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
     let pre_write_durable_index = raft_log.durable_index();
 
     // append_entries persists inline, then hands the mark to FsyncWorker::submit(),
-    // which spawns run_until_caught_up() on its own thread — log_store.flush()
+    // which spawns run_until_caught_up() on its own thread — storage.flush()
     // blocks on flush_gate there.
     raft_log
         .append_entries(vec![Entry {
@@ -298,7 +298,7 @@ async fn test_durable_index_monotonic_when_fsyncs_complete_out_of_order() {
 /// to `Ok(())`.
 ///
 /// Core contract of `FsyncWorker::run_until_caught_up`: the reply is sent after
-/// `log_store.flush()` returns — never before.
+/// `storage.flush()` returns — never before.
 #[tokio::test]
 async fn test_flush_caller_blocked_until_fsync_completes() {
     let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(

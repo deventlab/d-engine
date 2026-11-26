@@ -265,7 +265,7 @@ where
     /// # Parameters
     /// - `my_term`: Current node's term
     /// - `request`: Leader's AppendEntries RPC
-    /// - `raft_log`: Reference to node's log store
+    /// - `raft_log`: Reference to the node's Raft log
     ///
     /// # Return
     /// - [`AppendEntriesResponse::success`] if validation passes

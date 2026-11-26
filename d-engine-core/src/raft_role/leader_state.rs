@@ -387,7 +387,7 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// === Volatile copy of Persistent State ===
     /// In-memory copy of the last physically removed log position. The persisted source of
-    /// truth is the log store's purge boundary.
+    /// truth is the storage engine's purge boundary.
     ///
     /// This value is atomically updated when:
     /// 1. A new snapshot is persisted (marking logs up to `last_included_index` as purgeable)

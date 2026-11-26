@@ -163,28 +163,27 @@ async fn test_close_flushes_multiple_batches() {
 ///    memory with nothing left to ever persist them.
 #[tokio::test]
 async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
-    let mut log_store = MockStorageEngine::new();
+    let mut mock = MockStorageEngine::new();
 
     // replace_range always fails — simulates an unrecoverable disk error.
-    log_store
-        .expect_replace_range()
+    mock.expect_replace_range()
         .returning(|_, _| Err(crate::Error::Fatal("simulated disk failure".into())));
 
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_persist_entries().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_is_write_durable().returning(|| true);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_truncate().returning(|_| Ok(()));
+    mock.expect_is_write_durable().returning(|| true);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Append [1..4] term=1 — persisted inline.

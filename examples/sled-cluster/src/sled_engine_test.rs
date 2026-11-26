@@ -39,7 +39,6 @@ impl SledStorageEngineBuilder {
 async fn test_sled_storage_engine_basic() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.clone();
 
     // Basic test: persist a few entries
     let entries = vec![
@@ -55,10 +54,10 @@ async fn test_sled_storage_engine_basic() -> Result<()> {
         },
     ];
 
-    log_store.persist_entries(entries).await?;
+    engine.persist_entries(entries).await?;
 
     // Verify entries can be retrieved
-    let retrieved = log_store.entry(1).await?;
+    let retrieved = engine.entry(1).await?;
     assert!(retrieved.is_some(), "Entry 1 should exist");
 
     Ok(())
@@ -69,7 +68,6 @@ async fn test_sled_storage_engine_basic() -> Result<()> {
 async fn test_sled_performance() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.clone();
 
     // Performance test: persist 10,000 entries
     let start = std::time::Instant::now();
@@ -81,7 +79,7 @@ async fn test_sled_performance() -> Result<()> {
         })
         .collect();
 
-    log_store.persist_entries(entries).await?;
+    engine.persist_entries(entries).await?;
     let duration = start.elapsed();
 
     debug!("Persisted 10,000 entries in {duration:?}");
@@ -104,10 +102,9 @@ async fn test_sled_performance() -> Result<()> {
 async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.clone();
 
     // Arrange: [1(t1)..5(t1)]
-    log_store
+    engine
         .persist_entries(
             (1..=5)
                 .map(|i| Entry { index: i, term: 1, payload: None })
@@ -116,7 +113,7 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Res
         .await?;
 
     // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
-    log_store
+    engine
         .replace_range(
             3,
             vec![
@@ -126,12 +123,12 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Res
         )
         .await?;
 
-    assert_eq!(log_store.entry(1).await?.unwrap().term, 1);
-    assert_eq!(log_store.entry(2).await?.unwrap().term, 1);
-    assert_eq!(log_store.entry(3).await?.unwrap().term, 2);
-    assert_eq!(log_store.entry(4).await?.unwrap().term, 2);
-    assert!(log_store.entry(5).await?.is_none(), "entry 5 must be removed");
-    assert_eq!(log_store.last_index(), 4);
+    assert_eq!(engine.entry(1).await?.unwrap().term, 1);
+    assert_eq!(engine.entry(2).await?.unwrap().term, 1);
+    assert_eq!(engine.entry(3).await?.unwrap().term, 2);
+    assert_eq!(engine.entry(4).await?.unwrap().term, 2);
+    assert!(engine.entry(5).await?.is_none(), "entry 5 must be removed");
+    assert_eq!(engine.last_index(), 4);
     Ok(())
 }
 
@@ -141,9 +138,8 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Res
 async fn test_replace_range_with_empty_entries_truncates_only() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.clone();
 
-    log_store
+    engine
         .persist_entries(
             (1..=5)
                 .map(|i| Entry { index: i, term: 1, payload: None })
@@ -151,11 +147,11 @@ async fn test_replace_range_with_empty_entries_truncates_only() -> Result<()> {
         )
         .await?;
 
-    log_store.replace_range(3, vec![]).await?;
+    engine.replace_range(3, vec![]).await?;
 
-    assert_eq!(log_store.entry(2).await?.unwrap().term, 1);
-    assert!(log_store.entry(3).await?.is_none());
-    assert_eq!(log_store.last_index(), 2);
+    assert_eq!(engine.entry(2).await?.unwrap().term, 1);
+    assert!(engine.entry(3).await?.is_none());
+    assert_eq!(engine.last_index(), 2);
     Ok(())
 }
 

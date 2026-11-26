@@ -26,7 +26,7 @@ use tracing::info;
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
 
-/// All mutable state for the log store, protected by a single Mutex.
+/// All mutable state of the file storage engine, protected by a single Mutex.
 ///
 /// Combining entries, file handle, and position index under one lock eliminates
 /// the three-lock ordering problem and makes replace_range() atomic at the

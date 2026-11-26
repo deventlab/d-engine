@@ -95,7 +95,6 @@ async fn test_rocksdb_storage_engine() -> Result<(), Error> {
 async fn test_rocksdb_performance() -> Result<(), Error> {
     let builder = RocksDBStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.clone();
 
     // Performance test: persist 10,000 entries
     let start = std::time::Instant::now();
@@ -107,7 +106,7 @@ async fn test_rocksdb_performance() -> Result<(), Error> {
         })
         .collect();
 
-    log_store.persist_entries(entries).await?;
+    engine.persist_entries(entries).await?;
     let duration = start.elapsed();
 
     debug!("Persisted 10,000 entries in {duration:?}");
@@ -148,32 +147,28 @@ async fn build_engine() -> (Arc<RocksDBStorageEngine>, tempfile::TempDir) {
 #[traced_test]
 async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
     let (engine, _dir) = build_engine().await;
-    let log_store = engine.clone();
 
     // Arrange: [1(t1), 2(t1), 3(t1), 4(t1), 5(t1)]
-    log_store
+    engine
         .persist_entries((1..=5).map(|i| make_entry(i, 1)).collect())
         .await
         .unwrap();
 
     // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
-    log_store
-        .replace_range(3, vec![make_entry(3, 2), make_entry(4, 2)])
-        .await
-        .unwrap();
+    engine.replace_range(3, vec![make_entry(3, 2), make_entry(4, 2)]).await.unwrap();
 
     // Entries before conflict are unchanged
-    assert_eq!(log_store.entry(1).await.unwrap().unwrap().term, 1);
-    assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
+    assert_eq!(engine.entry(1).await.unwrap().unwrap().term, 1);
+    assert_eq!(engine.entry(2).await.unwrap().unwrap().term, 1);
     // New entries present with correct term
-    assert_eq!(log_store.entry(3).await.unwrap().unwrap().term, 2);
-    assert_eq!(log_store.entry(4).await.unwrap().unwrap().term, 2);
+    assert_eq!(engine.entry(3).await.unwrap().unwrap().term, 2);
+    assert_eq!(engine.entry(4).await.unwrap().unwrap().term, 2);
     // Stale tail removed
     assert!(
-        log_store.entry(5).await.unwrap().is_none(),
+        engine.entry(5).await.unwrap().is_none(),
         "entry 5 must be removed"
     );
-    assert_eq!(log_store.last_index(), 4);
+    assert_eq!(engine.last_index(), 4);
 }
 
 /// replace_range with empty new_entries truncates only — no new entries written.
@@ -184,18 +179,17 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
 #[traced_test]
 async fn test_replace_range_with_empty_entries_truncates_only() {
     let (engine, _dir) = build_engine().await;
-    let log_store = engine.clone();
 
-    log_store
+    engine
         .persist_entries((1..=5).map(|i| make_entry(i, 1)).collect())
         .await
         .unwrap();
 
-    log_store.replace_range(3, vec![]).await.unwrap();
+    engine.replace_range(3, vec![]).await.unwrap();
 
-    assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
-    assert!(log_store.entry(3).await.unwrap().is_none());
-    assert_eq!(log_store.last_index(), 2);
+    assert_eq!(engine.entry(2).await.unwrap().unwrap().term, 1);
+    assert!(engine.entry(3).await.unwrap().is_none());
+    assert_eq!(engine.last_index(), 2);
 }
 
 fn create_test_command_payload(index: u64) -> d_engine_proto::common::EntryPayload {

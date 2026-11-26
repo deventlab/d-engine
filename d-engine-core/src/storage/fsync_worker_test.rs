@@ -23,13 +23,13 @@ use crate::InternalEvent;
 use crate::MockStorageEngine;
 use crate::Result;
 
-/// Build a bare `FsyncWorker` over a mock log store — no tokio runtime, no
+/// Build a bare `FsyncWorker` over a mock storage engine — no tokio runtime, no
 /// `RaftLogCore`. `internal_event_tx` is `None`, so the worker never sends
 /// `FsyncCompleted`; tests that need to observe completion wire their own.
-fn minimal_worker(log_store: Arc<MockStorageEngine>) -> Arc<FsyncWorker<MockStorageEngine>> {
+fn minimal_worker(storage: Arc<MockStorageEngine>) -> Arc<FsyncWorker<MockStorageEngine>> {
     Arc::new(FsyncWorker::new(
         1,
-        log_store,
+        storage,
         Arc::new(AtomicBool::new(false)),
         None,
     ))
@@ -341,20 +341,15 @@ fn test_run_until_caught_up_discards_stale_generation_result_without_advancing()
     let worker: Arc<FsyncWorker<MockStorageEngine>> =
         Arc::new_cyclic(|weak: &std::sync::Weak<FsyncWorker<MockStorageEngine>>| {
             let weak_in_mock = weak.clone();
-            let mut mock_log_store = MockStorageEngine::new();
-            mock_log_store.expect_is_write_durable().returning(|| false);
-            mock_log_store.expect_flush().returning(move || {
+            let mut mock = MockStorageEngine::new();
+            mock.expect_is_write_durable().returning(|| false);
+            mock.expect_flush().returning(move || {
                 if let Some(w) = weak_in_mock.upgrade() {
                     w.generation.fetch_add(1, Ordering::AcqRel);
                 }
                 Ok(())
             });
-            FsyncWorker::new(
-                1,
-                Arc::new(mock_log_store),
-                Arc::new(AtomicBool::new(false)),
-                None,
-            )
+            FsyncWorker::new(1, Arc::new(mock), Arc::new(AtomicBool::new(false)), None)
         });
 
     let (tx, mut rx) = oneshot::channel::<Result<()>>();
@@ -393,16 +388,16 @@ fn test_run_until_caught_up_poisons_on_flush_failure_even_when_generation_change
         let poisoned = poisoned.clone();
         move |weak: &std::sync::Weak<FsyncWorker<MockStorageEngine>>| {
             let weak_in_mock = weak.clone();
-            let mut mock_log_store = MockStorageEngine::new();
-            mock_log_store.expect_is_write_durable().returning(|| false);
-            mock_log_store.expect_flush().returning(move || {
+            let mut mock = MockStorageEngine::new();
+            mock.expect_is_write_durable().returning(|| false);
+            mock.expect_flush().returning(move || {
                 // Truncation lands while the fdatasync is in flight, then it fails.
                 if let Some(w) = weak_in_mock.upgrade() {
                     w.generation.fetch_add(1, Ordering::AcqRel);
                 }
                 Err(crate::Error::Fatal("simulated fdatasync EIO".into()))
             });
-            FsyncWorker::new(1, Arc::new(mock_log_store), poisoned, Some(tx))
+            FsyncWorker::new(1, Arc::new(mock), poisoned, Some(tx))
         }
     });
 

@@ -431,7 +431,7 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     assert_eq!(recovered.raft_log.entry(3).unwrap().unwrap().term, 2);
 }
 
-/// `replace_range_and_submit` must call LogStore::replace_range() as a single operation,
+/// `replace_range_and_submit` must call StorageEngine::replace_range() as a single operation,
 /// not truncate() + persist_entries() separately.
 ///
 /// # Why
@@ -446,37 +446,37 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
     let replace_range_count = Arc::new(AtomicU64::new(0));
     let truncate_count = Arc::new(AtomicU64::new(0));
 
-    let mut log_store = MockStorageEngine::new();
+    let mut mock = MockStorageEngine::new();
 
     // replace_range() must be called exactly once for one conflict resolution
     let rr_counter = replace_range_count.clone();
-    log_store.expect_replace_range().returning(move |_from, new_entries| {
+    mock.expect_replace_range().returning(move |_from, new_entries| {
         rr_counter.fetch_add(1, Ordering::Relaxed);
         Ok(new_entries.last().map(|e| e.index).unwrap_or(0))
     });
 
     // truncate() must NOT be called — replace_range_and_submit owns the full operation
     let tr_counter = truncate_count.clone();
-    log_store.expect_truncate().returning(move |_| {
+    mock.expect_truncate().returning(move |_| {
         tr_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     });
 
     // Standard expectations for other operations
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_persist_entries().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_is_write_durable().returning(|| true);
-    log_store.expect_flush().returning(|| Ok(()));
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries().returning(|_| Ok(()));
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_reset().returning(|| Ok(()));
+    mock.expect_is_write_durable().returning(|| true);
+    mock.expect_flush().returning(|| Ok(()));
 
-    log_store.expect_save_hard_state().returning(|_| Ok(()));
-    log_store.expect_load_hard_state().returning(|| Ok(None));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(log_store);
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Populate in-memory SkipMap with [1,2,3,4] term=1 so conflict detection fires

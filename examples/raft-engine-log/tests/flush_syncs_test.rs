@@ -38,12 +38,11 @@ async fn test_flush_after_write_performs_physical_sync() {
 
     let dir = TempDir::new().unwrap();
     let storage = RaftEngineStorage::open(dir.path().join("log")).unwrap();
-    let log = &storage;
 
     let mut previous = physical_syncs();
     for index in 1..=5 {
-        log.persist_entries(vec![entry(index)]).await.unwrap();
-        log.flush().unwrap();
+        storage.persist_entries(vec![entry(index)]).await.unwrap();
+        storage.flush().unwrap();
 
         let now = physical_syncs();
         assert!(
@@ -53,12 +52,12 @@ async fn test_flush_after_write_performs_physical_sync() {
         previous = now;
     }
 
-    log.save_hard_state(&HardState {
+    storage.save_hard_state(&HardState {
         current_term: 3,
         voted_for: None,
     })
     .unwrap();
-    log.flush().unwrap();
+    storage.flush().unwrap();
     assert!(
         physical_syncs() > previous,
         "hard state flush did not sync (sync samples stayed at {previous})"

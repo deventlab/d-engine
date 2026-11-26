@@ -82,11 +82,9 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-
-        assert_eq!(log_store.last_index(), 0);
-        assert!(log_store.entry(1).await?.is_none());
-        assert!(log_store.get_entries(1..=5)?.is_empty());
+        assert_eq!(engine.last_index(), 0);
+        assert!(engine.entry(1).await?.is_none());
+        assert!(engine.get_entries(1..=5)?.is_empty());
 
         Ok(())
     }
@@ -96,14 +94,13 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
         let entries = create_test_entries(1..=1);
 
         // Persist and retrieve
-        log_store.persist_entries(entries.clone()).await?;
-        assert_eq!(log_store.last_index(), 1);
-        assert_eq!(log_store.entry(1).await?.unwrap(), entries[0]);
-        assert_eq!(log_store.get_entries(1..=1)?, entries);
+        engine.persist_entries(entries.clone()).await?;
+        assert_eq!(engine.last_index(), 1);
+        assert_eq!(engine.entry(1).await?.unwrap(), entries[0]);
+        assert_eq!(engine.get_entries(1..=1)?, entries);
 
         Ok(())
     }
@@ -113,21 +110,20 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
         let entries = create_test_entries(1..=100);
 
-        log_store.persist_entries(entries.clone()).await?;
+        engine.persist_entries(entries.clone()).await?;
 
         // Verify all entries
-        assert_eq!(log_store.last_index(), 100);
+        assert_eq!(engine.last_index(), 100);
 
         // Spot check random entries
-        assert_eq!(log_store.entry(1).await?.unwrap(), entries[0]);
-        assert_eq!(log_store.entry(50).await?.unwrap(), entries[49]);
-        assert_eq!(log_store.entry(100).await?.unwrap(), entries[99]);
+        assert_eq!(engine.entry(1).await?.unwrap(), entries[0]);
+        assert_eq!(engine.entry(50).await?.unwrap(), entries[49]);
+        assert_eq!(engine.entry(100).await?.unwrap(), entries[99]);
 
         // Verify range query
-        let range = log_store.get_entries(25..=75)?;
+        let range = engine.get_entries(25..=75)?;
         assert_eq!(range.len(), 51);
         assert_eq!(range[0], entries[24]);
         assert_eq!(range[50], entries[74]);
@@ -140,20 +136,19 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        log_store.persist_entries(create_test_entries(1..=100)).await?;
+        engine.persist_entries(create_test_entries(1..=100)).await?;
 
         // Purge first 50 entries
-        log_store
+        engine
             .purge(LogId {
                 index: 50,
                 term: 50,
             })
             .await?;
 
-        assert!(log_store.entry(1).await?.is_none());
-        assert!(log_store.entry(50).await?.is_none());
-        assert!(log_store.entry(51).await?.is_some());
+        assert!(engine.entry(1).await?.is_none());
+        assert!(engine.entry(50).await?.is_none());
+        assert!(engine.entry(51).await?.is_some());
 
         Ok(())
     }
@@ -163,17 +158,16 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        log_store.reset().await?;
-        log_store.persist_entries(create_test_entries(1..=100)).await?;
+        engine.reset().await?;
+        engine.persist_entries(create_test_entries(1..=100)).await?;
 
         // Truncate from index 76 onward
-        log_store.truncate(76).await?;
+        engine.truncate(76).await?;
 
-        assert_eq!(log_store.last_index(), 75);
-        assert!(log_store.entry(76).await?.is_none());
-        assert!(log_store.entry(100).await?.is_none());
-        assert!(log_store.entry(75).await?.is_some());
+        assert_eq!(engine.last_index(), 75);
+        assert!(engine.entry(76).await?.is_none());
+        assert!(engine.entry(100).await?.is_none());
+        assert!(engine.entry(75).await?.is_some());
 
         Ok(())
     }
@@ -186,27 +180,23 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        log_store.reset().await?;
-        log_store.persist_entries(create_test_entries(1..=10)).await?;
+        engine.reset().await?;
+        engine.persist_entries(create_test_entries(1..=10)).await?;
 
         let mut replacement = create_test_entries(6..=7);
         for e in &mut replacement {
             e.term = 99;
         }
-        let last = log_store.replace_range(6, replacement.clone()).await?;
+        let last = engine.replace_range(6, replacement.clone()).await?;
 
         assert_eq!(last, 7, "replace_range must return the last replaced index");
-        assert_eq!(log_store.last_index(), 7);
-        assert_eq!(log_store.entry(6).await?.map(|e| e.term), Some(99));
-        assert_eq!(log_store.entry(7).await?.map(|e| e.term), Some(99));
-        assert!(log_store.entry(8).await?.is_none(), "old tail must be gone");
-        assert!(
-            log_store.entry(10).await?.is_none(),
-            "old tail must be gone"
-        );
+        assert_eq!(engine.last_index(), 7);
+        assert_eq!(engine.entry(6).await?.map(|e| e.term), Some(99));
+        assert_eq!(engine.entry(7).await?.map(|e| e.term), Some(99));
+        assert!(engine.entry(8).await?.is_none(), "old tail must be gone");
+        assert!(engine.entry(10).await?.is_none(), "old tail must be gone");
         assert_eq!(
-            log_store.entry(5).await?.map(|e| e.term),
+            engine.entry(5).await?.map(|e| e.term),
             Some(5),
             "prefix is untouched"
         );
@@ -220,16 +210,15 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        log_store.reset().await?;
-        log_store.persist_entries(create_test_entries(1..=10)).await?;
+        engine.reset().await?;
+        engine.persist_entries(create_test_entries(1..=10)).await?;
 
-        let last = log_store.replace_range(6, Vec::new()).await?;
+        let last = engine.replace_range(6, Vec::new()).await?;
 
         assert_eq!(last, 5);
-        assert_eq!(log_store.last_index(), 5);
-        assert!(log_store.entry(6).await?.is_none());
-        assert!(log_store.entry(5).await?.is_some());
+        assert_eq!(engine.last_index(), 5);
+        assert!(engine.entry(6).await?.is_none());
+        assert!(engine.entry(5).await?.is_some());
         Ok(())
     }
 
@@ -238,13 +227,12 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        log_store.persist_entries(create_test_entries(1..=50)).await?;
+        engine.persist_entries(create_test_entries(1..=50)).await?;
 
-        log_store.reset().await?;
+        engine.reset().await?;
 
-        assert_eq!(log_store.last_index(), 0);
-        assert!(log_store.entry(1).await?.is_none());
+        assert_eq!(engine.last_index(), 0);
+        assert!(engine.entry(1).await?.is_none());
 
         Ok(())
     }
@@ -254,13 +242,11 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-
         // Empty persistence
-        log_store.persist_entries(vec![]).await?;
+        engine.persist_entries(vec![]).await?;
 
         // Out-of-range access
-        assert!(log_store.get_entries(100..=200)?.is_empty());
+        assert!(engine.get_entries(100..=200)?.is_empty());
 
         Ok(())
     }
@@ -273,22 +259,20 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-
         // Purge on empty log - should not panic
-        log_store.purge(LogId { index: 0, term: 0 }).await?;
-        assert_eq!(log_store.last_index(), 0);
+        engine.purge(LogId { index: 0, term: 0 }).await?;
+        assert_eq!(engine.last_index(), 0);
 
         // Write entries then purge index 0 (no-op)
-        log_store.persist_entries(create_test_entries(1..=10)).await?;
-        log_store.purge(LogId { index: 0, term: 0 }).await?;
+        engine.persist_entries(create_test_entries(1..=10)).await?;
+        engine.purge(LogId { index: 0, term: 0 }).await?;
 
         // Verify: no entries deleted
         assert!(
-            log_store.entry(1).await?.is_some(),
+            engine.entry(1).await?.is_some(),
             "Entry 1 should still exist"
         );
-        assert_eq!(log_store.last_index(), 10);
+        assert_eq!(engine.last_index(), 10);
 
         Ok(())
     }
@@ -298,12 +282,11 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let store = engine.clone();
         let hard_state = create_test_hard_state(5, Some((10, 4)));
 
         // Save and verify
-        store.save_hard_state(&hard_state)?;
-        let loaded = store.load_hard_state()?.unwrap();
+        engine.save_hard_state(&hard_state)?;
+        let loaded = engine.load_hard_state()?.unwrap();
         assert_eq!(loaded.current_term, 5);
 
         Ok(())
@@ -314,16 +297,14 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        let store = engine.clone();
         let hard_state = create_test_hard_state(3, Some((5, 4)));
 
-        store.save_hard_state(&hard_state)?;
+        engine.save_hard_state(&hard_state)?;
 
         // Reset should clear logs but keep meta
-        log_store.reset().await?;
+        engine.reset().await?;
 
-        let loaded = store.load_hard_state()?;
+        let loaded = engine.load_hard_state()?;
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().current_term, 3);
 
@@ -335,16 +316,12 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        let log_store = engine.clone();
-        let store = engine.clone();
+        // Write log entries and the hard state
+        engine.persist_entries(create_test_entries(1..=5)).await?;
+        engine.save_hard_state(&create_test_hard_state(2, Some((1, 2))))?;
 
-        // Write to both stores
-        log_store.persist_entries(create_test_entries(1..=5)).await?;
-        store.save_hard_state(&create_test_hard_state(2, Some((1, 2))))?;
-
-        // Flush both stores
-        log_store.flush()?;
-        store.flush()?;
+        // One flush covers both
+        engine.flush()?;
 
         Ok(())
     }
@@ -360,10 +337,9 @@ impl StorageEngineTestSuite {
         // Step 1: Write entries and drop (simulate crash)
         {
             let engine = builder.build().await?;
-            let log_store = engine.clone();
 
             let entries = create_test_entries(1..=10);
-            log_store.persist_entries(entries).await?;
+            engine.persist_entries(entries).await?;
         }
 
         // Small delay for filesystem sync (especially macOS)
@@ -371,10 +347,9 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify all entries survived
         let engine2 = builder.build().await?;
-        let log_store2 = engine2.clone();
 
         assert_eq!(
-            log_store2.last_index(),
+            engine2.last_index(),
             10,
             "BUG: persist_entries() must guarantee durability! \
              Raft protocol requires log entries to survive crashes. \
@@ -384,15 +359,15 @@ impl StorageEngineTestSuite {
 
         // Verify all entries are readable
         assert!(
-            log_store2.entry(1).await?.is_some(),
+            engine2.entry(1).await?.is_some(),
             "Entry 1 should survive crash"
         );
         assert!(
-            log_store2.entry(5).await?.is_some(),
+            engine2.entry(5).await?.is_some(),
             "Entry 5 should survive crash"
         );
         assert!(
-            log_store2.entry(10).await?.is_some(),
+            engine2.entry(10).await?.is_some(),
             "Entry 10 should survive crash"
         );
 
@@ -416,12 +391,11 @@ impl StorageEngineTestSuite {
         builder: &B
     ) -> Result<(), Error> {
         let engine = builder.build().await?;
-        let store = engine.clone();
         // The builder may hand out storage an earlier test wrote to: append after what is there.
-        let last = store.last_index() + 10;
-        store.persist_entries(create_test_entries(last - 9..=last)).await?;
-        store.save_hard_state(&create_test_hard_state(7, Some((3, 7))))?;
-        store.flush()?;
+        let last = engine.last_index() + 10;
+        engine.persist_entries(create_test_entries(last - 9..=last)).await?;
+        engine.save_hard_state(&create_test_hard_state(7, Some((3, 7))))?;
+        engine.flush()?;
 
         // The node is killed here: no close(), no drop.
         let Some(restarted) = builder.build_from_crash_image().await? else {
@@ -465,12 +439,11 @@ impl StorageEngineTestSuite {
         // Step 1: Save hard state and drop
         {
             let engine = builder.build().await?;
-            let store = engine.clone();
 
             let hard_state =
                 create_test_hard_state(expected_term, Some((expected_node_id, expected_term)));
-            store.save_hard_state(&hard_state)?;
-            store.flush()?;
+            engine.save_hard_state(&hard_state)?;
+            engine.flush()?;
         }
 
         // Small delay for filesystem sync
@@ -478,9 +451,8 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify
         let engine2 = builder.build().await?;
-        let store2 = engine2.clone();
 
-        let loaded = store2.load_hard_state()?.unwrap();
+        let loaded = engine2.load_hard_state()?.unwrap();
         assert_eq!(
             loaded.current_term, expected_term,
             "BUG: save_hard_state() must guarantee durability! \
@@ -506,10 +478,9 @@ impl StorageEngineTestSuite {
         // Step 1: Write entries, truncate, and drop
         {
             let engine = builder.build().await?;
-            let log_store = engine.clone();
 
-            log_store.persist_entries(create_test_entries(1..=100)).await?;
-            log_store.truncate(76).await?;
+            engine.persist_entries(create_test_entries(1..=100)).await?;
+            engine.truncate(76).await?;
         }
 
         // Small delay for filesystem sync
@@ -517,24 +488,23 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify truncation survived
         let engine2 = builder.build().await?;
-        let log_store2 = engine2.clone();
 
         assert_eq!(
-            log_store2.last_index(),
+            engine2.last_index(),
             75,
             "BUG: truncate() must guarantee durability! \
              Raft log truncation (conflict resolution) must survive crashes."
         );
         assert!(
-            log_store2.entry(76).await?.is_none(),
+            engine2.entry(76).await?.is_none(),
             "Truncated entry 76 should not exist"
         );
         assert!(
-            log_store2.entry(100).await?.is_none(),
+            engine2.entry(100).await?.is_none(),
             "Truncated entry 100 should not exist"
         );
         assert!(
-            log_store2.entry(75).await?.is_some(),
+            engine2.entry(75).await?.is_some(),
             "Entry 75 should still exist"
         );
 
@@ -548,10 +518,9 @@ impl StorageEngineTestSuite {
         // Step 1: Write entries, purge, and drop
         {
             let engine = builder.build().await?;
-            let log_store = engine.clone();
 
-            log_store.persist_entries(create_test_entries(1..=100)).await?;
-            log_store
+            engine.persist_entries(create_test_entries(1..=100)).await?;
+            engine
                 .purge(LogId {
                     index: 50,
                     term: 50,
@@ -564,19 +533,18 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify purge survived
         let engine2 = builder.build().await?;
-        let log_store2 = engine2.clone();
 
         assert!(
-            log_store2.entry(1).await?.is_none(),
+            engine2.entry(1).await?.is_none(),
             "BUG: purge() must guarantee durability! \
              Purged entries should not reappear after crash."
         );
         assert!(
-            log_store2.entry(50).await?.is_none(),
+            engine2.entry(50).await?.is_none(),
             "Purged entry 50 should not exist"
         );
         assert!(
-            log_store2.entry(51).await?.is_some(),
+            engine2.entry(51).await?.is_some(),
             "Entry 51 should still exist after purge"
         );
 

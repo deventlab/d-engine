@@ -60,7 +60,7 @@ where
     // regardless of what's already visible in `entries`.
     pub(crate) durable_index: AtomicU64,
 
-    // How far entries have been written to the log store (page cache, not
+    // How far entries have been written to the storage engine (page cache, not
     // yet fsynced) — the frontier `persist_entries` scans forward from.
     // Advance with `fetch_max`, never a plain store: a slower concurrent
     // call must not regress a value a faster call already advanced past.
