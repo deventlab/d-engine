@@ -28,6 +28,11 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
+    /// The underlying client, e.g. for `common::wait_for_stable_leader`.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     pub async fn new(bootstrap_urls: &[String]) -> std::result::Result<Self, ClientApiError> {
         let bootstrap_urls = bootstrap_urls.to_vec();
 

@@ -16,7 +16,6 @@ use tracing::info;
 use tracing_test::traced_test;
 
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -24,6 +23,7 @@ use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::reset;
 use crate::common::start_node;
+use crate::common::wait_for_stable_leader;
 
 const TEST_DIR: &str = "cluster_start_stop/metadata_api";
 const LOG_DIR: &str = "./logs/cluster_start_stop/metadata_api";
@@ -70,8 +70,6 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
@@ -84,6 +82,7 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
+    wait_for_stable_leader(&client).await?;
 
     // Verify current_leader_id is set
     let leader_id =
@@ -148,8 +147,6 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
@@ -160,6 +157,7 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
+    wait_for_stable_leader(&client).await?;
 
     // Make 10 concurrent metadata requests
     info!("Issuing 10 concurrent metadata requests");
@@ -251,8 +249,6 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
@@ -263,6 +259,7 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
+    wait_for_stable_leader(&client).await?;
 
     // Get initial leader
     let initial_leader =

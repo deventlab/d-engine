@@ -26,7 +26,6 @@ use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_bootstrap_urls;
@@ -40,6 +39,7 @@ use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
+use crate::common::wait_for_stable_leader;
 
 // Constants for test configuration
 const SNAPSHOT_CASE1_DIR: &str = "snapshot/case1";
@@ -129,14 +129,15 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster is ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     println!("[test_snapshot_scenario] Cluster started. Running tests...");
+
+    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
+    wait_for_stable_leader(client_manager.client()).await?;
 
     // Poll instead of a fixed sleep + single assert: a fixed window races CI
     // scheduling jitter (see the election_timeout widening above for why that
@@ -156,7 +157,6 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     }
 
     // Verify state machine data via client API (snapshot has been applied to leader)
-    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
 
     // Verify data via client API - this confirms snapshot was applied and committed
     test_put_get(&mut client_manager, 3, 3).await?;

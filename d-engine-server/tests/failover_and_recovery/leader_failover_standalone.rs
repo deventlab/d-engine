@@ -9,7 +9,6 @@ use tracing_test::traced_test;
 
 use crate::common::LATENCY_IN_MS;
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -61,8 +60,6 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
@@ -73,6 +70,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
+    wait_for_stable_leader(&client).await?;
 
     // Write test data before failover
     client.put("before-failover", "initial-value").await?;
@@ -162,8 +160,6 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     ctx.graceful_txs.insert(0, graceful_tx);
     ctx.node_handles.insert(0, node_handle);
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Wait for node to be actually ready
     check_cluster_is_ready(&format!("127.0.0.1:{}", ports[0]), 10).await?;
 
@@ -172,7 +168,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     // Retry read until node 1 synced data from cluster
     client.refresh(None).await?;
     let synced_val = retry_until(
-        10,
+        200,
         Duration::from_millis(LATENCY_IN_MS),
         || client.get_eventual("after-failover"),
         |r| matches!(r, Ok(Some(_))),
@@ -225,8 +221,6 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
@@ -235,6 +229,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
+    wait_for_stable_leader(&client).await?;
 
     // Write initial data with retry: leader may still be stabilizing under load
     let mut attempts = 0;

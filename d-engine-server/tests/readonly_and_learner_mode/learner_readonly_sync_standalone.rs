@@ -19,7 +19,6 @@ use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -29,6 +28,7 @@ use crate::common::reset;
 use crate::common::retry_until;
 use crate::common::start_node;
 use crate::common::test_put_get;
+use crate::common::wait_for_stable_leader;
 
 // ============================================================================
 // STANDALONE/RPC MODE TESTS
@@ -117,8 +117,6 @@ async fn test_readonly_mode_learner_standalone() -> Result<(), ClientApiError> {
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     for port in &ports[..3] {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
@@ -128,6 +126,7 @@ async fn test_readonly_mode_learner_standalone() -> Result<(), ClientApiError> {
     println!("[Phase 2] Writing test data to primary cluster...");
     let bootstrap_urls = create_bootstrap_urls(&ports[..3]);
     let mut client_manager = ClientManager::new(&bootstrap_urls).await?;
+    wait_for_stable_leader(client_manager.client()).await?;
     test_put_get(&mut client_manager, 1, 100).await?;
     test_put_get(&mut client_manager, 2, 101).await?;
     println!("[Phase 2] ✓ Test data written via RPC (key1=100, key2=101)\n");
@@ -160,8 +159,25 @@ general_raft_timeout_duration_in_ms = 5000
     ctx.graceful_txs.push(graceful_tx4);
     ctx.node_handles.push(node_n4);
 
-    // Wait for node 4 to start and sync with cluster
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC / 2)).await;
+    // Wait for node 4 to start and to have synced key 1 from the cluster
+    check_cluster_is_ready(&format!("127.0.0.1:{}", ports[3]), 10).await?;
+    let node4_endpoint_probe = format!("http://127.0.0.1:{}", ports[3]);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(100) = ClientManager::read_from_node(
+                &node4_endpoint_probe,
+                1,
+                ReadConsistencyPolicy::EventualConsistency,
+            )
+            .await
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("node 4 did not sync key 1 within 10s");
     println!("         ✓ Node 4 process started");
 
     // Refresh client manager to get updated cluster membership

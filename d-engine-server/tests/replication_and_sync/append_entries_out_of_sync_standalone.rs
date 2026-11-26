@@ -21,7 +21,6 @@
 //! and has to catch up from the leader.
 
 // use std::sync::Arc; // Not needed anymore
-use std::time::Duration;
 
 use d_engine_core::ClientApiError;
 // use d_engine_server::StateMachine; // Not needed - we don't access state machine directly
@@ -30,7 +29,6 @@ use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -38,6 +36,7 @@ use crate::common::get_available_ports;
 use crate::common::init_hard_state;
 use crate::common::manipulate_log;
 use crate::common::node_config;
+use crate::common::wait_for_stable_leader;
 // use crate::common::prepare_state_machine; // Not needed - each node creates its own
 use crate::common::prepare_storage_engine;
 use crate::common::reset;
@@ -91,21 +90,11 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
         if i == 0 {
             // 3. Verify leader election. Node 1 is still down, so only nodes 2 and 3 vote and
             // node 3 is the only one that can win (see the module doc).
-            tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
             for port in &ports[1..] {
                 check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
             }
             let manager = ClientManager::new(&create_bootstrap_urls(&ports[1..])).await?;
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    if let Ok(Some(_)) = manager.list_leader_id().await {
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            })
-            .await
-            .expect("Timeout waiting for a leader among nodes 2 and 3");
+            wait_for_stable_leader(manager.client()).await?;
             assert_eq!(manager.list_leader_id().await.unwrap(), Some(3));
             client_manager = Some(manager);
 

@@ -35,7 +35,6 @@ use tracing::debug;
 
 use crate::client_manager::ClientManager;
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -46,6 +45,7 @@ use crate::common::node_config;
 use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
+use crate::common::wait_for_stable_leader;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
@@ -153,8 +153,6 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
         vote_response.last_log_term
     );
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster is ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
@@ -181,6 +179,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
         }
     };
 
+    wait_for_stable_leader(client_manager.client()).await?;
     let leader_id = client_manager.list_leader_id().await.unwrap();
     assert!(
         matches!(leader_id, Some(2) | Some(3)),
