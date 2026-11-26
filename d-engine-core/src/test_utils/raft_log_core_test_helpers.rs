@@ -72,11 +72,11 @@ impl RaftLogCoreTestContext {
         self.raft_log.append_entries(entries).await.unwrap();
     }
 
-    /// Create a context where `is_write_durable()=false`.
+    /// Create a context whose storage counts `flush()` calls.
     ///
     /// Returns the context and a counter incremented on every `flush()` call.
-    pub fn new_not_durable(instance_id: &str) -> (Self, Arc<AtomicU64>) {
-        let (storage, flush_count) = MockStorageEngine::not_durable(instance_id.to_string());
+    pub fn new_with_flush_counter(instance_id: &str) -> (Self, Arc<AtomicU64>) {
+        let (storage, flush_count) = MockStorageEngine::with_flush_counter(instance_id.to_string());
         let storage = Arc::new(storage);
         let (log_flush_tx, log_flush_rx) = tokio::sync::mpsc::unbounded_channel();
         let raft_log = RaftLogCore::new(1, storage.clone(), Some(log_flush_tx), 5000);

@@ -149,7 +149,7 @@ async fn test_durable_report_then_truncation_is_order_independent() {
 #[tokio::test]
 async fn test_flush_does_not_short_circuit_after_truncation_regrows_the_log() {
     let (mut ctx, flush_count) =
-        RaftLogCoreTestContext::new_not_durable("flush_no_short_circuit_after_truncation");
+        RaftLogCoreTestContext::new_with_flush_counter("flush_no_short_circuit_after_truncation");
 
     ctx.append_entries(1, 100, 1).await;
     ctx.raft_log.flush().await.unwrap();

@@ -32,9 +32,8 @@ use crate::test_utils::wait_for_durable_index;
 #[tokio::test]
 async fn test_durable_index_not_advanced_before_fsync_completes() {
     // Gate closed: the first flush() call will block until we send () on `flush_gate`.
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "durable_index_not_advanced_before_fsync_completes".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("durable_index_not_advanced_before_fsync_completes".into());
     // A real log_flush_tx is required now: durable_index only advances when
     // something drains InternalEvent::FsyncCompleted and calls
     // try_advance_durable_index — see drain_and_apply_fsync_completions.
@@ -92,9 +91,8 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
 /// catch it before it reaches production.
 #[tokio::test]
 async fn test_majority_matched_index_uses_durable_not_memory() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "majority_matched_index_uses_durable_not_memory".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("majority_matched_index_uses_durable_not_memory".into());
     let (log_flush_tx, mut log_flush_rx) = mpsc::unbounded_channel();
     let raft_log =
         RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), Some(log_flush_tx), 5000);
@@ -179,9 +177,8 @@ async fn test_majority_matched_index_uses_durable_not_memory() {
 /// callers racing that path, not just concurrent readers.
 #[tokio::test]
 async fn test_entry_term_correct_during_concurrent_fsync_delay() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "entry_term_correct_during_concurrent_fsync_delay".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("entry_term_correct_during_concurrent_fsync_delay".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
 
     // 10 concurrent writers, each appending one entry. Term boundary at 5/6
@@ -301,9 +298,8 @@ async fn test_durable_index_monotonic_when_fsyncs_complete_out_of_order() {
 /// `storage.flush()` returns — never before.
 #[tokio::test]
 async fn test_flush_caller_blocked_until_fsync_completes() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "flush_caller_blocked_until_fsync_completes".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("flush_caller_blocked_until_fsync_completes".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
 
     raft_log
@@ -353,10 +349,9 @@ async fn test_flush_caller_blocked_until_fsync_completes() {
 /// `flush_call_count` is 2, not 4 — and all three futures resolve to `Ok(())`.
 #[tokio::test]
 async fn test_flush_callers_arriving_during_inflight_fsync_are_coalesced() {
-    let (storage, flush_gate, flush_call_count) =
-        MockStorageEngine::not_durable_gated_flush_counted(
-            "flush_callers_arriving_during_inflight_fsync_are_coalesced".into(),
-        );
+    let (storage, flush_gate, flush_call_count) = MockStorageEngine::gated_flush_counted(
+        "flush_callers_arriving_during_inflight_fsync_are_coalesced".into(),
+    );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
 
     // Append one entry: the inline persist path submits its own fsync round
@@ -419,7 +414,7 @@ async fn test_flush_callers_arriving_during_inflight_fsync_are_coalesced() {
 /// `close()` has already returned.
 #[tokio::test]
 async fn test_shutdown_with_pending_flush_caller_still_receives_ok_reply() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
+    let (storage, flush_gate) = MockStorageEngine::gated_flush(
         "shutdown_with_pending_flush_caller_still_receives_ok_reply".into(),
     );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 100);
@@ -475,7 +470,7 @@ async fn test_shutdown_with_pending_flush_caller_still_receives_ok_reply() {
 /// caller must receive the real `Err`, not a silent channel-closed error.
 #[tokio::test]
 async fn test_shutdown_with_pending_flush_caller_still_receives_err_reply() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush_failing(
+    let (storage, flush_gate) = MockStorageEngine::gated_flush_failing(
         "shutdown_with_pending_flush_caller_still_receives_err_reply".into(),
     );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 100);
@@ -531,7 +526,7 @@ async fn test_shutdown_with_pending_flush_caller_still_receives_err_reply() {
 ///      matches; it must discard its result instead of resolving durable_index or the queued reply.
 #[tokio::test]
 async fn test_reset_during_inflight_fsync_does_not_resurrect_stale_durable_index() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
+    let (storage, flush_gate) = MockStorageEngine::gated_flush(
         "reset_during_inflight_fsync_does_not_resurrect_stale_durable_index".into(),
     );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
@@ -585,9 +580,8 @@ async fn test_reset_during_inflight_fsync_does_not_resurrect_stale_durable_index
 /// the reset, not everything that comes after it.
 #[tokio::test]
 async fn test_post_reset_writes_are_not_discarded_by_stale_fence() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "post_reset_writes_are_not_discarded_by_stale_fence".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("post_reset_writes_are_not_discarded_by_stale_fence".into());
     let (log_flush_tx, mut log_flush_rx) = mpsc::unbounded_channel();
     let raft_log =
         RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), Some(log_flush_tx), 5000);

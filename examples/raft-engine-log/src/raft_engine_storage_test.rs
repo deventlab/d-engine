@@ -327,16 +327,6 @@ async fn test_log_reset_keeps_hard_state_and_purge_boundary() {
     assert_eq!(storage.load_purge_boundary().unwrap(), Some(boundary));
 }
 
-/// `persist_entries` only reaches the OS cache. The store must report that, so
-/// the core runs `flush()` before it advances `durable_index`; a wrong `true`
-/// would acknowledge writes that a power loss can still discard.
-#[tokio::test]
-async fn test_log_write_is_not_reported_durable_without_flush() {
-    let dir = TestDir::new("durable-flag");
-    let storage = RaftEngineStorage::open(dir.path()).unwrap();
-    assert!(!storage.is_write_durable());
-}
-
 /// The hard state saved before a restart is the one loaded after it.
 #[tokio::test]
 async fn test_meta_hard_state_survives_reopen() {

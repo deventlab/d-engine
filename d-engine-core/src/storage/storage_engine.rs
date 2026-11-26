@@ -97,17 +97,6 @@ pub trait StorageEngine: Send + Sync + 'static {
     /// Load the persisted hard state, or `None` on a node that has never saved one.
     fn load_hard_state(&self) -> Result<Option<HardState>, Error>;
 
-    /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
-    ///
-    /// Return `true` if your backend writes are immediately durable (e.g. any backend
-    /// with synchronous write-through to stable storage). Return `false` if durability
-    /// requires an explicit `flush()` call (e.g. RocksDB without `sync=true`, sled,
-    /// file I/O without `sync_all`).
-    ///
-    /// **This value must be accurate.** A wrong `true` causes `durable_index` to advance
-    /// before data is crash-safe, silently breaking Raft's durability guarantee.
-    fn is_write_durable(&self) -> bool;
-
     /// Make everything written so far durable: log entries and the hard state.
     ///
     /// The engine calls it before it answers an RPC that depends on what was written. A store

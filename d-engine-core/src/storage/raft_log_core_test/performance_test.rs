@@ -24,7 +24,6 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_reset().returning(|| Ok(()));
-    mock.expect_is_write_durable().returning(|| true);
     mock.expect_flush().returning(|| Ok(()));
 
     // Add controllable delay to persist_entries
@@ -148,7 +147,6 @@ async fn test_fresh_cluster_performance_consistency() {
     let max_duration_ms = if is_ci { 50 } else { 5 };
 
     let mut mock = MockStorageEngine::new();
-    mock.expect_is_write_durable().returning(|| true);
     mock.expect_flush().return_once(|| Ok(()));
     mock.expect_last_index().returning(|| 0);
     mock.expect_load_purge_boundary().returning(|| Ok(None));

@@ -44,7 +44,7 @@ async fn test_durable_index_does_not_adopt_a_stale_fsync_after_truncation() {
     // Gate closed: the first flush() call — for the original 10-entry batch —
     // blocks here until we release it, letting us deterministically truncate
     // the log while that fsync is still "in flight".
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
+    let (storage, flush_gate) = MockStorageEngine::gated_flush(
         "durable_index_does_not_adopt_a_stale_fsync_after_truncation".into(),
     );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);

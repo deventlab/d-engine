@@ -337,20 +337,6 @@ impl StorageEngine for RocksDBStorageEngine {
         Ok(new_last_index)
     }
 
-    fn is_write_durable(&self) -> bool {
-        // Batched Level 3: db.write() uses sync=false (lands in OS page cache),
-        // but durable_index does NOT advance until flush_wal(true) (fdatasync) completes.
-        //
-        // Process crash: OS retains page cache → WAL replay on restart → full recovery. ✅
-        // Power loss:    committed data (durable_index advanced) has been fdatasync'd → safe. ✅
-        //                Only entries in the current unflushed batch are at risk — a small window
-        //                bounded by idle_flush_interval_ms, and not yet counted toward quorum.
-        //
-        // Returns false → advance_durable_after_write calls flush_wal(true) before notifying,
-        // coalescing multiple db.write() calls into a single fdatasync (batched Level 3).
-        false
-    }
-
     fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
         let cf_meta = self
             .db

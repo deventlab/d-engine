@@ -184,7 +184,7 @@ fn test_submit_pending_max_uses_fetch_max_not_last_write() {
 #[tokio::test]
 async fn test_submit_first_call_sets_inflight_true() {
     let (storage, _flush_gate) =
-        MockStorageEngine::not_durable_gated_flush("submit_first_call_sets_inflight_true".into());
+        MockStorageEngine::gated_flush("submit_first_call_sets_inflight_true".into());
     let worker = minimal_worker(Arc::new(storage));
 
     worker.submit(LogId { term: 1, index: 1 }, vec![]);
@@ -198,7 +198,7 @@ async fn test_submit_first_call_sets_inflight_true() {
 /// A `submit()` call while a round is in flight must not spawn a second task.
 #[test]
 fn test_submit_second_call_does_not_spawn_second_task_while_inflight() {
-    let (storage, flush_call_count) = MockStorageEngine::not_durable(
+    let (storage, flush_call_count) = MockStorageEngine::with_flush_counter(
         "submit_second_call_does_not_spawn_second_task_while_inflight".into(),
     );
     let worker = minimal_worker(Arc::new(storage));
@@ -232,7 +232,7 @@ fn test_submit_second_call_does_not_spawn_second_task_while_inflight() {
 /// without flushing.
 #[test]
 fn test_run_until_caught_up_returns_immediately_when_nothing_pending() {
-    let (storage, flush_call_count) = MockStorageEngine::not_durable(
+    let (storage, flush_call_count) = MockStorageEngine::with_flush_counter(
         "run_until_caught_up_returns_immediately_when_nothing_pending".into(),
     );
     let worker = minimal_worker(Arc::new(storage));
@@ -254,7 +254,7 @@ fn test_run_until_caught_up_returns_immediately_when_nothing_pending() {
 /// A successful physical flush sends `FsyncCompleted` for the round's mark.
 #[test]
 fn test_run_until_caught_up_sends_fsync_completed_on_success() {
-    let (storage, _flush_call_count) = MockStorageEngine::not_durable(
+    let (storage, _flush_call_count) = MockStorageEngine::with_flush_counter(
         "run_until_caught_up_sends_fsync_completed_on_success".into(),
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -286,7 +286,7 @@ fn test_run_until_caught_up_sends_fsync_completed_on_success() {
 /// notifies a `FatalError` instead.
 #[test]
 fn test_run_until_caught_up_does_not_send_fsync_completed_on_flush_failure() {
-    let storage = MockStorageEngine::not_durable_always_failing_flush(
+    let storage = MockStorageEngine::always_failing_flush(
         "run_until_caught_up_does_not_send_fsync_completed_on_flush_failure".into(),
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -313,7 +313,7 @@ fn test_run_until_caught_up_does_not_send_fsync_completed_on_flush_failure() {
 /// A failed physical flush sends `Err` (not a hang, not `Ok`) to queued replies.
 #[test]
 fn test_run_until_caught_up_sends_err_to_replies_on_flush_failure() {
-    let storage = MockStorageEngine::not_durable_always_failing_flush(
+    let storage = MockStorageEngine::always_failing_flush(
         "run_until_caught_up_sends_err_to_replies_on_flush_failure".into(),
     );
     let worker = minimal_worker(Arc::new(storage));
@@ -342,7 +342,6 @@ fn test_run_until_caught_up_discards_stale_generation_result_without_advancing()
         Arc::new_cyclic(|weak: &std::sync::Weak<FsyncWorker<MockStorageEngine>>| {
             let weak_in_mock = weak.clone();
             let mut mock = MockStorageEngine::new();
-            mock.expect_is_write_durable().returning(|| false);
             mock.expect_flush().returning(move || {
                 if let Some(w) = weak_in_mock.upgrade() {
                     w.generation.fetch_add(1, Ordering::AcqRel);
@@ -389,7 +388,6 @@ fn test_run_until_caught_up_poisons_on_flush_failure_even_when_generation_change
         move |weak: &std::sync::Weak<FsyncWorker<MockStorageEngine>>| {
             let weak_in_mock = weak.clone();
             let mut mock = MockStorageEngine::new();
-            mock.expect_is_write_durable().returning(|| false);
             mock.expect_flush().returning(move || {
                 // Truncation lands while the fdatasync is in flight, then it fails.
                 if let Some(w) = weak_in_mock.upgrade() {
@@ -428,7 +426,7 @@ fn test_run_until_caught_up_poisons_on_flush_failure_even_when_generation_change
 /// `FsyncCompleted` emitted, replies resolve `Ok`.
 #[test]
 fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
-    let (storage, _flush_call_count) = MockStorageEngine::not_durable(
+    let (storage, _flush_call_count) = MockStorageEngine::with_flush_counter(
         "run_until_caught_up_accepts_result_when_generation_unchanged".into(),
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -466,7 +464,7 @@ fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
 /// Multiple queued `submit()`s are coalesced into one physical `flush()` call.
 #[test]
 fn test_run_until_caught_up_coalesces_queued_submits_into_one_flush() {
-    let (storage, flush_call_count) = MockStorageEngine::not_durable(
+    let (storage, flush_call_count) = MockStorageEngine::with_flush_counter(
         "run_until_caught_up_coalesces_queued_submits_into_one_flush".into(),
     );
     let worker = minimal_worker(Arc::new(storage));
@@ -498,7 +496,7 @@ fn test_run_until_caught_up_coalesces_queued_submits_into_one_flush() {
 /// index, so a stale pre-truncation batch can't swallow the valid tail.
 #[test]
 fn test_submit_term_first_keeps_valid_mark_over_stale_higher_index() {
-    let (storage, _flush_call_count) = MockStorageEngine::not_durable(
+    let (storage, _flush_call_count) = MockStorageEngine::with_flush_counter(
         "submit_term_first_keeps_valid_mark_over_stale_higher_index".into(),
     );
     let (tx, mut rx) = mpsc::unbounded_channel();

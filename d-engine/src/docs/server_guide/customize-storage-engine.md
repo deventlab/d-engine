@@ -41,13 +41,6 @@ impl StorageEngine for CustomStorageEngine {
         Ok(None)
     }
 
-    /// Return true only if a single persist_entries() call is crash-safe without flush().
-    /// Examples: sled (synchronous commit), any backend with write-through to stable storage.
-    /// Return false if durability requires an explicit flush() call (e.g. RocksDB, file I/O).
-    fn is_write_durable(&self) -> bool {
-        false // return true only when writes are immediately durable
-    }
-
     fn flush(&self) -> Result<(), Error> {
         // Make everything written so far durable: log entries and the hard state.
         // A store whose writes are already durable still implements it, as Ok(()).
@@ -61,9 +54,10 @@ impl StorageEngine for CustomStorageEngine {
 ## 2. Key Implementation Notes
 
 - **Atomicity**: Ensure write operations are atomic—use batch operations where possible
-- **Durability**: Implement `is_write_durable()` accurately—this controls whether `RaftLogCore`
-  calls `flush()` after each batch. A wrong `true` advances `durable_index` before data is
-  crash-safe, silently breaking Raft's durability guarantee.
+- **Durability**: The engine calls `flush()` after every batch and counts entries as durable
+  only once it returns `Ok`. If `flush()` returns before the data is on stable storage, a power
+  loss can discard writes the cluster already acknowledged. If your backend already syncs inside
+  each write (for example a store that fsyncs on every commit), `flush()` returns `Ok(())`.
 - **Hard state**: `save_hard_state()` is always followed by `flush()` before the node answers a
   vote or an AppendEntries that changed the term, so both must make the hard state durable
 - **Consistency**: Maintain exactly-once semantics for log entries
@@ -86,8 +80,7 @@ impl StorageEngine for CustomStorageEngine {
 | `replace_range()`    | Atomically truncate + persist new entries (default: truncate then persist; override for single-batch atomicity) | Varies by backend      |
 | `save_hard_state()`  | Persist term/vote state (durable after the next `flush()`)                                                      | High - atomic required |
 | `load_hard_state()`  | Load persisted term/vote state                                                                                  | High                   |
-| `is_write_durable()` | Whether persist_entries() is crash-safe without flush()                                                         | sync, no I/O           |
-| `flush()`            | Make log entries and the hard state durable; required, `Ok(())` if writes are already durable                  | Varies by backend      |
+| `flush()`            | Make log entries and the hard state durable; required, `Ok(())` if writes are already durable                   | Varies by backend      |
 | `reset()`            | Clear all data                                                                                                  | <1s                    |
 | `last_index()`       | Get highest persisted index                                                                                     | <100μs                 |
 

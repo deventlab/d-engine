@@ -99,7 +99,7 @@ async fn test_durable_index_lands_on_new_tail_after_truncate_and_resync() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
     let (storage, persist_gate) =
-        MockStorageEngine::not_durable_gated_persist("stale_persist_after_truncation".into());
+        MockStorageEngine::gated_persist("stale_persist_after_truncation".into());
     let (log_flush_tx, mut log_flush_rx) = tokio::sync::mpsc::unbounded_channel();
     let raft_log =
         RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), Some(log_flush_tx), 5000);
@@ -219,7 +219,6 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_reset().returning(|| Ok(()));
-    mock.expect_is_write_durable().returning(|| false);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -303,7 +302,6 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_reset().returning(|| Ok(()));
-    mock.expect_is_write_durable().returning(|| false);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -378,7 +376,6 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_reset().returning(|| Ok(()));
-    mock.expect_is_write_durable().returning(|| false);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -443,7 +440,6 @@ async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_reset().returning(|| Ok(()));
-    mock.expect_is_write_durable().returning(|| false);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));

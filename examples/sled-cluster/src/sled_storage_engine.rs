@@ -217,11 +217,6 @@ impl StorageEngine for SledStorageEngine {
         }
     }
 
-    fn is_write_durable(&self) -> bool {
-        // apply_batch writes to sled's in-memory log; tree.flush() in flush() provides crash-safety.
-        false
-    }
-
     fn flush(&self) -> Result<()> {
         trace!("StorageEngine flush");
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;

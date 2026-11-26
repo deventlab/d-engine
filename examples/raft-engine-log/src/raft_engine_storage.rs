@@ -307,10 +307,6 @@ impl StorageEngine for RaftEngineStorage {
         Ok(last.unwrap_or(from_index.saturating_sub(1)))
     }
 
-    fn is_write_durable(&self) -> bool {
-        false
-    }
-
     fn save_hard_state(
         &self,
         state: &HardState,

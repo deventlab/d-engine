@@ -29,16 +29,16 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        Self::configure_durable(&mut mock);
+        Self::configure_flush_success(&mut mock);
 
         mock
     }
 
-    /// Create a MockStorageEngine where `is_write_durable()=false` and `flush()` is tracked.
+    /// Create a MockStorageEngine whose `flush()` calls are counted.
     ///
     /// Returns the engine and a shared counter incremented on every `flush()` call.
     /// Use this to test the write/flush separation and batch-flush efficiency.
-    pub fn not_durable(id: String) -> (Self, Arc<AtomicU64>) {
+    pub fn with_flush_counter(id: String) -> (Self, Arc<AtomicU64>) {
         let flush_count = Arc::new(AtomicU64::new(0));
         let mut mock = MockStorageEngine::new();
 
@@ -48,9 +48,9 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        // configure_not_durable is called separately so its expectations are the only
-        // ones for is_write_durable/flush — no FIFO conflict with configure_durable.
-        Self::configure_not_durable(&mut mock, flush_count.clone());
+        // configure_flush_counted is called instead of configure_flush_success so its
+        // expectation is the only one for flush — no FIFO conflict between the two.
+        Self::configure_flush_counted(&mut mock, flush_count.clone());
 
         (mock, flush_count)
     }
@@ -78,7 +78,7 @@ impl MockStorageEngine {
 
         // persist_entries is NOT configured here — extracted into
         // configure_persist_entries_success() so failure-variants (e.g.
-        // not_durable_first_persist_fails) can install their own expectation
+        // first_persist_fails) can install their own expectation
         // first without a mockall FIFO conflict (an always-succeeds catch-all
         // registered here would silently absorb every call before a
         // stricter, later expectation ever got a turn).
@@ -165,7 +165,7 @@ impl MockStorageEngine {
 
     /// Default `persist_entries()`: always succeeds, writes into
     /// `MOCK_STORAGE_DATA`. Extracted out of `configure_mocks` so that
-    /// failure-variants (e.g. `not_durable_first_persist_fails`) can install
+    /// failure-variants (e.g. `first_persist_fails`) can install
     /// their own stricter expectation *first* — see the comment left in
     /// `configure_mocks` for why ordering here matters (mockall FIFO
     /// matching).
@@ -280,12 +280,12 @@ impl MockStorageEngine {
         });
     }
 
-    /// Create a MockStorageEngine where `is_write_durable()=false` and the **first**
+    /// Create a MockStorageEngine where the **first**
     /// `flush()` call returns an error, simulating a transient fsync failure.
     ///
     /// A failed fsync poisons the log permanently (see `FsyncWorker`). This is the
     /// deterministic way to reach the poisoned state through a real fsync failure.
-    pub fn not_durable_first_flush_fails(id: String) -> Self {
+    pub fn first_flush_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
@@ -294,7 +294,6 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         // First flush fails — leaves pending_max non-zero (only success path zeros it).
         mock.expect_flush()
             .once()
@@ -305,17 +304,17 @@ impl MockStorageEngine {
         mock
     }
 
-    /// Create a MockStorageEngine where `is_write_durable()=false` and the **first**
+    /// Create a MockStorageEngine where the **first**
     /// `persist_entries()` call (page-cache write) returns an error, simulating a
     /// transient write failure (e.g. disk full, backend rejects the write batch).
     ///
-    /// Distinct from `not_durable_first_flush_fails`, which only fails the later
+    /// Distinct from `first_flush_fails`, which only fails the later
     /// fsync step — `persist_entries()` and `flush()` are two independent failure
     /// surfaces in `RaftLogCore` (`persist_pending_range` vs
     /// `FsyncWorker::run_until_caught_up`). `flush()` itself always succeeds
     /// here, keeping the two surfaces isolated. All subsequent `persist_entries()`
     /// calls succeed.
-    pub fn not_durable_first_persist_fails(id: String) -> Self {
+    pub fn first_persist_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
@@ -323,7 +322,6 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(|| Ok(()));
 
         // First persist_entries() call fails. Registered before the
@@ -344,12 +342,11 @@ impl MockStorageEngine {
     /// simulating a fatal storage error during conflict-resolution
     /// (truncate + write). `replace_range_and_submit` treats this as
     /// unrecoverable and poisons the log — disk state is now uncertain.
-    pub fn not_durable_replace_range_fails(id: String) -> Self {
+    pub fn replace_range_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(|| Ok(()));
         mock.expect_replace_range().returning(|_, _| {
             Err(crate::Error::Fatal(
@@ -362,7 +359,7 @@ impl MockStorageEngine {
 
     /// Create a MockStorageEngine where `purge()` always fails, simulating a
     /// fatal storage error during log compaction.
-    pub fn not_durable_purge_fails(id: String) -> Self {
+    pub fn purge_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
@@ -370,7 +367,6 @@ impl MockStorageEngine {
         Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(|| Ok(()));
         mock.expect_purge()
             .returning(|_| Err(crate::Error::Fatal("simulated purge failure".into())));
@@ -380,14 +376,13 @@ impl MockStorageEngine {
 
     /// Create a MockStorageEngine where `reset()` always fails, simulating a
     /// fatal storage error during snapshot install / log rewind.
-    pub fn not_durable_reset_fails(id: String) -> Self {
+    pub fn reset_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
         Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(|| Ok(()));
         mock.expect_reset()
             .returning(|| Err(crate::Error::Fatal("simulated reset failure".into())));
@@ -397,7 +392,7 @@ impl MockStorageEngine {
 
     /// Create a MockStorageEngine where `save_hard_state()` always fails,
     /// simulating a fatal storage error while persisting current_term/voted_for.
-    pub fn not_durable_save_hard_state_fails(id: String) -> Self {
+    pub fn save_hard_state_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
@@ -405,7 +400,6 @@ impl MockStorageEngine {
         Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(|| Ok(()));
         mock.expect_save_hard_state().returning(|_| {
             Err(crate::Error::Fatal(
@@ -416,12 +410,12 @@ impl MockStorageEngine {
         mock
     }
 
-    /// Create a MockStorageEngine where `is_write_durable()=false` and every
+    /// Create a MockStorageEngine where every
     /// `flush()` call returns an error, simulating a persistent IO device failure.
     ///
     /// Use this to verify that callers (e.g. `flush()`) propagate the error back
     /// rather than hanging forever waiting for a `durable_index` that never advances.
-    pub fn not_durable_always_failing_flush(id: String) -> Self {
+    pub fn always_failing_flush(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
@@ -430,21 +424,20 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush()
             .returning(|| Err(crate::Error::Fatal("simulated fsync failure".into())));
 
         mock
     }
 
-    /// Create a MockStorageEngine where `is_write_durable()=false` and the FIRST
+    /// Create a MockStorageEngine where the FIRST
     /// `flush()` call blocks until the returned sender is signalled — every call
     /// after that returns `Ok(())` immediately.
     ///
     /// Use this to deterministically test behavior *while* a physical fsync is
     /// in flight (e.g. `durable_index` must not advance yet), without relying on
     /// a fixed `sleep()` and hoping the assertion runs inside the window.
-    pub fn not_durable_gated_flush(id: String) -> (Self, std::sync::mpsc::Sender<()>) {
+    pub fn gated_flush(id: String) -> (Self, std::sync::mpsc::Sender<()>) {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
 
@@ -456,7 +449,6 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(move || {
             // Only the first call blocks — take() leaves None for subsequent calls.
             if let Some(gate) = rx.lock().unwrap().take() {
@@ -468,12 +460,10 @@ impl MockStorageEngine {
         (mock, tx)
     }
 
-    /// Same as `not_durable_gated_flush`, but also returns a shared counter of how
+    /// Same as `gated_flush`, but also returns a shared counter of how
     /// many times `flush()` was physically invoked — for asserting how many fsync
     /// rounds a batch of concurrent `flush()` callers actually triggered.
-    pub fn not_durable_gated_flush_counted(
-        id: String
-    ) -> (Self, std::sync::mpsc::Sender<()>, Arc<AtomicU64>) {
+    pub fn gated_flush_counted(id: String) -> (Self, std::sync::mpsc::Sender<()>, Arc<AtomicU64>) {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
         let flush_count = Arc::new(AtomicU64::new(0));
@@ -486,7 +476,6 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         let counter = flush_count.clone();
         mock.expect_flush().returning(move || {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -500,10 +489,10 @@ impl MockStorageEngine {
         (mock, tx, flush_count)
     }
 
-    /// Same as `not_durable_gated_flush`, but every `flush()` call — the first
+    /// Same as `gated_flush`, but every `flush()` call — the first
     /// gated one and any that follow — returns `Err` once unblocked, simulating
     /// a disk failure discovered right as the fsync finally runs.
-    pub fn not_durable_gated_flush_failing(id: String) -> (Self, std::sync::mpsc::Sender<()>) {
+    pub fn gated_flush_failing(id: String) -> (Self, std::sync::mpsc::Sender<()>) {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
 
@@ -515,7 +504,6 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        mock.expect_is_write_durable().returning(|| false);
         mock.expect_flush().returning(move || {
             // Only the first call blocks — take() leaves None for subsequent calls.
             if let Some(gate) = rx.lock().unwrap().take() {
@@ -528,14 +516,14 @@ impl MockStorageEngine {
     }
 
     /// Create a MockStorageEngine where the first `persist_entries()` call blocks
-    /// until the returned sender fires. `flush()`/`is_write_durable()` are left at
-    /// their always-succeeds default (`configure_durable`) — this gate is only
+    /// until the returned sender fires. `flush()` is left at
+    /// its always-succeeds default (`configure_flush_success`) — this gate is only
     /// about the write-to-storage-engine step, not fsync.
     ///
     /// Use this to freeze the IO thread mid-persist so a concurrent truncation
     /// can be driven deterministically — see
     /// `durable_index_truncation_clamp_test.rs`.
-    pub fn not_durable_gated_persist(id: String) -> (Self, std::sync::mpsc::Sender<()>) {
+    pub fn gated_persist(id: String) -> (Self, std::sync::mpsc::Sender<()>) {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
 
@@ -547,7 +535,7 @@ impl MockStorageEngine {
         Self::configure_purge_success(&mut mock);
         Self::configure_reset_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
-        Self::configure_durable(&mut mock);
+        Self::configure_flush_success(&mut mock);
 
         let instance_id_ref = id.clone();
         mock.expect_persist_entries().returning(move |entries| {
@@ -571,18 +559,16 @@ impl MockStorageEngine {
         (mock, tx)
     }
 
-    /// Configure `is_write_durable=true` and no-op flush (durable mock).
-    fn configure_durable(engine: &mut MockStorageEngine) {
-        engine.expect_is_write_durable().returning(|| true);
+    /// Configure a `flush()` that always succeeds.
+    fn configure_flush_success(engine: &mut MockStorageEngine) {
         engine.expect_flush().returning(|| Ok(()));
     }
 
-    /// Configure `is_write_durable=false` with a flush counter.
-    fn configure_not_durable(
+    /// Configure a `flush()` that always succeeds and counts its calls.
+    fn configure_flush_counted(
         engine: &mut MockStorageEngine,
         flush_count: Arc<AtomicU64>,
     ) {
-        engine.expect_is_write_durable().returning(|| false);
         let counter = flush_count.clone();
         engine.expect_flush().returning(move || {
             counter.fetch_add(1, Ordering::Relaxed);

@@ -24,7 +24,7 @@
 //! just a known dependency to check first.
 //!
 //! Tests that need a genuine, un-fsynced gap between `last_entry_id` and `durable_index`
-//! use `MockStorageEngine::not_durable_gated_flush` — a real channel-based gate, not a
+//! use `MockStorageEngine::gated_flush` — a real channel-based gate, not a
 //! timing guess. An earlier version of this file relied on a long idle-flush timer
 //! and assumed a background IO thread just wouldn't get scheduled before the
 //! assertions ran; that's a real race (the IO thread is independent of the test's own
@@ -74,8 +74,7 @@ fn entries(
 async fn test_quorum_uses_durable_index_not_last_entry_id() {
     // Gate closed: the first flush() call blocks until we send () on `flush_gate` — fsync
     // deterministically never completes until we say so, no timing involved.
-    let (storage, flush_gate) =
-        MockStorageEngine::not_durable_gated_flush("test_quorum_durable_index".into());
+    let (storage, flush_gate) = MockStorageEngine::gated_flush("test_quorum_durable_index".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
     std::thread::sleep(Duration::from_millis(10)); // ensure IO thread is ready
 
@@ -114,7 +113,7 @@ async fn test_quorum_uses_durable_index_not_last_entry_id() {
 #[tokio::test]
 async fn test_election_eligibility_reads_memory_log_not_durable_index() {
     let (storage, flush_gate) =
-        MockStorageEngine::not_durable_gated_flush("test_election_eligibility_memory_log".into());
+        MockStorageEngine::gated_flush("test_election_eligibility_memory_log".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 
@@ -213,8 +212,7 @@ async fn test_quorum_succeeds_after_leader_flush() {
 /// but quorum calculation only uses the unsafe one.
 #[tokio::test]
 async fn test_last_entry_id_diverges_from_durable_index_with_mem_first() {
-    let (storage, flush_gate) =
-        MockStorageEngine::not_durable_gated_flush("test_diverge_mem_first".into());
+    let (storage, flush_gate) = MockStorageEngine::gated_flush("test_diverge_mem_first".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 

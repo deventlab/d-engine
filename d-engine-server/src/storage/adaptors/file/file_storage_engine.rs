@@ -409,11 +409,6 @@ impl StorageEngine for FileStorageEngine {
         }
     }
 
-    fn is_write_durable(&self) -> bool {
-        // File writes are buffered by the OS; sync_all() is required for crash-safety.
-        false
-    }
-
     fn flush(&self) -> Result<(), Error> {
         let t0 = std::time::Instant::now();
         let mut inner = self.inner.lock().unwrap();

@@ -135,18 +135,13 @@ impl<E: StorageEngine> FsyncWorker<E> {
                 metrics::histogram!("core.raft.fsync.batch_entries").record(batch_size as f64);
             }
 
-            let result = if self.storage.is_write_durable() {
-                Ok(())
-            } else {
-                let t0 = std::time::Instant::now();
-                let r = self.storage.flush();
-                let elapsed = t0.elapsed();
-                metrics::histogram!("core.raft.fsync.duration_ms")
-                    .record(elapsed.as_secs_f64() * 1_000.0);
-                metrics::counter!("core.raft.fsync.busy_nanos_total")
-                    .increment(elapsed.as_nanos() as u64);
-                r
-            };
+            let t0 = std::time::Instant::now();
+            let result = self.storage.flush();
+            let elapsed = t0.elapsed();
+            metrics::histogram!("core.raft.fsync.duration_ms")
+                .record(elapsed.as_secs_f64() * 1_000.0);
+            metrics::counter!("core.raft.fsync.busy_nanos_total")
+                .increment(elapsed.as_nanos() as u64);
 
             // Before the generation fence: a truncation can't make a failed fsync harmless.
             if let Err(e) = &result {

@@ -177,7 +177,6 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_reset().returning(|| Ok(()));
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_is_write_durable().returning(|| true);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));

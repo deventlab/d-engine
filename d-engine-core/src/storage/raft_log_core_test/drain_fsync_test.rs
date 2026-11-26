@@ -40,7 +40,7 @@ use crate::test_utils::RaftLogCoreTestContext;
 #[tokio::test]
 async fn test_writes_become_durable_via_io_thread() {
     let (mut ctx, flush_count) =
-        RaftLogCoreTestContext::new_not_durable("writes_become_durable_via_io_thread");
+        RaftLogCoreTestContext::new_with_flush_counter("writes_become_durable_via_io_thread");
 
     // Append 5 entries — each persists and submits the new tail to FsyncWorker.
     for i in 1u64..=5 {
@@ -92,7 +92,8 @@ async fn test_writes_become_durable_via_io_thread() {
 /// N entries in one call → ≤2 fsyncs (not N), regardless of storage speed.
 #[tokio::test]
 async fn test_batch_append_produces_one_flush() {
-    let (mut ctx, flush_count) = RaftLogCoreTestContext::new_not_durable("batch_append_one_flush");
+    let (mut ctx, flush_count) =
+        RaftLogCoreTestContext::new_with_flush_counter("batch_append_one_flush");
 
     // All 100 entries in one append_entries call.
     let entries: Vec<Entry> = (1u64..=100)
@@ -141,7 +142,7 @@ async fn test_batch_append_produces_one_flush() {
 /// Assertions updated to check for that rejection instead.
 #[tokio::test]
 async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() {
-    let storage = Arc::new(MockStorageEngine::not_durable_first_flush_fails(
+    let storage = Arc::new(MockStorageEngine::first_flush_fails(
         "pending_max_zeroed_on_reset".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -200,7 +201,7 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
 #[tokio::test]
 async fn test_flush_is_strict_durability_barrier() {
     let (mut ctx, _flush_count) =
-        RaftLogCoreTestContext::new_not_durable("flush_durability_barrier");
+        RaftLogCoreTestContext::new_with_flush_counter("flush_durability_barrier");
 
     // First batch.
     for i in 1u64..=20 {
@@ -257,7 +258,7 @@ async fn test_flush_propagates_io_error() {
     // Every flush() call on the underlying storage engine returns an error.
     // This covers both the auto-fsync triggered by append_entries and the explicit
     // flush() call, so timing between the two does not affect the outcome.
-    let storage = Arc::new(MockStorageEngine::not_durable_always_failing_flush(
+    let storage = Arc::new(MockStorageEngine::always_failing_flush(
         "flush_propagates_io_error".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -307,7 +308,7 @@ async fn test_flush_propagates_io_error() {
 /// to check for the new (correct) behavior instead.
 #[tokio::test]
 async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
-    let storage = Arc::new(MockStorageEngine::not_durable_first_flush_fails(
+    let storage = Arc::new(MockStorageEngine::first_flush_fails(
         "fsync_failure_poisons_and_rejects_writes_after_reset".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -352,7 +353,7 @@ async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
 /// real conflict-truncation path, not by forcing the flag directly.
 #[tokio::test]
 async fn test_replace_range_failure_poisons() {
-    let storage = Arc::new(MockStorageEngine::not_durable_replace_range_fails(
+    let storage = Arc::new(MockStorageEngine::replace_range_fails(
         "replace_range_failure_poisons".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -431,7 +432,7 @@ async fn test_replace_range_failure_poisons() {
 /// `Result<()>` directly).
 #[tokio::test]
 async fn test_purge_failure_poisons() {
-    let storage = Arc::new(MockStorageEngine::not_durable_purge_fails(
+    let storage = Arc::new(MockStorageEngine::purge_fails(
         "purge_failure_poisons".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -472,7 +473,7 @@ async fn test_purge_failure_poisons() {
 /// failures.
 #[tokio::test]
 async fn test_reset_failure_poisons() {
-    let storage = Arc::new(MockStorageEngine::not_durable_reset_fails(
+    let storage = Arc::new(MockStorageEngine::reset_fails(
         "reset_failure_poisons".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -508,7 +509,7 @@ async fn test_reset_failure_poisons() {
 /// cast a second vote, breaking "at most one leader per term."
 #[tokio::test]
 async fn test_save_hard_state_failure_poisons() {
-    let storage = Arc::new(MockStorageEngine::not_durable_save_hard_state_fails(
+    let storage = Arc::new(MockStorageEngine::save_hard_state_fails(
         "save_hard_state_failure_poisons".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -581,7 +582,7 @@ async fn test_poisoned_rejects_save_hard_state() {
 /// the immediate "raft log storage is poisoned" rejection.
 #[tokio::test]
 async fn test_poisoned_skips_replace_range() {
-    let storage = Arc::new(MockStorageEngine::not_durable_replace_range_fails(
+    let storage = Arc::new(MockStorageEngine::replace_range_fails(
         "poisoned_skips_replace_range".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -679,7 +680,7 @@ async fn test_poisoned_does_not_skip_reset() {
 /// returns `Result<()>` directly, so this is no longer just a weak check.
 #[tokio::test]
 async fn test_poisoned_skips_purge() {
-    let storage = Arc::new(MockStorageEngine::not_durable_purge_fails(
+    let storage = Arc::new(MockStorageEngine::purge_fails(
         "poisoned_skips_purge".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -714,7 +715,7 @@ async fn test_poisoned_skips_purge() {
 #[tokio::test]
 async fn test_new_raft_log_core_starts_unpoisoned() {
     let (storage, _flush_call_count) =
-        MockStorageEngine::not_durable("new_raft_log_core_starts_unpoisoned".into());
+        MockStorageEngine::with_flush_counter("new_raft_log_core_starts_unpoisoned".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
     assert!(
         !raft_log.is_poisoned(),
@@ -757,12 +758,10 @@ async fn test_poisoned_survives_reset() {
 /// paths (e.g. fsync failures poison correctly, but persist_entries
 /// failures are still silently swallowed) would go unnoticed —
 /// `test_poisoned_survives_reset` alone only exercises the fsync-failure
-/// surface via `not_durable_first_flush_fails`.
+/// surface via `first_flush_fails`.
 #[tokio::test]
 async fn test_persist_entries_failure_poisons() {
-    let storage = MockStorageEngine::not_durable_first_persist_fails(
-        "persist_entries_failure_poisons".into(),
-    );
+    let storage = MockStorageEngine::first_persist_fails("persist_entries_failure_poisons".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 
@@ -817,7 +816,7 @@ async fn test_notify_fatal_channel_closed_still_poisons_and_logs() {
     // needed instead (see test_utils::log_capture).
     let logs = crate::test_utils::capture_logs_globally();
 
-    let storage = MockStorageEngine::not_durable_first_flush_fails(
+    let storage = MockStorageEngine::first_flush_fails(
         "notify_fatal_channel_closed_still_poisons_and_logs".into(),
     );
 
@@ -882,7 +881,6 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     mock.expect_replace_range().returning(|from, new_entries| {
         Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
     });
-    mock.expect_is_write_durable().returning(|| false);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -958,7 +956,6 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_replace_range()
         .returning(|from, e| Ok(e.last().map(|x| x.index).unwrap_or(from.saturating_sub(1))));
-    mock.expect_is_write_durable().returning(|| false);
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -1023,7 +1020,6 @@ async fn test_save_hard_state_flushes_before_returning() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_reset().returning(|| Ok(()));
-    mock.expect_is_write_durable().returning(|| false);
 
     let saved = Arc::clone(&events);
     mock.expect_save_hard_state().returning(move |_| {
@@ -1073,7 +1069,6 @@ async fn test_save_hard_state_flush_failure_poisons() {
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_is_write_durable().returning(|| false);
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
     mock.expect_load_hard_state().returning(|| Ok(None));
