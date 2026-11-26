@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use d_engine::Error;
 use d_engine::common::Entry;
 use d_engine::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
-use d_engine::{LogStore, StorageEngine};
+use d_engine::StorageEngine;
 use tempfile::TempDir;
 
 use crate::raft_engine_storage::RaftEngineStorage;
@@ -53,7 +53,7 @@ async fn test_raft_engine_storage_engine_passes_contract_suite() -> Result<(), E
 async fn test_raft_engine_persist_10k_entries_within_one_second() -> Result<(), Error> {
     let builder = RaftEngineStorageBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
+    let log_store = &engine;
     let entries: Vec<Entry> = (1..=10_000)
         .map(|i| Entry {
             index: i,

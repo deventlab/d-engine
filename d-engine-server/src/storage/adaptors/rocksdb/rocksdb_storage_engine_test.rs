@@ -4,7 +4,6 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::Error;
-use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::storage_engine_test::StorageEngineBuilder;
 use d_engine_core::storage_engine_test::StorageEngineTestSuite;
@@ -56,7 +55,7 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
         *self.sm.lock().unwrap() = Some(sm);
 
         // Ensure the engine is fully initialized before returning
-        engine.log_store().flush()?;
+        engine.flush()?;
         Ok(Arc::new(engine))
     }
 
@@ -96,7 +95,7 @@ async fn test_rocksdb_storage_engine() -> Result<(), Error> {
 async fn test_rocksdb_performance() -> Result<(), Error> {
     let builder = RocksDBStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     // Performance test: persist 10,000 entries
     let start = std::time::Instant::now();
@@ -149,7 +148,7 @@ async fn build_engine() -> (Arc<RocksDBStorageEngine>, tempfile::TempDir) {
 #[traced_test]
 async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
     let (engine, _dir) = build_engine().await;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     // Arrange: [1(t1), 2(t1), 3(t1), 4(t1), 5(t1)]
     log_store
@@ -185,7 +184,7 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
 #[traced_test]
 async fn test_replace_range_with_empty_entries_truncates_only() {
     let (engine, _dir) = build_engine().await;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     log_store
         .persist_entries((1..=5).map(|i| make_entry(i, 1)).collect())

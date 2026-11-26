@@ -7,10 +7,10 @@ use futures::future::join_all;
 use tokio::sync::mpsc;
 
 use crate::InternalEvent;
+use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLogCore;
 use crate::storage::raft_log::RaftLog;
-use crate::test_utils::MockStorageEngine;
 use crate::test_utils::RaftLogCoreTestContext;
 use crate::test_utils::simulate_insert_command;
 

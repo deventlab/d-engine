@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use d_engine_core::Error;
-use d_engine_core::LogStore;
 use d_engine_core::MockStateMachine;
 use d_engine_core::MockStorageEngine;
 use d_engine_core::RaftLogCore;
@@ -78,7 +77,7 @@ async fn test_set_raft_log_replaces_default() {
 
     // Verify that raft_log is replaced with customization one
     assert_eq!(
-        builder.storage_engine.as_ref().unwrap().log_store().last_index(),
+        builder.storage_engine.as_ref().unwrap().last_index(),
         expected_raft_log_ids[1]
     );
     // Verify the builder kept the customized state machine: every pre-inserted entry is readable
@@ -109,7 +108,9 @@ async fn test_build_creates_node() {
         shutdown_rx,
     )
     .state_machine(file_sm)
-    .storage_engine(Arc::new(MockStorageEngine::new()))
+    .storage_engine(Arc::new(MockStorageEngine::with_id(
+        "builder_test_build_creates_node".into(),
+    )))
     .build()
     .await
     .expect("build should succeed");
@@ -141,7 +142,7 @@ async fn test_build_purges_a_raft_log_that_disagrees_with_the_state_machine() {
     insert_state_machine(&file_sm, (1..=9).collect(), 4).await;
 
     assert!(
-        storage_engine.log_store().entry(9).await.unwrap().is_some(),
+        storage_engine.entry(9).await.unwrap().is_some(),
         "the log must hold the stale entry before the node is built"
     );
 
@@ -158,7 +159,7 @@ async fn test_build_purges_a_raft_log_that_disagrees_with_the_state_machine() {
 
     for index in 1..=9 {
         assert!(
-            storage_engine.log_store().entry(index).await.unwrap().is_none(),
+            storage_engine.entry(index).await.unwrap().is_none(),
             "entry {index} of the dropped history must be purged by build()"
         );
     }
@@ -198,7 +199,9 @@ async fn test_start_fails_when_listen_address_is_taken() {
         shutdown_rx,
     )
     .state_machine(file_sm)
-    .storage_engine(Arc::new(MockStorageEngine::new()))
+    .storage_engine(Arc::new(MockStorageEngine::with_id(
+        "builder_test_start_fails_when_listen_address_is_taken".into(),
+    )))
     .start()
     .await;
 

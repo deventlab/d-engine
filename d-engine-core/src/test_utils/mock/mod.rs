@@ -47,7 +47,6 @@ use d_engine_proto::server::cluster::NodeMeta;
 pub use mock_raft_builder::*;
 pub use mock_rpc::*;
 pub use mock_rpc_service::*;
-pub use mock_storage_engine::*;
 pub use mock_type_config::*;
 use tokio::sync::watch;
 

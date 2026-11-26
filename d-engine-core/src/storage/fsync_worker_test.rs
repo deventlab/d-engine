@@ -20,15 +20,13 @@ use tokio::sync::oneshot;
 
 use super::*;
 use crate::InternalEvent;
-use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::Result;
-use crate::StorageEngine;
 
 /// Build a bare `FsyncWorker` over a mock log store — no tokio runtime, no
 /// `RaftLogCore`. `internal_event_tx` is `None`, so the worker never sends
 /// `FsyncCompleted`; tests that need to observe completion wire their own.
-fn minimal_worker(log_store: Arc<MockLogStore>) -> Arc<FsyncWorker<MockLogStore>> {
+fn minimal_worker(log_store: Arc<MockStorageEngine>) -> Arc<FsyncWorker<MockStorageEngine>> {
     Arc::new(FsyncWorker::new(
         1,
         log_store,
@@ -45,7 +43,7 @@ fn minimal_worker(log_store: Arc<MockLogStore>) -> Arc<FsyncWorker<MockLogStore>
 ///   - `inflight == false`, `pending_max == 0`, `pending_replies` empty, `generation == 0`.
 #[test]
 fn test_new_initializes_empty_state() {
-    let worker = minimal_worker(Arc::new(MockLogStore::new()));
+    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
 
     assert!(
         !worker.inflight.load(Ordering::Acquire),
@@ -73,7 +71,7 @@ fn test_new_initializes_empty_state() {
 /// reset must not leak into a post-reset round.
 #[test]
 fn test_fence_reset_zeroes_pending_max() {
-    let worker = minimal_worker(Arc::new(MockLogStore::new()));
+    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
     *worker.pending_max.lock() = LogId { term: 1, index: 10 };
 
     worker.fence_reset();
@@ -90,7 +88,7 @@ fn test_fence_reset_zeroes_pending_max() {
 /// stale `Ok(())`.
 #[test]
 fn test_fence_reset_drains_pending_replies_with_err() {
-    let worker = minimal_worker(Arc::new(MockLogStore::new()));
+    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
 
     let (tx1, mut rx1) = oneshot::channel();
     let (tx2, mut rx2) = oneshot::channel();
@@ -115,7 +113,7 @@ fn test_fence_reset_drains_pending_replies_with_err() {
 /// `fence_reset()` increments `generation` — the fence itself.
 #[test]
 fn test_fence_reset_increments_generation() {
-    let worker = minimal_worker(Arc::new(MockLogStore::new()));
+    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
 
     worker.fence_reset();
     assert_eq!(
@@ -134,7 +132,7 @@ fn test_fence_reset_increments_generation() {
 /// `fence_reset()` is safe to call with nothing pending.
 #[test]
 fn test_fence_reset_is_safe_with_nothing_pending() {
-    let worker = minimal_worker(Arc::new(MockLogStore::new()));
+    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
 
     worker.fence_reset();
 
@@ -160,7 +158,7 @@ fn test_fence_reset_is_safe_with_nothing_pending() {
 /// regress it.
 #[test]
 fn test_submit_pending_max_uses_fetch_max_not_last_write() {
-    let worker = minimal_worker(Arc::new(MockLogStore::new()));
+    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
 
     // Pretend a round is in flight so submit() only records state.
     worker.inflight.store(true, Ordering::Release);
@@ -187,7 +185,7 @@ fn test_submit_pending_max_uses_fetch_max_not_last_write() {
 async fn test_submit_first_call_sets_inflight_true() {
     let (storage, _flush_gate) =
         MockStorageEngine::not_durable_gated_flush("submit_first_call_sets_inflight_true".into());
-    let worker = minimal_worker(storage.log_store());
+    let worker = minimal_worker(Arc::new(storage));
 
     worker.submit(LogId { term: 1, index: 1 }, vec![]);
 
@@ -203,7 +201,7 @@ fn test_submit_second_call_does_not_spawn_second_task_while_inflight() {
     let (storage, flush_call_count) = MockStorageEngine::not_durable(
         "submit_second_call_does_not_spawn_second_task_while_inflight".into(),
     );
-    let worker = minimal_worker(storage.log_store());
+    let worker = minimal_worker(Arc::new(storage));
 
     worker.inflight.store(true, Ordering::Release);
 
@@ -237,7 +235,7 @@ fn test_run_until_caught_up_returns_immediately_when_nothing_pending() {
     let (storage, flush_call_count) = MockStorageEngine::not_durable(
         "run_until_caught_up_returns_immediately_when_nothing_pending".into(),
     );
-    let worker = minimal_worker(storage.log_store());
+    let worker = minimal_worker(Arc::new(storage));
     worker.inflight.store(true, Ordering::Release);
 
     worker.run_until_caught_up();
@@ -262,7 +260,7 @@ fn test_run_until_caught_up_sends_fsync_completed_on_success() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let worker = Arc::new(FsyncWorker::new(
         1,
-        storage.log_store(),
+        Arc::new(storage),
         Arc::new(AtomicBool::new(false)),
         Some(tx),
     ));
@@ -294,7 +292,7 @@ fn test_run_until_caught_up_does_not_send_fsync_completed_on_flush_failure() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let worker = Arc::new(FsyncWorker::new(
         1,
-        storage.log_store(),
+        Arc::new(storage),
         Arc::new(AtomicBool::new(false)),
         Some(tx),
     ));
@@ -318,7 +316,7 @@ fn test_run_until_caught_up_sends_err_to_replies_on_flush_failure() {
     let storage = MockStorageEngine::not_durable_always_failing_flush(
         "run_until_caught_up_sends_err_to_replies_on_flush_failure".into(),
     );
-    let worker = minimal_worker(storage.log_store());
+    let worker = minimal_worker(Arc::new(storage));
 
     let (tx, mut rx) = oneshot::channel::<Result<()>>();
     worker.inflight.store(true, Ordering::Release);
@@ -340,10 +338,10 @@ fn test_run_until_caught_up_discards_stale_generation_result_without_advancing()
     // `Arc::new_cyclic` lets the mock's flush() closure bump the worker's own
     // `generation` field — the worker owns the mock, so the closure needs a
     // `Weak` upgraded at flush time.
-    let worker: Arc<FsyncWorker<MockLogStore>> =
-        Arc::new_cyclic(|weak: &std::sync::Weak<FsyncWorker<MockLogStore>>| {
+    let worker: Arc<FsyncWorker<MockStorageEngine>> =
+        Arc::new_cyclic(|weak: &std::sync::Weak<FsyncWorker<MockStorageEngine>>| {
             let weak_in_mock = weak.clone();
-            let mut mock_log_store = MockLogStore::new();
+            let mut mock_log_store = MockStorageEngine::new();
             mock_log_store.expect_is_write_durable().returning(|| false);
             mock_log_store.expect_flush().returning(move || {
                 if let Some(w) = weak_in_mock.upgrade() {
@@ -391,11 +389,11 @@ fn test_run_until_caught_up_poisons_on_flush_failure_even_when_generation_change
     let poisoned = Arc::new(AtomicBool::new(false));
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let worker: Arc<FsyncWorker<MockLogStore>> = Arc::new_cyclic({
+    let worker: Arc<FsyncWorker<MockStorageEngine>> = Arc::new_cyclic({
         let poisoned = poisoned.clone();
-        move |weak: &std::sync::Weak<FsyncWorker<MockLogStore>>| {
+        move |weak: &std::sync::Weak<FsyncWorker<MockStorageEngine>>| {
             let weak_in_mock = weak.clone();
-            let mut mock_log_store = MockLogStore::new();
+            let mut mock_log_store = MockStorageEngine::new();
             mock_log_store.expect_is_write_durable().returning(|| false);
             mock_log_store.expect_flush().returning(move || {
                 // Truncation lands while the fdatasync is in flight, then it fails.
@@ -441,7 +439,7 @@ fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let worker = Arc::new(FsyncWorker::new(
         1,
-        storage.log_store(),
+        Arc::new(storage),
         Arc::new(AtomicBool::new(false)),
         Some(tx),
     ));
@@ -476,7 +474,7 @@ fn test_run_until_caught_up_coalesces_queued_submits_into_one_flush() {
     let (storage, flush_call_count) = MockStorageEngine::not_durable(
         "run_until_caught_up_coalesces_queued_submits_into_one_flush".into(),
     );
-    let worker = minimal_worker(storage.log_store());
+    let worker = minimal_worker(Arc::new(storage));
 
     let (tx1, mut rx1) = oneshot::channel::<Result<()>>();
     let (tx2, mut rx2) = oneshot::channel::<Result<()>>();
@@ -511,7 +509,7 @@ fn test_submit_term_first_keeps_valid_mark_over_stale_higher_index() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let worker = Arc::new(FsyncWorker::new(
         1,
-        storage.log_store(),
+        Arc::new(storage),
         Arc::new(AtomicBool::new(false)),
         Some(tx),
     ));

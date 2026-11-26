@@ -11,7 +11,6 @@ use std::sync::atomic::Ordering;
 
 use d_engine_proto::common::Entry;
 
-use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLog;
@@ -447,7 +446,7 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
     let replace_range_count = Arc::new(AtomicU64::new(0));
     let truncate_count = Arc::new(AtomicU64::new(0));
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
 
     // replace_range() must be called exactly once for one conflict resolution
     let rr_counter = replace_range_count.clone();
@@ -477,7 +476,7 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Populate in-memory SkipMap with [1,2,3,4] term=1 so conflict detection fires

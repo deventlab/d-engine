@@ -19,7 +19,7 @@
 //! absent from a real crash + reopen. `RaftLogCore::append_entries`
 //! (`d-engine-core/src/storage/raft_log_core.rs`) is documented and
 //! implemented to block the caller until `persist_entries()` returns — "still blocks the
-//! caller until truly persisted" — and `FileLogStore::persist_entries`
+//! caller until truly persisted" — and `FileStorageEngine::persist_entries`
 //! (`d-engine-server/src/storage/adaptors/file/file_storage_engine.rs:254`) already writes
 //! the entry to the real OS-visible file as an unconditional part of its body, before it
 //! can return. So by the time `append_entries().await` ever resolves at all, the entry is

@@ -15,7 +15,7 @@ use crate::entry_record::EntryRecord;
 use crate::options::RaftEngineOptions;
 use async_trait::async_trait;
 use d_engine::common::{Entry, LogId};
-use d_engine::{Error, HardState, LogStore, StorageEngine, StorageError};
+use d_engine::{Error, HardState, StorageEngine, StorageError};
 use prost::Message as _;
 use raft_engine::{Command, Config, Engine, LogBatch, MessageExt, ReadableSize};
 
@@ -41,7 +41,7 @@ impl MessageExt for EntryAdapter {
 
 /// Reclaims log files whose entries have all been compacted.
 ///
-/// raft-engine never deletes files by itself: `LogStore::purge` only compacts the
+/// raft-engine never deletes files by itself: `StorageEngine::purge` only compacts the
 /// in-memory index, and the files are released when `purge_expired_files` runs.
 /// That call deletes files and may rewrite older ones, so it runs on a dedicated
 /// thread and never on the Raft loop. A failed round is logged and retried on the
@@ -89,13 +89,9 @@ impl Drop for PurgeWorker {
     }
 }
 
-pub struct RaftEngineLogStore {
+pub struct RaftEngineStorage {
     engine: Arc<Engine>,
     _purge_worker: PurgeWorker,
-}
-
-pub struct RaftEngineStorage {
-    log_store: Arc<RaftEngineLogStore>,
     path: String,
 }
 
@@ -131,10 +127,8 @@ impl RaftEngineStorage {
             Duration::from_secs(options.purge_interval_secs),
         )?;
         Ok(Self {
-            log_store: Arc::new(RaftEngineLogStore {
-                engine,
-                _purge_worker: purge_worker,
-            }),
+            engine,
+            _purge_worker: purge_worker,
             path: path.to_string_lossy().into_owned(),
         })
     }
@@ -149,16 +143,8 @@ impl std::fmt::Debug for RaftEngineStorage {
     }
 }
 
-impl StorageEngine for RaftEngineStorage {
-    type LogStore = RaftEngineLogStore;
-
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-}
-
 #[async_trait]
-impl LogStore for RaftEngineLogStore {
+impl StorageEngine for RaftEngineStorage {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,

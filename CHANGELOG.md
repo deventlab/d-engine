@@ -133,7 +133,7 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
 
-- **⚠️ `MetaStore` merged into `LogStore`; `flush_async` removed** (#470): the Raft log and the hard state (current term and vote) are written and made durable together, so a custom storage engine implements one store, not two. `LogStore` gains `save_hard_state` and `load_hard_state`; the `MetaStore` trait, `StorageEngine::MetaStore` and `StorageEngine::meta_store()` are removed. `LogStore::flush` has no default any more and must be implemented, as `Ok(())` when your writes are already durable; it makes both log entries and the hard state durable. `flush_async` is removed from both traits. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ A custom storage engine implements one trait, `StorageEngine`** (#470): the Raft log and the hard state (current term and vote) are written and made durable together, so `LogStore` and `MetaStore` are merged into `StorageEngine`. It gains the former `LogStore` methods plus `save_hard_state` and `load_hard_state`; the `LogStore` and `MetaStore` traits, `type LogStore`, `type MetaStore`, `log_store()` and `meta_store()` are removed, and so are the public `FileLogStore` and `RocksDBLogStore` types. `flush` has no default any more and must be implemented, as `Ok(())` when your writes are already durable; it makes both log entries and the hard state durable. `flush_async` is removed. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 - **⚠️ `scan_prefix` rejects an empty prefix** (#400): it returns `InvalidRequest` instead of the whole keyspace (file state machine) or nothing (RocksDB).
 

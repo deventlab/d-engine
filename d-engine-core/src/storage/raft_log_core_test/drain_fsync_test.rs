@@ -25,7 +25,6 @@ use tokio::time::timeout;
 
 use crate::Error;
 use crate::HardState;
-use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLog;
@@ -868,7 +867,7 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     let persisted_total = Arc::new(AtomicU64::new(0));
     let persisted_total_c = persisted_total.clone();
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     log_store.expect_persist_entries().returning(move |entries| {
         persisted_total_c.fetch_add(entries.len() as u64, Ordering::Relaxed);
@@ -889,7 +888,7 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     // No log_flush_tx: FsyncCompleted is never consumed, so durable_index
     // stays pinned at 0 for the whole test.
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
@@ -934,7 +933,7 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
 async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 5); // disk already holds 1..=5
     log_store.expect_get_entries().returning(|range| {
         Ok(range
@@ -966,7 +965,7 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 
@@ -1013,7 +1012,7 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
 async fn test_save_hard_state_flushes_before_returning() {
     let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     log_store.expect_persist_entries().returning(|_| Ok(()));
     log_store.expect_replace_range().returning(|from, entries| {
@@ -1039,7 +1038,7 @@ async fn test_save_hard_state_flushes_before_returning() {
     });
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     raft_log
@@ -1069,7 +1068,7 @@ async fn test_save_hard_state_flushes_before_returning() {
 /// - `save_hard_state()` returns an error and the log is poisoned (the Raft loop is told to exit).
 #[tokio::test]
 async fn test_save_hard_state_flush_failure_poisons() {
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     log_store.expect_persist_entries().returning(|_| Ok(()));
     log_store.expect_entry().returning(|_| Ok(None));
@@ -1083,7 +1082,7 @@ async fn test_save_hard_state_flush_failure_poisons() {
         .expect_flush()
         .returning(|| Err(crate::StorageError::DbError("fsync failed".to_string()).into()));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     let result = raft_log.save_hard_state(&HardState {

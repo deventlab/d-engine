@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use d_engine::common::{Entry, EntryPayload, LogId, entry_payload};
-use d_engine::{LogStore, StorageEngine};
+use d_engine::StorageEngine;
 use prost::bytes::Bytes;
 use raft_engine_log::{RaftEngineOptions, RaftEngineStorage};
 use tempfile::TempDir;
@@ -54,7 +54,7 @@ async fn test_purge_thread_releases_files_after_purge() {
         },
     )
     .unwrap();
-    let log = storage.log_store();
+    let log = &storage;
 
     for chunk in 0..60u64 {
         let batch: Vec<Entry> = (1..=100).map(|i| entry(chunk * 100 + i)).collect();

@@ -3,7 +3,6 @@
 //! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-storage-engine.md) for details.
 
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use d_engine_proto::common::Entry;
@@ -20,18 +19,9 @@ use crate::HardState;
 /// - Zero-cost abstractions through static dispatch
 /// - Async-ready for I/O parallelism
 /// - Minimal interface for maximum performance
-pub trait StorageEngine: Send + Sync + 'static {
-    /// Associated log store type
-    type LogStore: LogStore;
-
-    /// Get log storage handle
-    fn log_store(&self) -> Arc<Self::LogStore>;
-}
-
-/// Where a node keeps its Raft log and its hard state (current term and vote).
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
-pub trait LogStore: Send + Sync + 'static {
+pub trait StorageEngine: Send + Sync + 'static {
     /// Batch persist entries into disk (optimized for sequential writes)
     ///
     /// # Performance

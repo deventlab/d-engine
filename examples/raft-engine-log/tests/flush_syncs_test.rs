@@ -3,7 +3,7 @@
 //! otherwise satisfy the assertion and hide a store that never syncs.
 
 use d_engine::common::Entry;
-use d_engine::{LogStore, StorageEngine};
+use d_engine::StorageEngine;
 use raft_engine_log::RaftEngineStorage;
 use tempfile::TempDir;
 
@@ -38,7 +38,7 @@ async fn test_flush_after_write_performs_physical_sync() {
 
     let dir = TempDir::new().unwrap();
     let storage = RaftEngineStorage::open(dir.path().join("log")).unwrap();
-    let log = storage.log_store();
+    let log = &storage;
 
     let mut previous = physical_syncs();
     for index in 1..=5 {

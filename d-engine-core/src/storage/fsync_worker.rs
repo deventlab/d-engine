@@ -12,13 +12,13 @@ use tracing::error;
 
 use crate::Error;
 use crate::InternalEvent;
-use crate::LogStore;
 use crate::Result;
+use crate::StorageEngine;
 
 /// Schedules physical fsync calls — batches concurrent requests into one
 /// flush() at a time. The final content check is `RaftLogCore::
 /// try_advance_durable_index`; this only orders the pending mark term-first.
-pub(super) struct FsyncWorker<L: LogStore> {
+pub(super) struct FsyncWorker<E: StorageEngine> {
     node_id: u32,
     inflight: AtomicBool,
     /// Highest `(term, index)` awaiting fsync. Term-first: a newer term's mark
@@ -31,7 +31,7 @@ pub(super) struct FsyncWorker<L: LogStore> {
     /// its queued flush() replies instead of reporting a superseded result.
     generation: AtomicU64,
 
-    log_store: Arc<L>,
+    storage: Arc<E>,
     poisoned: Arc<AtomicBool>,
     internal_event_tx: Option<mpsc::UnboundedSender<InternalEvent>>,
 
@@ -39,10 +39,10 @@ pub(super) struct FsyncWorker<L: LogStore> {
     last_synced_index: AtomicU64,
 }
 
-impl<L: LogStore> FsyncWorker<L> {
+impl<E: StorageEngine> FsyncWorker<E> {
     pub(super) fn new(
         node_id: u32,
-        log_store: Arc<L>,
+        storage: Arc<E>,
         poisoned: Arc<AtomicBool>,
         internal_event_tx: Option<mpsc::UnboundedSender<InternalEvent>>,
     ) -> Self {
@@ -52,7 +52,7 @@ impl<L: LogStore> FsyncWorker<L> {
             pending_max: Mutex::new(LogId::default()),
             pending_replies: Mutex::new(Vec::new()),
             generation: AtomicU64::new(0),
-            log_store,
+            storage,
             poisoned,
             internal_event_tx,
             last_synced_index: AtomicU64::new(0),
@@ -135,11 +135,11 @@ impl<L: LogStore> FsyncWorker<L> {
                 metrics::histogram!("core.raft.fsync.batch_entries").record(batch_size as f64);
             }
 
-            let result = if self.log_store.is_write_durable() {
+            let result = if self.storage.is_write_durable() {
                 Ok(())
             } else {
                 let t0 = std::time::Instant::now();
-                let r = self.log_store.flush();
+                let r = self.storage.flush();
                 let elapsed = t0.elapsed();
                 metrics::histogram!("core.raft.fsync.duration_ms")
                     .record(elapsed.as_secs_f64() * 1_000.0);

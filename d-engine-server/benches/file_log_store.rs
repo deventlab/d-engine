@@ -1,4 +1,4 @@
-//! FileLogStore Performance Benchmarks
+//! FileStorageEngine Performance Benchmarks
 //!
 //! Measures persist_entries throughput before and after flush-per-entry fix.
 //!
@@ -10,7 +10,6 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_proto::common::Entry;
 use d_engine_server::FileStorageEngine;
@@ -36,7 +35,7 @@ fn bench_persist_entries(c: &mut Criterion) {
             b.iter(|| {
                 let temp = TempDir::new().unwrap();
                 let engine = FileStorageEngine::new(temp.path().to_path_buf()).unwrap();
-                let log_store = engine.log_store();
+                let log_store = &engine;
                 let entries = make_entries(count);
                 rt.block_on(async { log_store.persist_entries(entries).await.unwrap() });
             });

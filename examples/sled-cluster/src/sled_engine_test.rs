@@ -1,6 +1,6 @@
 use super::*;
 use bytes::{Bytes, BytesMut};
-use d_engine::{LogStore, Result, StorageEngine};
+use d_engine::{Result, StorageEngine};
 use d_engine::client::{
     WriteCommand,
     write_command::{Insert, Operation},
@@ -39,7 +39,7 @@ impl SledStorageEngineBuilder {
 async fn test_sled_storage_engine_basic() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     // Basic test: persist a few entries
     let entries = vec![
@@ -69,7 +69,7 @@ async fn test_sled_storage_engine_basic() -> Result<()> {
 async fn test_sled_performance() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     // Performance test: persist 10,000 entries
     let start = std::time::Instant::now();
@@ -104,7 +104,7 @@ async fn test_sled_performance() -> Result<()> {
 async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     // Arrange: [1(t1)..5(t1)]
     log_store
@@ -141,7 +141,7 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Res
 async fn test_replace_range_with_empty_entries_truncates_only() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
+    let log_store = engine.clone();
 
     log_store
         .persist_entries(

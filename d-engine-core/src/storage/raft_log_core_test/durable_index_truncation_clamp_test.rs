@@ -12,7 +12,6 @@ use std::time::Duration;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 
-use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLogCore;
@@ -202,7 +201,7 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     // Records the index list of every persist_entries() call.
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     {
         let calls = persist_calls.clone();
@@ -226,7 +225,7 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Old leader (term 1): entries 1..=10, persisted.
@@ -286,7 +285,7 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
 async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     {
         let calls = persist_calls.clone();
@@ -310,7 +309,7 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Old leader (term 1): 1..=10, all persisted — persisted_index reaches 10.
@@ -358,7 +357,7 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
     let persist_should_fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     {
         let calls = persist_calls.clone();
@@ -385,7 +384,7 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // First append succeeds — persisted_index catches up to memory_max_index (1).
@@ -433,7 +432,7 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
 /// on that indirect chain and hid the root cause.
 #[tokio::test]
 async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     log_store
         .expect_persist_entries()
@@ -451,7 +450,7 @@ async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // In memory only: persisted_index (0) < memory_max_index (1), log not poisoned yet.

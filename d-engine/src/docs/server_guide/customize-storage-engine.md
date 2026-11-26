@@ -5,24 +5,22 @@ d-engine supports **pluggable storage** through the `StorageEngine` trait. This 
 ## Architecture Context
 
 - The **StorageEngine** trait provides a **generic interface** for storage backends
-- One store, `LogStore`, keeps both the Raft log and the hard state (current term and vote)
+- One trait, `StorageEngine`, keeps both the Raft log and the hard state (current term and vote)
 - **Built-in implementations** include:
   - **File-based**: Production-ready file system storage
   - **RocksDB**: High-performance embedded database (requires `features = ["rocksdb"]`)
-  - **Sled**: Modern embedded database
-  - **In-memory**: Volatile storage for testing
 - Custom implementations enable support for cloud storage, SQL databases, etc.
 
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::storage::{StorageEngine, LogStore};
+use d_engine::StorageEngine;
 use async_trait::async_trait;
 
-struct CustomLogStore;
+struct CustomStorageEngine;
 
 #[async_trait]
-impl LogStore for CustomLogStore {
+impl StorageEngine for CustomStorageEngine {
     async fn persist_entries(&self, entries: Vec<Entry>) -> Result<(), Error> {
         // Your implementation - batch operations recommended
         Ok(())
@@ -58,19 +56,6 @@ impl LogStore for CustomLogStore {
 
     // Implement all required methods...
 }
-
-struct CustomStorageEngine {
-    log_store: Arc<CustomLogStore>,
-}
-
-impl StorageEngine for CustomStorageEngine {
-    type LogStore = CustomLogStore;
-
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-}
-
 ```
 
 ## 2. Key Implementation Notes
@@ -89,7 +74,7 @@ impl StorageEngine for CustomStorageEngine {
 
 ## 3. StorageEngine API Reference
 
-### LogStore Methods
+### StorageEngine Methods
 
 | Method               | Purpose                                                                                                         | Performance Target     |
 | -------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------- |
@@ -143,15 +128,13 @@ async fn test_custom_storage_engine() -> Result<(), Error> {
 async fn test_performance() -> Result<(), Error> {
     let builder = CustomStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
-
     // Performance test: persist 10,000 entries
     let start = std::time::Instant::now();
     let entries = (1..=10000)
         .map(|i| create_test_entry(i, i))
         .collect();
 
-    log_store.persist_entries(entries).await?;
+    engine.persist_entries(entries).await?;
     let duration = start.elapsed();
 
     assert!(duration.as_millis() < 1000, "Should persist 10k entries in <1s");
@@ -183,9 +166,9 @@ Running a standalone gRPC server instead of embedding? Use `StandaloneEngine::ru
 Reference implementations available in:
 
 - `d-engine-server/src/storage/adaptors/rocksdb/` - RocksDB storage engine
-- `d-engine-server/src/storage/adaptors/sled/` - Sled storage engine
 - `d-engine-server/src/storage/adaptors/file/` - File-based storage
-- `d-engine-server/src/storage/adaptors/mem/` - In-memory storage
+- `examples/sled-cluster/` - Sled storage engine
+- `examples/raft-engine-log/` - raft-engine storage engine
 
 Enable RocksDB feature in your `Cargo.toml`:
 

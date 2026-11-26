@@ -5,46 +5,33 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-use uuid::Uuid;
-
 use crate::HardState;
-use crate::MockLogStore;
-use crate::StorageEngine;
+use crate::MockStorageEngine;
 
 // Process-global storage so data persists across threads (e.g. raft-io std::thread vs test thread).
 // Tests are isolated by unique instance_id keys; nextest runs each test in its own process.
 static MOCK_STORAGE_DATA: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[derive(Debug, Clone)]
-pub struct MockStorageEngine {
-    log_store: Arc<MockLogStore>,
-
-    // Add an ID to differentiate between instances while sharing data
-    #[allow(unused)]
-    instance_id: String,
-}
-
+/// Preset configurations of the mockall-generated `MockStorageEngine`.
+///
+/// Every preset behaves like a real store: what is written can be read back, and two
+/// instances built with the same `id` share the same data (a restarted node).
+/// Expectations for the same method are matched in registration order, so a preset that
+/// fails once registers its `.once()` expectation before the always-succeeds fallback.
 impl MockStorageEngine {
-    pub fn new() -> Self {
-        Self::with_id(Uuid::new_v4().to_string())
-    }
-
     pub fn with_id(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        Self::configure_durable(&mut mock_log_store);
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        Self::configure_durable(&mut mock);
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `is_write_durable()=false` and `flush()` is tracked.
@@ -53,41 +40,29 @@ impl MockStorageEngine {
     /// Use this to test the write/flush separation and batch-flush efficiency.
     pub fn not_durable(id: String) -> (Self, Arc<AtomicU64>) {
         let flush_count = Arc::new(AtomicU64::new(0));
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
         // configure_not_durable is called separately so its expectations are the only
         // ones for is_write_durable/flush — no FIFO conflict with configure_durable.
-        Self::configure_not_durable(&mut mock_log_store, flush_count.clone());
+        Self::configure_not_durable(&mut mock, flush_count.clone());
 
-        let engine = Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        };
-
-        (engine, flush_count)
-    }
-
-    pub fn from(log_store: MockLogStore) -> Self {
-        Self {
-            log_store: Arc::new(log_store),
-            instance_id: Uuid::new_v4().to_string(),
-        }
+        (mock, flush_count)
     }
 
     fn configure_mocks(
-        log_store: &mut MockLogStore,
+        engine: &mut MockStorageEngine,
         instance_id: &str,
     ) {
         let instance_id = instance_id.to_string();
 
         // Last index implementation with persistence simulation
-        log_store.expect_last_index().returning({
+        engine.expect_last_index().returning({
             let instance_id_ref = instance_id.clone();
             move || {
                 let data = MOCK_STORAGE_DATA.lock().unwrap();
@@ -109,7 +84,7 @@ impl MockStorageEngine {
         // stricter, later expectation ever got a turn).
 
         // Get entry implementation with persistence simulation
-        log_store.expect_entry().returning({
+        engine.expect_entry().returning({
             let instance_id_ref = instance_id.clone();
             move |index| {
                 let data = MOCK_STORAGE_DATA.lock().unwrap();
@@ -119,7 +94,7 @@ impl MockStorageEngine {
         });
 
         // Get entries range implementation with persistence simulation
-        log_store.expect_get_entries().returning({
+        engine.expect_get_entries().returning({
             let instance_id_ref = instance_id.clone();
             move |range| {
                 let data = MOCK_STORAGE_DATA.lock().unwrap();
@@ -141,8 +116,8 @@ impl MockStorageEngine {
         // purge is NOT configured here — extracted into
         // configure_purge_success() for the same FIFO-ordering reason as
         // persist_entries/replace_range above.
-        log_store.expect_load_purge_boundary().returning(|| Ok(None));
-        log_store.expect_truncate().returning({
+        engine.expect_load_purge_boundary().returning(|| Ok(None));
+        engine.expect_truncate().returning({
             let instance_id_ref = instance_id.clone();
             move |from_index| {
                 let mut data = MOCK_STORAGE_DATA.lock().unwrap();
@@ -176,7 +151,7 @@ impl MockStorageEngine {
         // save_hard_state is NOT configured here — extracted into
         // configure_save_hard_state_success() for the same FIFO-ordering
         // reason as persist_entries/replace_range/purge/reset above.
-        log_store.expect_load_hard_state().returning({
+        engine.expect_load_hard_state().returning({
             let instance_id_ref = instance_id.clone();
             move || {
                 let data = MOCK_STORAGE_DATA.lock().unwrap();
@@ -195,11 +170,11 @@ impl MockStorageEngine {
     /// `configure_mocks` for why ordering here matters (mockall FIFO
     /// matching).
     fn configure_persist_entries_success(
-        log_store: &mut MockLogStore,
+        engine: &mut MockStorageEngine,
         instance_id: &str,
     ) {
         let instance_id_ref = instance_id.to_string();
-        log_store.expect_persist_entries().returning(move |entries| {
+        engine.expect_persist_entries().returning(move |entries| {
             let mut data = MOCK_STORAGE_DATA.lock().unwrap();
             for entry in &entries {
                 let key = format!("{}_entry_{}", instance_id_ref, entry.index);
@@ -218,11 +193,11 @@ impl MockStorageEngine {
     /// inserts `new_entries`. Extracted out of `configure_mocks` for the same reason as
     /// `configure_persist_entries_success`.
     fn configure_replace_range_success(
-        log_store: &mut MockLogStore,
+        engine: &mut MockStorageEngine,
         instance_id: &str,
     ) {
         let instance_id_ref = instance_id.to_string();
-        log_store.expect_replace_range().returning(move |from_index, new_entries| {
+        engine.expect_replace_range().returning(move |from_index, new_entries| {
             let mut data = MOCK_STORAGE_DATA.lock().unwrap();
             let prefix = format!("{instance_id_ref}_entry_");
             let keys_to_delete: Vec<String> = data
@@ -258,19 +233,19 @@ impl MockStorageEngine {
 
     /// Default `purge()`: always succeeds. Extracted out of `configure_mocks`
     /// for the same reason as persist_entries/replace_range.
-    fn configure_purge_success(log_store: &mut MockLogStore) {
-        log_store.expect_purge().returning(|_| Ok(()));
+    fn configure_purge_success(engine: &mut MockStorageEngine) {
+        engine.expect_purge().returning(|_| Ok(()));
     }
 
     /// Default `reset()`: always succeeds, clears entries and last_index for
     /// this instance. Extracted out of `configure_mocks` for the same reason
     /// as persist_entries/replace_range/purge.
     fn configure_reset_success(
-        log_store: &mut MockLogStore,
+        engine: &mut MockStorageEngine,
         instance_id: &str,
     ) {
         let instance_id_ref = instance_id.to_string();
-        log_store.expect_reset().returning(move || {
+        engine.expect_reset().returning(move || {
             let mut data = MOCK_STORAGE_DATA.lock().unwrap();
             let last_index_key = format!("{instance_id_ref}_last_index");
             let keys: Vec<String> = data
@@ -292,11 +267,11 @@ impl MockStorageEngine {
     /// `MOCK_STORAGE_DATA`. Extracted out of `configure_mocks` for the same
     /// reason as persist_entries/replace_range/purge/reset.
     fn configure_save_hard_state_success(
-        log_store: &mut MockLogStore,
+        engine: &mut MockStorageEngine,
         instance_id: &str,
     ) {
         let instance_id_ref = instance_id.to_string();
-        log_store.expect_save_hard_state().returning(move |state| {
+        engine.expect_save_hard_state().returning(move |state| {
             let mut data = MOCK_STORAGE_DATA.lock().unwrap();
             let key = format!("{instance_id_ref}_meta_hard_state");
             let value = bincode::serialize(state).expect("serialize hard_state");
@@ -311,27 +286,23 @@ impl MockStorageEngine {
     /// A failed fsync poisons the log permanently (see `FsyncWorker`). This is the
     /// deterministic way to reach the poisoned state through a real fsync failure.
     pub fn not_durable_first_flush_fails(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
         // First flush fails — leaves pending_max non-zero (only success path zeros it).
-        mock_log_store
-            .expect_flush()
+        mock.expect_flush()
             .once()
             .returning(|| Err(crate::Error::Fatal("simulated fsync failure".into())));
         // All subsequent flushes succeed.
-        mock_log_store.expect_flush().returning(|| Ok(()));
+        mock.expect_flush().returning(|| Ok(()));
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `is_write_durable()=false` and the **first**
@@ -345,31 +316,28 @@ impl MockStorageEngine {
     /// here, keeping the two surfaces isolated. All subsequent `persist_entries()`
     /// calls succeed.
     pub fn not_durable_first_persist_fails(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(|| Ok(()));
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(|| Ok(()));
 
         // First persist_entries() call fails. Registered before the
         // always-succeeds fallback below — mockall tries expectations in
         // registration order, so the stricter `.once()` one must come first.
-        mock_log_store.expect_persist_entries().once().returning(|_| {
+        mock.expect_persist_entries().once().returning(|_| {
             Err(crate::Error::Fatal(
                 "simulated persist_entries failure".into(),
             ))
         });
         // All subsequent persist_entries() calls succeed.
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `replace_range()` always fails,
@@ -377,89 +345,75 @@ impl MockStorageEngine {
     /// (truncate + write). `replace_range_and_submit` treats this as
     /// unrecoverable and poisons the log — disk state is now uncertain.
     pub fn not_durable_replace_range_fails(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_replace_range().returning(|_, _| {
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(|| Ok(()));
+        mock.expect_replace_range().returning(|_, _| {
             Err(crate::Error::Fatal(
                 "simulated replace_range failure".into(),
             ))
         });
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `purge()` always fails, simulating a
     /// fatal storage error during log compaction.
     pub fn not_durable_purge_fails(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store
-            .expect_purge()
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(|| Ok(()));
+        mock.expect_purge()
             .returning(|_| Err(crate::Error::Fatal("simulated purge failure".into())));
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `reset()` always fails, simulating a
     /// fatal storage error during snapshot install / log rewind.
     pub fn not_durable_reset_fails(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store
-            .expect_reset()
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(|| Ok(()));
+        mock.expect_reset()
             .returning(|| Err(crate::Error::Fatal("simulated reset failure".into())));
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `save_hard_state()` always fails,
     /// simulating a fatal storage error while persisting current_term/voted_for.
     pub fn not_durable_save_hard_state_fails(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(|| Ok(()));
-        mock_log_store.expect_save_hard_state().returning(|_| {
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(|| Ok(()));
+        mock.expect_save_hard_state().returning(|_| {
             Err(crate::Error::Fatal(
                 "simulated save_hard_state failure".into(),
             ))
         });
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `is_write_durable()=false` and every
@@ -468,23 +422,19 @@ impl MockStorageEngine {
     /// Use this to verify that callers (e.g. `flush()`) propagate the error back
     /// rather than hanging forever waiting for a `durable_index` that never advances.
     pub fn not_durable_always_failing_flush(id: String) -> Self {
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store
-            .expect_flush()
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush()
             .returning(|| Err(crate::Error::Fatal("simulated fsync failure".into())));
 
-        Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        }
+        mock
     }
 
     /// Create a MockStorageEngine where `is_write_durable()=false` and the FIRST
@@ -498,16 +448,16 @@ impl MockStorageEngine {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
 
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(move || {
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(move || {
             // Only the first call blocks — take() leaves None for subsequent calls.
             if let Some(gate) = rx.lock().unwrap().take() {
                 let _ = gate.recv(); // blocks until the test sends ()
@@ -515,12 +465,7 @@ impl MockStorageEngine {
             Ok(())
         });
 
-        let engine = Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        };
-
-        (engine, tx)
+        (mock, tx)
     }
 
     /// Same as `not_durable_gated_flush`, but also returns a shared counter of how
@@ -533,17 +478,17 @@ impl MockStorageEngine {
         let rx = Mutex::new(Some(rx));
         let flush_count = Arc::new(AtomicU64::new(0));
 
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
         let counter = flush_count.clone();
-        mock_log_store.expect_flush().returning(move || {
+        mock.expect_flush().returning(move || {
             counter.fetch_add(1, Ordering::Relaxed);
             // Only the first call blocks — take() leaves None for subsequent calls.
             if let Some(gate) = rx.lock().unwrap().take() {
@@ -552,12 +497,7 @@ impl MockStorageEngine {
             Ok(())
         });
 
-        let engine = Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        };
-
-        (engine, tx, flush_count)
+        (mock, tx, flush_count)
     }
 
     /// Same as `not_durable_gated_flush`, but every `flush()` call — the first
@@ -567,16 +507,16 @@ impl MockStorageEngine {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
 
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
-        Self::configure_persist_entries_success(&mut mock_log_store, &id);
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        mock_log_store.expect_is_write_durable().returning(|| false);
-        mock_log_store.expect_flush().returning(move || {
+        Self::configure_mocks(&mut mock, &id);
+        Self::configure_persist_entries_success(&mut mock, &id);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        mock.expect_is_write_durable().returning(|| false);
+        mock.expect_flush().returning(move || {
             // Only the first call blocks — take() leaves None for subsequent calls.
             if let Some(gate) = rx.lock().unwrap().take() {
                 let _ = gate.recv(); // blocks until the test sends ()
@@ -584,12 +524,7 @@ impl MockStorageEngine {
             Err(crate::Error::Fatal("simulated fsync failure".into()))
         });
 
-        let engine = Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        };
-
-        (engine, tx)
+        (mock, tx)
     }
 
     /// Create a MockStorageEngine where the first `persist_entries()` call blocks
@@ -604,18 +539,18 @@ impl MockStorageEngine {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let rx = Mutex::new(Some(rx));
 
-        let mut mock_log_store = MockLogStore::new();
+        let mut mock = MockStorageEngine::new();
 
-        Self::configure_mocks(&mut mock_log_store, &id);
+        Self::configure_mocks(&mut mock, &id);
         // persist_entries is gated below instead of via configure_persist_entries_success.
-        Self::configure_replace_range_success(&mut mock_log_store, &id);
-        Self::configure_purge_success(&mut mock_log_store);
-        Self::configure_reset_success(&mut mock_log_store, &id);
-        Self::configure_save_hard_state_success(&mut mock_log_store, &id);
-        Self::configure_durable(&mut mock_log_store);
+        Self::configure_replace_range_success(&mut mock, &id);
+        Self::configure_purge_success(&mut mock);
+        Self::configure_reset_success(&mut mock, &id);
+        Self::configure_save_hard_state_success(&mut mock, &id);
+        Self::configure_durable(&mut mock);
 
         let instance_id_ref = id.clone();
-        mock_log_store.expect_persist_entries().returning(move |entries| {
+        mock.expect_persist_entries().returning(move |entries| {
             // Only the first call blocks — take() leaves None for subsequent calls.
             if let Some(gate) = rx.lock().unwrap().take() {
                 let _ = gate.recv(); // blocks until the test sends ()
@@ -633,43 +568,25 @@ impl MockStorageEngine {
             Ok(())
         });
 
-        let engine = Self {
-            log_store: Arc::new(mock_log_store),
-            instance_id: id,
-        };
-
-        (engine, tx)
+        (mock, tx)
     }
 
     /// Configure `is_write_durable=true` and no-op flush (durable mock).
-    fn configure_durable(log_store: &mut MockLogStore) {
-        log_store.expect_is_write_durable().returning(|| true);
-        log_store.expect_flush().returning(|| Ok(()));
+    fn configure_durable(engine: &mut MockStorageEngine) {
+        engine.expect_is_write_durable().returning(|| true);
+        engine.expect_flush().returning(|| Ok(()));
     }
 
     /// Configure `is_write_durable=false` with a flush counter.
     fn configure_not_durable(
-        log_store: &mut MockLogStore,
+        engine: &mut MockStorageEngine,
         flush_count: Arc<AtomicU64>,
     ) {
-        log_store.expect_is_write_durable().returning(|| false);
+        engine.expect_is_write_durable().returning(|| false);
         let counter = flush_count.clone();
-        log_store.expect_flush().returning(move || {
+        engine.expect_flush().returning(move || {
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(())
         });
-    }
-}
-impl Default for MockStorageEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StorageEngine for MockStorageEngine {
-    type LogStore = MockLogStore;
-
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
     }
 }

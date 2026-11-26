@@ -38,9 +38,8 @@ This crate provides the core Raft consensus algorithm:
 
 **Key traits to understand**:
 
-- `StorageEngine` - Persistent storage for Raft logs
+- `StorageEngine` - Log entry and hard state (term, voted_for) persistence
 - `StateMachine` - Application-specific state transitions
-- `LogStore` - Log entry persistence
 
 See the [API documentation](https://docs.rs/d-engine-core) for detailed trait definitions.
 

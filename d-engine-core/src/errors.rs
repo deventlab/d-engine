@@ -9,7 +9,7 @@ use std::time::Duration;
 use config::ConfigError;
 use tokio::task::JoinError;
 
-/// Unified result type used throughout `StateMachine`/`StorageEngine`/`LogStore`
+/// Unified result type used throughout `StateMachine`/`StorageEngine`
 /// trait signatures — equivalent to `std::result::Result<T, Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 

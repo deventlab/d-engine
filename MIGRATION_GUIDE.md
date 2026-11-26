@@ -74,12 +74,15 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 
 ## Upgrading to v0.3.0: your `StorageEngine`
 
-The Raft log and the hard state (current term and vote) are one store now. Implement `LogStore` only.
+The Raft log and the hard state (current term and vote) are one trait now. Implement `StorageEngine` only.
 
 | If you have | Do this |
 | --- | --- |
-| `impl MetaStore for ...` | Delete it. Move `save_hard_state` and `load_hard_state` into your `LogStore` |
-| `type MetaStore` and `fn meta_store()` in your `StorageEngine` | Delete both |
+| `impl LogStore for MyLogStore` | Make it `impl StorageEngine for MyStorageEngine`; move the fields of `MyLogStore` into `MyStorageEngine` |
+| `impl MetaStore for ...` | Delete it. Move `save_hard_state` and `load_hard_state` into your `StorageEngine` |
+| `type LogStore`, `fn log_store()`, `type MetaStore` and `fn meta_store()` in your `StorageEngine` | Delete them |
+| `engine.log_store().persist_entries(..)` and similar calls | Call the method on the engine: `engine.persist_entries(..)` |
+| `FileLogStore` or `RocksDBLogStore` | Use `FileStorageEngine` or `RocksDBStorageEngine` |
 | `flush()` left to its default | Implement it. Make log entries and the hard state durable; `Ok(())` if your writes already are |
 | `flush_async()` | Delete it. The engine never called it |
 

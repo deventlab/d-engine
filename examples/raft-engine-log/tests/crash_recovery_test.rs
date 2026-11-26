@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use d_engine::common::{Entry, EntryPayload, LogId, entry_payload};
-use d_engine::{LogStore, StorageEngine};
+use d_engine::StorageEngine;
 use prost::bytes::Bytes;
 use raft_engine_log::{RaftEngineOptions, RaftEngineStorage};
 use tempfile::TempDir;
@@ -49,7 +49,7 @@ fn marker_of(entry: &Entry) -> u8 {
 
 /// Appends entries `from..=to` with `marker` in `BATCH`-sized calls and makes each call durable.
 async fn write_acked(
-    log: &impl LogStore,
+    log: &impl StorageEngine,
     from: u64,
     to: u64,
     marker: u8,
@@ -65,7 +65,7 @@ async fn write_acked(
 
 /// Every index in `from..=to` is present, carries `expected(index)`, and nothing follows `to`.
 async fn assert_log(
-    log: &impl LogStore,
+    log: &impl StorageEngine,
     from: u64,
     to: u64,
     expected: impl Fn(u64) -> u8,
@@ -115,8 +115,8 @@ async fn test_recovery_after_torn_unflushed_tail_keeps_acked_entries() {
     let acked_len;
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        write_acked(&*log, 1, 50, 1).await;
+        let log = &storage;
+        write_acked(log, 1, 50, 1).await;
         acked_len = std::fs::metadata(active_file(&path)).unwrap().len();
         log.persist_entries((51..=60).map(|i| entry(i, 2)).collect()).await.unwrap();
     }
@@ -126,12 +126,12 @@ async fn test_recovery_after_torn_unflushed_tail_keeps_acked_entries() {
 
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        assert_log(&*log, 1, 50, |_| 1).await;
-        write_acked(&*log, 51, 55, 3).await;
+        let log = &storage;
+        assert_log(log, 1, 50, |_| 1).await;
+        write_acked(log, 51, 55, 3).await;
     }
     let storage = open(&path);
-    assert_log(&*storage.log_store(), 1, 55, |i| if i <= 50 { 1 } else { 3 }).await;
+    assert_log(&storage, 1, 55, |i| if i <= 50 { 1 } else { 3 }).await;
 }
 
 /// Same unflushed entries, but the disk wrote their later blocks and not the earlier ones: the
@@ -143,8 +143,8 @@ async fn test_recovery_after_garbage_in_unflushed_tail_keeps_acked_entries() {
     let acked_len;
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        write_acked(&*log, 1, 50, 1).await;
+        let log = &storage;
+        write_acked(log, 1, 50, 1).await;
         acked_len = std::fs::metadata(active_file(&path)).unwrap().len() as usize;
         log.persist_entries((51..=60).map(|i| entry(i, 2)).collect()).await.unwrap();
     }
@@ -156,12 +156,12 @@ async fn test_recovery_after_garbage_in_unflushed_tail_keeps_acked_entries() {
 
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        assert_log(&*log, 1, 50, |_| 1).await;
-        write_acked(&*log, 51, 55, 3).await;
+        let log = &storage;
+        assert_log(log, 1, 50, |_| 1).await;
+        write_acked(log, 51, 55, 3).await;
     }
     let storage = open(&path);
-    assert_log(&*storage.log_store(), 1, 55, |i| if i <= 50 { 1 } else { 3 }).await;
+    assert_log(&storage, 1, 55, |i| if i <= 50 { 1 } else { 3 }).await;
 }
 
 /// A log file taken from the reuse pool still holds the records of its previous life after the
@@ -176,9 +176,9 @@ async fn test_recovery_in_reused_file_ignores_stale_records_after_the_tail() {
     let mut last_acked;
     {
         let storage = open(&path);
-        let log = storage.log_store();
+        let log = &storage;
         // First life: ~6 MiB, then release the oldest files into the reuse pool.
-        write_acked(&*log, 1, 6_000, STALE).await;
+        write_acked(log, 1, 6_000, STALE).await;
         let files_before = log_files(&path).len();
         log.purge(LogId { term: 1, index: 5_900 }).await.unwrap();
         log.flush().unwrap();
@@ -193,7 +193,7 @@ async fn test_recovery_in_reused_file_ignores_stale_records_after_the_tail() {
         let started_at = log_files(&path).last().unwrap().0;
         let mut stale_found = false;
         while last_acked < 6_000 + 12_000 {
-            write_acked(&*log, last_acked + 1, last_acked + BATCH, FRESH).await;
+            write_acked(log, last_acked + 1, last_acked + BATCH, FRESH).await;
             last_acked += BATCH;
             let (seq, file) = log_files(&path).pop().unwrap();
             if seq > started_at {
@@ -204,13 +204,13 @@ async fn test_recovery_in_reused_file_ignores_stale_records_after_the_tail() {
             }
         }
         assert!(stale_found, "precondition not met: no log file with stale records after its tail");
-        write_acked(&*log, last_acked + 1, last_acked + 5, FRESH).await;
+        write_acked(log, last_acked + 1, last_acked + 5, FRESH).await;
         last_acked += 5;
     }
     let storage = open(&path);
-    let log = storage.log_store();
-    assert_log(&*log, 5_901, last_acked, |i| if i <= 6_000 { STALE } else { FRESH }).await;
-    write_acked(&*log, last_acked + 1, last_acked + 5, FRESH).await;
+    let log = &storage;
+    assert_log(log, 5_901, last_acked, |i| if i <= 6_000 { STALE } else { FRESH }).await;
+    write_acked(log, last_acked + 1, last_acked + 5, FRESH).await;
 }
 
 /// True when the file holds a run of `marker` bytes. The fresh entries carry a different marker,
@@ -242,7 +242,7 @@ async fn recover_after_new_file_crash(newest: NewestFile) {
     let mut acked = 0;
     {
         let storage = open(&path);
-        let log = storage.log_store();
+        let log = &storage;
         let files = log_files(&path).len();
         loop {
             let batch_end = acked + BATCH;
@@ -268,13 +268,13 @@ async fn recover_after_new_file_crash(newest: NewestFile) {
 
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        assert_log(&*log, 1, acked, |_| 1).await;
+        let log = &storage;
+        assert_log(log, 1, acked, |_| 1).await;
         // Enough new data to open further files on top of the recovered state.
-        write_acked(&*log, acked + 1, acked + 3_000, 2).await;
+        write_acked(log, acked + 1, acked + 3_000, 2).await;
     }
     let storage = open(&path);
-    assert_log(&*storage.log_store(), 1, acked + 3_000, |i| if i <= acked { 1 } else { 2 }).await;
+    assert_log(&storage, 1, acked + 3_000, |i| if i <= acked { 1 } else { 2 }).await;
 }
 
 #[tokio::test]
@@ -300,8 +300,8 @@ async fn recover_after_prefilled_files_lost(delete: bool) {
     let path = dir.path().join("log");
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        write_acked(&*log, 1, 50, 1).await;
+        let log = &storage;
+        write_acked(log, 1, 50, 1).await;
     }
     let spare: Vec<PathBuf> = std::fs::read_dir(&path)
         .unwrap()
@@ -320,13 +320,13 @@ async fn recover_after_prefilled_files_lost(delete: bool) {
 
     {
         let storage = open(&path);
-        let log = storage.log_store();
-        assert_log(&*log, 1, 50, |_| 1).await;
+        let log = &storage;
+        assert_log(log, 1, 50, |_| 1).await;
         // About 4 MiB: several rotations, which take prefilled files first when there are any.
-        write_acked(&*log, 51, 4_050, 2).await;
+        write_acked(log, 51, 4_050, 2).await;
     }
     let storage = open(&path);
-    assert_log(&*storage.log_store(), 1, 4_050, |i| if i <= 50 { 1 } else { 2 }).await;
+    assert_log(&storage, 1, 4_050, |i| if i <= 50 { 1 } else { 2 }).await;
 }
 
 #[tokio::test]

@@ -9,7 +9,6 @@ use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -17,7 +16,6 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::HardState;
-use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
@@ -34,27 +32,13 @@ const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
 /// the three-lock ordering problem and makes replace_range() atomic at the
 /// memory level with no visible intermediate state.
 #[derive(Debug)]
-struct FileLogStoreInner {
+struct FileStorageEngineInner {
     entries: BTreeMap<u64, Entry>,
     file: File,
     /// Maps log index to the file offset of the byte *after* the entry
     /// (i.e. the start of the next entry). truncate(from) sets file length to
     /// index_end_pos[from - 1], with no extra file read required.
     index_end_pos: BTreeMap<u64, u64>,
-}
-
-/// File-based log store implementation
-#[derive(Debug)]
-pub struct FileLogStore {
-    #[allow(unused)]
-    data_dir: PathBuf,
-    inner: Mutex<FileLogStoreInner>,
-    /// Cached last index for hot-path reads without locking.
-    last_index: AtomicU64,
-    /// Directory of the hard state file.
-    meta_dir: PathBuf,
-    /// The serialized hard state, kept in memory so a read does not touch the file.
-    hard_state: Mutex<Option<Vec<u8>>>,
 }
 
 /// File-based Raft log storage
@@ -76,49 +60,26 @@ pub struct FileLogStore {
 /// via the `rocksdb` feature.
 #[derive(Debug)]
 pub struct FileStorageEngine {
-    log_store: Arc<FileLogStore>,
     data_dir: PathBuf,
-}
-
-impl StorageEngine for FileStorageEngine {
-    type LogStore = FileLogStore;
-
-    #[inline]
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
+    inner: Mutex<FileStorageEngineInner>,
+    /// Cached last index for hot-path reads without locking.
+    last_index: AtomicU64,
+    /// Directory of the hard state file.
+    meta_dir: PathBuf,
+    /// The serialized hard state, kept in memory so a read does not touch the file.
+    hard_state: Mutex<Option<Vec<u8>>>,
 }
 
 impl FileStorageEngine {
-    /// Creates new file-based storage engine
+    /// Creates new file-based storage engine: the log in `data_dir/logs`, the hard state in
+    /// `data_dir/meta`.
     pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        fs::create_dir_all(&data_dir)?;
-        let log_store = Arc::new(FileLogStore::new(
-            data_dir.join("logs"),
-            data_dir.join("meta"),
-        )?);
-        Ok(Self {
-            log_store,
-            data_dir,
-        })
-    }
-
-    /// Get the data directory path
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-}
-
-impl FileLogStore {
-    /// Creates new file-based log store: the log in `data_dir`, the hard state in `meta_dir`.
-    pub fn new(
-        data_dir: PathBuf,
-        meta_dir: PathBuf,
-    ) -> Result<Self, Error> {
-        fs::create_dir_all(&data_dir)?;
+        let log_dir = data_dir.join("logs");
+        let meta_dir = data_dir.join("meta");
+        fs::create_dir_all(&log_dir)?;
         fs::create_dir_all(&meta_dir)?;
 
-        let log_file_path = data_dir.join("log.data");
+        let log_file_path = log_dir.join("log.data");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -126,7 +87,7 @@ impl FileLogStore {
             .truncate(false)
             .open(log_file_path)?;
 
-        let mut inner = FileLogStoreInner {
+        let mut inner = FileStorageEngineInner {
             entries: BTreeMap::new(),
             file,
             index_end_pos: BTreeMap::new(),
@@ -134,16 +95,21 @@ impl FileLogStore {
 
         let last_index = inner.load_from_file()?;
 
-        let store = Self {
+        let engine = Self {
             data_dir,
             inner: Mutex::new(inner),
             last_index: AtomicU64::new(last_index),
             meta_dir,
             hard_state: Mutex::new(None),
         };
-        store.load_hard_state_from_file()?;
+        engine.load_hard_state_from_file()?;
 
-        Ok(store)
+        Ok(engine)
+    }
+
+    /// Get the data directory path
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// Load the hard state from its file on startup.
@@ -197,7 +163,7 @@ impl FileLogStore {
     }
 }
 
-impl FileLogStoreInner {
+impl FileStorageEngineInner {
     /// Load entries from file on startup. Returns the last index found.
     fn load_from_file(&mut self) -> Result<u64, Error> {
         self.file.seek(SeekFrom::Start(0))?;
@@ -284,7 +250,7 @@ impl FileLogStoreInner {
 }
 
 #[async_trait]
-impl LogStore for FileLogStore {
+impl StorageEngine for FileStorageEngine {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -475,12 +441,12 @@ impl LogStore for FileLogStore {
     }
 }
 
-impl Drop for FileLogStore {
+impl Drop for FileStorageEngine {
     fn drop(&mut self) {
         if let Err(e) = self.flush() {
-            tracing::error!("Failed to flush FileLogStore on drop: {}", e);
+            tracing::error!("Failed to flush FileStorageEngine on drop: {}", e);
         } else {
-            tracing::debug!("FileLogStore flushed successfully on drop");
+            tracing::debug!("FileStorageEngine flushed successfully on drop");
         }
     }
 }

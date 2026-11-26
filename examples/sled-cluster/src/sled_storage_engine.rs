@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    Error, HardState, LogStore, ProstError, Result, StorageEngine, StorageError,
+    Error, HardState, ProstError, Result, StorageEngine, StorageError,
     common::{Entry, LogId},
 };
 use prost::Message;
@@ -10,7 +10,6 @@ use sled::Batch;
 use sled::IVec;
 use std::ops::RangeInclusive;
 use std::path::Path;
-use std::sync::Arc;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
@@ -19,28 +18,14 @@ const HARD_STATE_KEY: &[u8] = b"hard_state";
 const RAFT_LOG_NAMESPACE: &str = "raft_log";
 const RAFT_META_NAMESPACE: &str = "raft_meta";
 
-/// The log store: the Raft log in one tree, the hard state in another
-pub struct SledLogStore {
+/// Storage engine: the Raft log in one tree, the hard state in another
+pub struct SledStorageEngine {
     tree: sled::Tree,
     meta_tree: sled::Tree,
 }
 
-/// Unified storage engine
-pub struct SledStorageEngine {
-    log_store: Arc<SledLogStore>,
-}
-
-impl StorageEngine for SledStorageEngine {
-    type LogStore = SledLogStore;
-
-    #[inline]
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-}
-
 #[async_trait]
-impl LogStore for SledLogStore {
+impl StorageEngine for SledStorageEngine {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -238,7 +223,7 @@ impl LogStore for SledLogStore {
     }
 
     fn flush(&self) -> Result<()> {
-        trace!("LogStore flush");
+        trace!("StorageEngine flush");
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         self.meta_tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
@@ -277,9 +262,9 @@ impl std::fmt::Debug for SledStorageEngine {
 
 impl Drop for SledStorageEngine {
     fn drop(&mut self) {
-        match self.log_store.flush() {
-            Ok(_) => info!("Successfully flush log_store"),
-            Err(e) => error!(?e, "Failed to flush log_store"),
+        match self.flush() {
+            Ok(_) => info!("Successfully flushed the storage engine"),
+            Err(e) => error!(?e, "Failed to flush the storage engine"),
         }
     }
 }
@@ -302,10 +287,8 @@ impl SledStorageEngine {
         );
 
         Ok(Self {
-            log_store: Arc::new(SledLogStore {
-                tree: log_tree,
-                meta_tree,
-            }),
+            tree: log_tree,
+            meta_tree,
         })
     }
 
@@ -324,7 +307,7 @@ impl SledStorageEngine {
     }
 }
 
-impl SledLogStore {
+impl SledStorageEngine {
     #[cfg(test)]
     pub fn insert<K, V>(
         &self,
@@ -370,7 +353,7 @@ impl SledLogStore {
     }
 }
 
-impl SledLogStore {
+impl SledStorageEngine {
     /// Test helper: write a raw key into the hard state tree.
     #[cfg(test)]
     pub fn insert_meta<K, V>(

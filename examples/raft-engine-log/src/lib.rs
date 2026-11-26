@@ -14,4 +14,4 @@ mod storage_engine_suite_test;
 mod options_test;
 
 pub use options::RaftEngineOptions;
-pub use raft_engine_storage::{RaftEngineLogStore, RaftEngineStorage};
+pub use raft_engine_storage::RaftEngineStorage;

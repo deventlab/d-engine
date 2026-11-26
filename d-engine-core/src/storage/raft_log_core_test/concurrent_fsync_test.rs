@@ -23,7 +23,7 @@ use crate::test_utils::wait_for_durable_index;
 
 /// `durable_index` must not advance before the physical fsync actually completes.
 ///
-/// Use a MockLogStore with a controllable-delay flush(). While the delay is active,
+/// Use a MockStorageEngine with a controllable-delay flush(). While the delay is active,
 /// assert `durable_index()` equals its pre-write value. After unblocking fsync,
 /// assert `durable_index()` reaches the expected index.
 ///
@@ -83,7 +83,7 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
 /// in-memory `last_entry_id` — even when a follower already reports the index, the
 /// leader's own contribution must not count toward quorum until it has itself fsynced.
 ///
-/// Stall every flush() call via a MockLogStore barrier, append entries, then verify that
+/// Stall every flush() call via a MockStorageEngine barrier, append entries, then verify that
 /// majority-matched calculation does NOT advance while fsync is stalled, and does advance
 /// once fsync completes.
 ///
@@ -293,7 +293,7 @@ async fn test_durable_index_monotonic_when_fsyncs_complete_out_of_order() {
 
 /// A `flush()` caller receives `Ok(())` only after its batch is physically on disk.
 ///
-/// Use a MockLogStore with a release-gate on flush(). Call `flush()`, verify the future
+/// Use a MockStorageEngine with a release-gate on flush(). Call `flush()`, verify the future
 /// is still pending while the gate is closed, open the gate, verify the future resolves
 /// to `Ok(())`.
 ///
@@ -343,7 +343,7 @@ async fn test_flush_caller_blocked_until_fsync_completes() {
 /// `inflight`. This is the mechanism this whole rearchitecture depends on for
 /// keeping physical fsync counts low — see §9 in the design discussion.
 ///
-/// Configure a MockLogStore with a flush call counter and a release-gate on the
+/// Configure a MockStorageEngine with a flush call counter and a release-gate on the
 /// first `flush()` call. Append one entry — the inline persist path submits a
 /// fsync round on its own (round 1), winning the CAS and blocking on the gate.
 /// While round 1 is gated, call `raft_log.flush()` three times (A, B, C) — none

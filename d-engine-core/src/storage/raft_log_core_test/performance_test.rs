@@ -12,7 +12,6 @@ use d_engine_proto::common::EntryPayload;
 use tokio::sync::Barrier;
 use tokio::time::Instant;
 
-use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLog;
@@ -20,7 +19,7 @@ use crate::RaftLogCore;
 
 // Test helper: Creates storage with controllable delay
 fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_last_index().returning(|| 0);
     log_store.expect_load_purge_boundary().returning(|| Ok(None));
     log_store.expect_truncate().returning(|_| Ok(()));
@@ -35,7 +34,7 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
         Ok(())
     });
 
-    Arc::new(MockStorageEngine::from(log_store))
+    Arc::new(log_store)
 }
 
 // Tests reset performance during active flush
@@ -148,7 +147,7 @@ async fn test_fresh_cluster_performance_consistency() {
     // Relax time limit in CI environment
     let max_duration_ms = if is_ci { 50 } else { 5 };
 
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
     log_store.expect_is_write_durable().returning(|| true);
     log_store.expect_flush().return_once(|| Ok(()));
     log_store.expect_last_index().returning(|| 0);
@@ -157,12 +156,7 @@ async fn test_fresh_cluster_performance_consistency() {
     log_store.expect_persist_entries().returning(|_| Ok(()));
     log_store.expect_reset().returning(|| Ok(()));
 
-    let log = RaftLogCore::<MockTypeConfig>::new(
-        1,
-        Arc::new(MockStorageEngine::from(log_store)),
-        None,
-        5000,
-    );
+    let log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(log_store), None, 5000);
 
     // Measure reset performance in fresh cluster
     let start = Instant::now();

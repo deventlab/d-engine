@@ -5,7 +5,6 @@ use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 
-use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLogCore;
@@ -164,7 +163,7 @@ async fn test_close_flushes_multiple_batches() {
 ///    memory with nothing left to ever persist them.
 #[tokio::test]
 async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
-    let mut log_store = MockLogStore::new();
+    let mut log_store = MockStorageEngine::new();
 
     // replace_range always fails — simulates an unrecoverable disk error.
     log_store
@@ -185,7 +184,7 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
     log_store.expect_save_hard_state().returning(|_| Ok(()));
     log_store.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store));
+    let storage = Arc::new(log_store);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Append [1..4] term=1 — persisted inline.

@@ -1,13 +1,11 @@
 use std::ops::RangeInclusive;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::HardState;
-use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
@@ -28,13 +26,6 @@ use super::META_CF;
 const HARD_STATE_KEY: &[u8] = b"hard_state";
 const PURGE_BOUNDARY_KEY: &[u8] = b"purge_boundary";
 
-/// RocksDB-based log store implementation
-#[derive(Debug)]
-pub struct RocksDBLogStore {
-    db: Arc<DB>,
-    last_index: AtomicU64,
-}
-
 /// RocksDB-based Raft log storage
 ///
 /// High-performance storage engine using RocksDB for durability.
@@ -51,7 +42,8 @@ pub struct RocksDBLogStore {
 /// - High write throughput
 #[derive(Debug)]
 pub struct RocksDBStorageEngine {
-    log_store: Arc<RocksDBLogStore>,
+    db: DB,
+    last_index: AtomicU64,
 }
 
 impl RocksDBStorageEngine {
@@ -65,65 +57,6 @@ impl RocksDBStorageEngine {
 
         let db = DB::open_cf_descriptors(&db_opts, path, vec![log_cf, meta_cf])
             .map_err(|e| StorageError::DbError(e.to_string()))?;
-        let db_arc = Arc::new(db);
-
-        let log_store = Arc::new(RocksDBLogStore::new(db_arc)?);
-        Ok(Self { log_store })
-    }
-
-    /// Helper: convert index to big-endian bytes
-    #[allow(dead_code)]
-    #[inline]
-    fn index_to_key(index: u64) -> [u8; 8] {
-        index.to_be_bytes()
-    }
-
-    /// Helper: convert key bytes to index
-    #[allow(dead_code)]
-    #[inline]
-    fn key_to_index(key: &[u8]) -> u64 {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&key[0..8]);
-        u64::from_be_bytes(bytes)
-    }
-}
-
-impl StorageEngine for RocksDBStorageEngine {
-    type LogStore = RocksDBLogStore;
-
-    #[inline]
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-}
-
-impl Drop for RocksDBLogStore {
-    fn drop(&mut self) {
-        // WAL fsync makes LOG_CF and META_CF (hard_state, purge boundary) durable — memtable
-        // content survives via WAL replay on next open even without the flushes below. They are an
-        // optimization only: they shrink the WAL that must be replayed on the next restart.
-        // db.flush() (no CF argument) targets RocksDB's unused "default" CF and would be a no-op
-        // here — each CF must be named explicitly.
-        if let Err(e) = self.db.flush_wal(true) {
-            tracing::error!("Failed to flush WAL on drop: {}", e);
-        }
-        for cf_name in [LOG_CF, META_CF] {
-            match self.db.cf_handle(cf_name) {
-                Some(cf) => {
-                    if let Err(e) = self.db.flush_cf(&cf) {
-                        tracing::error!("Failed to flush {} memtable on drop: {}", cf_name, e);
-                    } else {
-                        tracing::debug!("RocksDBLogStore flushed {} on drop", cf_name);
-                    }
-                }
-                None => tracing::error!("Failed to flush on drop: {} not found", cf_name),
-            }
-        }
-    }
-}
-
-impl RocksDBLogStore {
-    fn new(db: Arc<DB>) -> Result<Self, Error> {
         let mut last_index = 0;
 
         // Find the last index by seeking to the end and reading the first (largest) key
@@ -145,14 +78,40 @@ impl RocksDBLogStore {
         })
     }
 
+    /// Helper: convert index to big-endian bytes
     #[inline]
     fn index_to_key(index: u64) -> [u8; 8] {
         index.to_be_bytes()
     }
 }
 
+impl Drop for RocksDBStorageEngine {
+    fn drop(&mut self) {
+        // WAL fsync makes LOG_CF and META_CF (hard_state, purge boundary) durable — memtable
+        // content survives via WAL replay on next open even without the flushes below. They are an
+        // optimization only: they shrink the WAL that must be replayed on the next restart.
+        // db.flush() (no CF argument) targets RocksDB's unused "default" CF and would be a no-op
+        // here — each CF must be named explicitly.
+        if let Err(e) = self.db.flush_wal(true) {
+            tracing::error!("Failed to flush WAL on drop: {}", e);
+        }
+        for cf_name in [LOG_CF, META_CF] {
+            match self.db.cf_handle(cf_name) {
+                Some(cf) => {
+                    if let Err(e) = self.db.flush_cf(&cf) {
+                        tracing::error!("Failed to flush {} memtable on drop: {}", cf_name, e);
+                    } else {
+                        tracing::debug!("RocksDBStorageEngine flushed {} on drop", cf_name);
+                    }
+                }
+                None => tracing::error!("Failed to flush on drop: {} not found", cf_name),
+            }
+        }
+    }
+}
+
 #[async_trait]
-impl LogStore for RocksDBLogStore {
+impl StorageEngine for RocksDBStorageEngine {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,

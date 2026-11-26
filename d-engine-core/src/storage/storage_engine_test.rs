@@ -11,7 +11,6 @@ use prost::Message;
 
 use crate::Error;
 use crate::HardState;
-use crate::LogStore;
 use crate::storage::StorageEngine;
 
 /// Test suite for StorageEngine implementations
@@ -82,9 +81,8 @@ impl StorageEngineTestSuite {
     pub async fn test_empty_storage<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
 
         assert_eq!(log_store.last_index(), 0);
         assert!(log_store.entry(1).await?.is_none());
@@ -97,9 +95,8 @@ impl StorageEngineTestSuite {
     pub async fn test_single_entry_persistence<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         let entries = create_test_entries(1..=1);
 
         // Persist and retrieve
@@ -115,9 +112,8 @@ impl StorageEngineTestSuite {
     pub async fn test_batch_persistence<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         let entries = create_test_entries(1..=100);
 
         log_store.persist_entries(entries.clone()).await?;
@@ -143,9 +139,8 @@ impl StorageEngineTestSuite {
     pub async fn test_purge_logs<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         log_store.persist_entries(create_test_entries(1..=100)).await?;
 
         // Purge first 50 entries
@@ -167,9 +162,8 @@ impl StorageEngineTestSuite {
     pub async fn test_truncation<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         log_store.reset().await?;
         log_store.persist_entries(create_test_entries(1..=100)).await?;
 
@@ -191,9 +185,8 @@ impl StorageEngineTestSuite {
     pub async fn test_replace_range<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         log_store.reset().await?;
         log_store.persist_entries(create_test_entries(1..=10)).await?;
 
@@ -226,9 +219,8 @@ impl StorageEngineTestSuite {
     pub async fn test_replace_range_empty_entries_truncates<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         log_store.reset().await?;
         log_store.persist_entries(create_test_entries(1..=10)).await?;
 
@@ -245,9 +237,8 @@ impl StorageEngineTestSuite {
     pub async fn test_reset_operation<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
         log_store.persist_entries(create_test_entries(1..=50)).await?;
 
         log_store.reset().await?;
@@ -262,9 +253,8 @@ impl StorageEngineTestSuite {
     pub async fn test_edge_cases<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
 
         // Empty persistence
         log_store.persist_entries(vec![]).await?;
@@ -282,9 +272,8 @@ impl StorageEngineTestSuite {
     pub async fn test_purge_empty_range<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
+        let log_store = engine.clone();
 
         // Purge on empty log - should not panic
         log_store.purge(LogId { index: 0, term: 0 }).await?;
@@ -308,9 +297,8 @@ impl StorageEngineTestSuite {
     pub async fn test_hard_state_persistence<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let store = engine.log_store();
+        let store = engine.clone();
         let hard_state = create_test_hard_state(5, Some((10, 4)));
 
         // Save and verify
@@ -325,10 +313,9 @@ impl StorageEngineTestSuite {
     pub async fn test_reset_preserves_meta<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
-        let store = engine.log_store();
+        let log_store = engine.clone();
+        let store = engine.clone();
         let hard_state = create_test_hard_state(3, Some((5, 4)));
 
         store.save_hard_state(&hard_state)?;
@@ -347,10 +334,9 @@ impl StorageEngineTestSuite {
     pub async fn test_flush_persists_all_data<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
-        E::LogStore: Send + Sync,
     {
-        let log_store = engine.log_store();
-        let store = engine.log_store();
+        let log_store = engine.clone();
+        let store = engine.clone();
 
         // Write to both stores
         log_store.persist_entries(create_test_entries(1..=5)).await?;
@@ -374,7 +360,7 @@ impl StorageEngineTestSuite {
         // Step 1: Write entries and drop (simulate crash)
         {
             let engine = builder.build().await?;
-            let log_store = engine.log_store();
+            let log_store = engine.clone();
 
             let entries = create_test_entries(1..=10);
             log_store.persist_entries(entries).await?;
@@ -385,7 +371,7 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify all entries survived
         let engine2 = builder.build().await?;
-        let log_store2 = engine2.log_store();
+        let log_store2 = engine2.clone();
 
         assert_eq!(
             log_store2.last_index(),
@@ -430,7 +416,7 @@ impl StorageEngineTestSuite {
         builder: &B
     ) -> Result<(), Error> {
         let engine = builder.build().await?;
-        let store = engine.log_store();
+        let store = engine.clone();
         // The builder may hand out storage an earlier test wrote to: append after what is there.
         let last = store.last_index() + 10;
         store.persist_entries(create_test_entries(last - 9..=last)).await?;
@@ -442,7 +428,7 @@ impl StorageEngineTestSuite {
             eprintln!("crash image not supported by this builder; crash test skipped");
             return Ok(());
         };
-        let restarted_store = restarted.log_store();
+        let restarted_store = restarted.clone();
 
         assert_eq!(
             restarted_store.last_index(),
@@ -479,7 +465,7 @@ impl StorageEngineTestSuite {
         // Step 1: Save hard state and drop
         {
             let engine = builder.build().await?;
-            let store = engine.log_store();
+            let store = engine.clone();
 
             let hard_state =
                 create_test_hard_state(expected_term, Some((expected_node_id, expected_term)));
@@ -492,7 +478,7 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify
         let engine2 = builder.build().await?;
-        let store2 = engine2.log_store();
+        let store2 = engine2.clone();
 
         let loaded = store2.load_hard_state()?.unwrap();
         assert_eq!(
@@ -520,7 +506,7 @@ impl StorageEngineTestSuite {
         // Step 1: Write entries, truncate, and drop
         {
             let engine = builder.build().await?;
-            let log_store = engine.log_store();
+            let log_store = engine.clone();
 
             log_store.persist_entries(create_test_entries(1..=100)).await?;
             log_store.truncate(76).await?;
@@ -531,7 +517,7 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify truncation survived
         let engine2 = builder.build().await?;
-        let log_store2 = engine2.log_store();
+        let log_store2 = engine2.clone();
 
         assert_eq!(
             log_store2.last_index(),
@@ -562,7 +548,7 @@ impl StorageEngineTestSuite {
         // Step 1: Write entries, purge, and drop
         {
             let engine = builder.build().await?;
-            let log_store = engine.log_store();
+            let log_store = engine.clone();
 
             log_store.persist_entries(create_test_entries(1..=100)).await?;
             log_store
@@ -578,7 +564,7 @@ impl StorageEngineTestSuite {
 
         // Step 2: Reopen and verify purge survived
         let engine2 = builder.build().await?;
-        let log_store2 = engine2.log_store();
+        let log_store2 = engine2.clone();
 
         assert!(
             log_store2.entry(1).await?.is_none(),

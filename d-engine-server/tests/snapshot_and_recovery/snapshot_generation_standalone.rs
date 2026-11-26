@@ -20,7 +20,6 @@
 use std::time::Duration;
 
 use d_engine_core::ClientApiError;
-use d_engine_server::LogStore;
 use d_engine_server::StorageEngine;
 use tokio::time::sleep;
 use tracing_test::traced_test;
@@ -164,7 +163,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     // Verify raft log been purged (log entries before snapshot should be deleted)
     for i in 1..=3 {
-        assert!(r3.log_store().entry(i).await.unwrap().is_none());
+        assert!(r3.entry(i).await.unwrap().is_none());
     }
 
     // Clean up

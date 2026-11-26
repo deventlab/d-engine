@@ -26,7 +26,6 @@ use tracing::warn;
 use crate::Error;
 use crate::HardState;
 use crate::InternalEvent;
-use crate::LogStore;
 use crate::NetworkError;
 use crate::RaftLog;
 use crate::ReplicationError;
@@ -43,7 +42,7 @@ where
 {
     node_id: u32,
 
-    pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
+    pub(crate) storage: Arc<SOF<T>>,
 
     /// Max time `close()` waits for a final flush before giving up. The
     /// in-flight fsync task itself is never cancelled — it keeps running in
@@ -101,7 +100,7 @@ where
     // None in tests; Some(internal_event_tx) in production.
     internal_event_tx: Option<mpsc::UnboundedSender<crate::InternalEvent>>,
 
-    fsync_worker: Arc<FsyncWorker<<SOF<T> as StorageEngine>::LogStore>>,
+    fsync_worker: Arc<FsyncWorker<SOF<T>>>,
 
     // set once on first fsync failure, never cleared for this instance's lifetime
     pub(super) poisoned: Arc<AtomicBool>,
@@ -403,7 +402,7 @@ where
         // through the fsync worker: its next fsync covers whatever the engine has written.
         // No later append carries it there, so wait for that fsync here. `remove_range` above
         // already bumped the fsync generation, so this round cannot be judged stale.
-        if let Err(e) = self.log_store.truncate(from_index).await {
+        if let Err(e) = self.storage.truncate(from_index).await {
             error!(?self.node_id, "truncate_from failed (fatal): {e:?}");
             self.mark_poisoned_and_notify(format!("truncate_from failed: {e:?}"));
             return Err(e);
@@ -534,7 +533,7 @@ where
     }
 
     fn load_hard_state(&self) -> Result<Option<HardState>> {
-        self.log_store.load_hard_state()
+        self.storage.load_hard_state()
     }
 
     fn save_hard_state(
@@ -544,9 +543,9 @@ where
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
-        self.log_store
+        self.storage
             .save_hard_state(hard_state)
-            .and_then(|()| self.log_store.flush())
+            .and_then(|()| self.storage.flush())
             .inspect_err(|e| {
                 error!(?self.node_id, "save_hard_state failed (fatal): {e:?}");
                 self.mark_poisoned_and_notify(format!("save_hard_state failed: {e:?}"));
@@ -573,7 +572,7 @@ where
         // for it and hang the shutdown. The hard state needs no flush here: every `save_hard_state`
         // flushes it before it returns.
         if !timed_out {
-            let _ = self.log_store.flush();
+            let _ = self.storage.flush();
         }
     }
 }
@@ -588,8 +587,7 @@ where
         internal_event_tx: Option<mpsc::UnboundedSender<InternalEvent>>,
         shutdown_timeout_ms: u64,
     ) -> Arc<Self> {
-        let log_store = storage.log_store();
-        let disk_len = log_store.last_index();
+        let disk_len = storage.last_index();
 
         let entries = SkipMap::new();
 
@@ -601,7 +599,7 @@ where
         // Load all entries from disk to memory
         let mut loaded_count = 0;
         if disk_len > 0 {
-            match log_store.get_entries(1..=disk_len) {
+            match storage.get_entries(1..=disk_len) {
                 Ok(all_entries) if !all_entries.is_empty() => {
                     loaded_count = all_entries.len();
                     debug!(
@@ -653,7 +651,7 @@ where
 
         // Restore purge boundary from storage so entry_term() returns the correct
         // term for the snapshot boundary entry even after a restart.
-        let (last_purged_index_val, last_purged_term_val) = match log_store.load_purge_boundary() {
+        let (last_purged_index_val, last_purged_term_val) = match storage.load_purge_boundary() {
             Ok(Some(lid)) => (lid.index, lid.term),
             Ok(None) => (0, 0),
             Err(e) => {
@@ -668,14 +666,14 @@ where
         let poisoned = Arc::new(AtomicBool::new(false));
         let fsync_worker = Arc::new(FsyncWorker::new(
             node_id,
-            log_store.clone(),
+            storage.clone(),
             poisoned.clone(),
             internal_event_tx.clone(),
         ));
 
         Arc::new(Self {
             node_id,
-            log_store,
+            storage,
             shutdown_timeout_ms,
             entries: RwLock::new(entries),
             min_index: AtomicU64::new(min_index),
@@ -798,7 +796,7 @@ where
         };
 
         let t0 = std::time::Instant::now();
-        self.log_store.persist_entries(entries).await.inspect_err(|e| {
+        self.storage.persist_entries(entries).await.inspect_err(|e| {
             error!(
                 ?self.node_id,
                 persist_path = ctx,
@@ -942,7 +940,7 @@ where
 
         // Capture the new tail's term before `new_entries` is moved.
         let new_tail_term = new_entries.last().map(|e| e.term).unwrap_or(0);
-        let new_tail = match self.log_store.replace_range(truncate_from, new_entries).await {
+        let new_tail = match self.storage.replace_range(truncate_from, new_entries).await {
             Ok(new_tail) => new_tail,
             Err(e) => {
                 error!(?self.node_id, "replace_range failed (fatal): {e:?}");
@@ -972,7 +970,7 @@ where
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
-        if let Err(e) = self.log_store.purge(cutoff).await {
+        if let Err(e) = self.storage.purge(cutoff).await {
             error!(?self.node_id, "purge failed (fatal): {e:?}");
             self.mark_poisoned_and_notify(format!("Purge failed: {e:?}"));
             return Err(e);
@@ -1043,7 +1041,7 @@ where
         self.term_last_index.clear();
         self.term_segments.clear();
 
-        if let Err(e) = self.log_store.reset().await {
+        if let Err(e) = self.storage.reset().await {
             error!(?self.node_id, "reset failed (fatal): {e:?}");
             self.mark_poisoned_and_notify(format!("Reset failed: {e:?}"));
             return Err(e);

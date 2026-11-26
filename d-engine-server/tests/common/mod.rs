@@ -29,7 +29,6 @@ use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use d_engine_server::HardState;
 use d_engine_server::LeaderInfo;
-use d_engine_server::LogStore;
 use d_engine_server::StandaloneEngine;
 use d_engine_server::StorageEngine;
 use d_engine_server::node::RaftTypeConfig;
@@ -380,8 +379,8 @@ pub async fn manipulate_log(
         };
         entries.push(log);
     }
-    assert!(storage_engine.log_store().persist_entries(entries).await.is_ok());
-    assert!(storage_engine.log_store().flush().is_ok());
+    assert!(storage_engine.persist_entries(entries).await.is_ok());
+    assert!(storage_engine.flush().is_ok());
 }
 
 pub fn init_hard_state(
@@ -391,7 +390,6 @@ pub fn init_hard_state(
 ) {
     assert!(
         storage_engine
-            .log_store()
             .save_hard_state(&HardState {
                 current_term,
                 voted_for,
