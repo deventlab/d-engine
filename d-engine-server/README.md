@@ -148,9 +148,11 @@ d-engine-server = { version = "0.2", features = ["rocksdb"] }
 ```
 
 ```rust
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 
-let (storage, sm) = RocksDBUnifiedEngine::open("./data/db")?;
+// Two RocksDB databases under ./data: the Raft log in ./data/storage, the state machine in
+// ./data/state_machine.
+let (storage, sm) = open_rocksdb("./data")?;
 let storage = Arc::new(storage);
 ```
 

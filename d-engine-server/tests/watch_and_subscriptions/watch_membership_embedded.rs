@@ -50,7 +50,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use tracing_test::traced_test;
@@ -188,7 +188,7 @@ async fn start_engine(
     let node_data_dir = db_root.join(format!("node{node_id}"));
     let db_path = node_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path).await?;
-    let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, sm) = open_rocksdb(&db_path)?;
     Ok(DefaultEmbeddedEngine::start_custom(
         &node_data_dir,
         Arc::new(storage),
@@ -209,7 +209,7 @@ async fn start_engine(
 ///
 /// Setup:  single-node cluster (self-elected leader).
 /// Assert: `snapshot.members` contains exactly node 1; `committed_index` is valid.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_returns_initial_snapshot_without_waiting()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -270,7 +270,7 @@ async fn test_watch_membership_returns_initial_snapshot_without_waiting()
 /// Action: start node 3 as Learner (role=4, status=Active) — it sends JoinCluster
 ///         RPC to the leader.
 /// Assert: `changed()` fires; `snapshot.learners` contains node 3.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_fires_on_node_join() -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
@@ -390,7 +390,7 @@ async fn test_watch_membership_fires_on_node_join() -> Result<(), Box<dyn std::e
 ///
 /// If this test fails because `rx.changed()` fires, it means auto-removal was
 /// accidentally re-introduced somewhere in the zombie detection path.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_zombie_warns_without_removal()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -512,7 +512,7 @@ async fn test_watch_membership_zombie_warns_without_removal()
 /// Setup:  2-node voter cluster (nodes 1, 2).  Subscribe on node 1.
 /// Action: start node 3 as Promotable Learner (role=4, status=1).
 /// Assert: second `changed()` shows node 3 in `members`, not in `learners`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_fires_on_learner_promote() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -637,7 +637,7 @@ async fn test_watch_membership_fires_on_learner_promote() -> Result<(), Box<dyn 
 ///
 /// Node 3 must NOT be in nodes 1/2's initial_cluster so that `can_rejoin` succeeds.
 /// Both node 3 and node 4 use `status = Active` to suppress auto-promotion (no extra events).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_all_nodes_receive_notification()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -787,7 +787,7 @@ async fn test_watch_membership_all_nodes_receive_notification()
 /// Setup:  single-node cluster.  Subscribe 3 times before any change.
 /// Action: node 2 joins as Active Learner (no auto-promotion).
 /// Assert: all 3 receivers fire and show consistent snapshots.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_multiple_subscribers_all_notified()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -908,7 +908,7 @@ async fn test_watch_membership_multiple_subscribers_all_notified()
 /// ## Assert
 ///
 /// `snapshot2.committed_index > snapshot1.committed_index`
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_watch_membership_committed_index_monotonically_increasing()
 -> Result<(), Box<dyn std::error::Error>> {

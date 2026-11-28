@@ -29,8 +29,6 @@ use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use d_engine_server::HardState;
 use d_engine_server::LeaderInfo;
-use d_engine_server::LogStore;
-use d_engine_server::MetaStore;
 use d_engine_server::StandaloneEngine;
 use d_engine_server::StorageEngine;
 use d_engine_server::node::RaftTypeConfig;
@@ -50,8 +48,6 @@ use crate::client_manager::ClientManager;
 mod shared_state_machine;
 
 pub use shared_state_machine::SharedStateMachine;
-
-pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
 
 // we are testing linearizable read from Leader directly, the latency should less than 1ms ideally
 pub const LATENCY_IN_MS: u64 = 50;
@@ -98,6 +94,18 @@ impl TestContext {
 //     println!("setup logger for unit test.");
 // }
 
+/// Client request timeout for tests (`general_raft_timeout_duration_in_ms`).
+///
+/// The 50ms default bounds one whole client request, and a write includes a physical fsync: a
+/// loaded CI runner can stretch that past 50ms. Tests that check timeout behavior set their own
+/// value.
+pub const TEST_CLIENT_TIMEOUT_MS: u64 = 5000;
+
+/// The `[raft]` table every test config starts from; tests that write their own TOML include it.
+pub fn test_raft_table() -> String {
+    format!("[raft]\ngeneral_raft_timeout_duration_in_ms = {TEST_CLIENT_TIMEOUT_MS}\n")
+}
+
 pub async fn create_node_config(
     node_id: u64,
     port: u16,
@@ -127,7 +135,7 @@ pub async fn create_node_config(
         ]
 
         [raft]
-        general_raft_timeout_duration_in_ms = 5000
+        general_raft_timeout_duration_in_ms = {TEST_CLIENT_TIMEOUT_MS}
 
         [raft.election]
         election_timeout_min = 300
@@ -381,8 +389,8 @@ pub async fn manipulate_log(
         };
         entries.push(log);
     }
-    assert!(storage_engine.log_store().persist_entries(entries).await.is_ok());
-    assert!(storage_engine.log_store().flush().is_ok());
+    assert!(storage_engine.persist_entries(entries).await.is_ok());
+    assert!(storage_engine.flush().is_ok());
 }
 
 pub fn init_hard_state(
@@ -392,7 +400,6 @@ pub fn init_hard_state(
 ) {
     assert!(
         storage_engine
-            .meta_store()
             .save_hard_state(&HardState {
                 current_term,
                 voted_for,
@@ -533,7 +540,7 @@ initial_cluster = [
 ]
 
 [raft]
-general_raft_timeout_duration_in_ms = 5000
+general_raft_timeout_duration_in_ms = {TEST_CLIENT_TIMEOUT_MS}
 [raft.election]
 election_timeout_min = 3000
 election_timeout_max = 6000

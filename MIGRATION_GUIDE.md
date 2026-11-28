@@ -72,6 +72,39 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 
 ---
 
+## Upgrading to v0.3.0: your `StorageEngine`
+
+The Raft log and the hard state (current term and vote) are one trait now. Implement `StorageEngine` only.
+
+| If you have | Do this |
+| --- | --- |
+| `impl LogStore for MyLogStore` | Make it `impl StorageEngine for MyStorageEngine`; move the fields of `MyLogStore` into `MyStorageEngine` |
+| `impl MetaStore for ...` | Delete it. Move `save_hard_state` and `load_hard_state` into your `StorageEngine` |
+| `type LogStore`, `fn log_store()`, `type MetaStore` and `fn meta_store()` in your `StorageEngine` | Delete them |
+| `engine.log_store().persist_entries(..)` and similar calls | Call the method on the engine: `engine.persist_entries(..)` |
+| `FileLogStore` or `RocksDBLogStore` | Use `FileStorageEngine` or `RocksDBStorageEngine` |
+| `flush()` left to its default | Implement it. Make log entries and the hard state durable; `Ok(())` if your writes already are |
+| `flush_async()` | Delete it. The engine never called it |
+| `reset()` | Delete it. The engine never called it |
+| `replace_range()` | Delete it. The engine now calls `truncate` then `persist_entries`; `truncate` past the last entry must leave `last_index` unchanged |
+| `is_write_durable()` returning `false` | Delete it. `flush()` already does the sync |
+| `is_write_durable()` returning `true` | Delete it, and make `flush()` return `Ok(())`: your writes are already on disk |
+
+`save_hard_state` is followed by `flush()` before the node answers a vote, so `flush()` must cover the hard state.
+
+**Tests.** `StorageEngineBuilder::build()` returns an engine on new, empty storage. Implement the new `reopen()` to restart the same storage.
+
+## Upgrading to v0.3.0: RocksDB unified mode removed
+
+If you never set `[storage] unified_db = true`, nothing changes: delete the `[storage]` section if you have one, it is ignored.
+
+If you did, v0.3.0 does not read the old data in `data_dir/db`, and there is no migration tool. To keep the data, read it out with a client before upgrading and write it back afterwards.
+
+| If you have | Do this |
+| --- | --- |
+| `RocksDBUnifiedEngine::open(path)` | `open_rocksdb(data_dir)`: it opens `data_dir/storage` and `data_dir/state_machine` |
+| `[storage] unified_db = ...` in a config file | Delete it |
+
 ## For v0.2.4 Users: Wire Protocol Changes in v0.3.0
 
 v0.3.0 nodes and clients cannot talk to v0.2.4 ones. There is no rolling upgrade: stop the whole cluster, upgrade every node, then upgrade every client.

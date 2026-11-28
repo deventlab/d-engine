@@ -15,14 +15,14 @@ use crate::entry_record::EntryRecord;
 use crate::options::RaftEngineOptions;
 use async_trait::async_trait;
 use d_engine::common::{Entry, LogId};
-use d_engine::{Error, HardState, LogStore, MetaStore, StorageEngine, StorageError};
+use d_engine::{Error, HardState, StorageEngine, StorageError};
 use prost::Message as _;
 use raft_engine::{Command, Config, Engine, LogBatch, MessageExt, ReadableSize};
 
 /// Raft log entries.
 const LOG_REGION_ID: u64 = 1;
-/// Hard state and purge boundary. Kept apart from the entries because `reset`
-/// clears every key of a region and must leave these untouched.
+/// Hard state and purge boundary. Kept apart from the entries because compacting
+/// the log region drops its keys and must leave these untouched.
 const META_REGION_ID: u64 = 2;
 
 const HARD_STATE_KEY: &[u8] = b"hard_state";
@@ -41,7 +41,7 @@ impl MessageExt for EntryAdapter {
 
 /// Reclaims log files whose entries have all been compacted.
 ///
-/// raft-engine never deletes files by itself: `LogStore::purge` only compacts the
+/// raft-engine never deletes files by itself: `StorageEngine::purge` only compacts the
 /// in-memory index, and the files are released when `purge_expired_files` runs.
 /// That call deletes files and may rewrite older ones, so it runs on a dedicated
 /// thread and never on the Raft loop. A failed round is logged and retried on the
@@ -89,18 +89,9 @@ impl Drop for PurgeWorker {
     }
 }
 
-pub struct RaftEngineLogStore {
+pub struct RaftEngineStorage {
     engine: Arc<Engine>,
     _purge_worker: PurgeWorker,
-}
-
-pub struct RaftEngineMetaStore {
-    engine: Arc<Engine>,
-}
-
-pub struct RaftEngineStorage {
-    log_store: Arc<RaftEngineLogStore>,
-    meta_store: Arc<RaftEngineMetaStore>,
     path: String,
 }
 
@@ -136,11 +127,8 @@ impl RaftEngineStorage {
             Duration::from_secs(options.purge_interval_secs),
         )?;
         Ok(Self {
-            log_store: Arc::new(RaftEngineLogStore {
-                engine: engine.clone(),
-                _purge_worker: purge_worker,
-            }),
-            meta_store: Arc::new(RaftEngineMetaStore { engine }),
+            engine,
+            _purge_worker: purge_worker,
             path: path.to_string_lossy().into_owned(),
         })
     }
@@ -155,21 +143,8 @@ impl std::fmt::Debug for RaftEngineStorage {
     }
 }
 
-impl StorageEngine for RaftEngineStorage {
-    type LogStore = RaftEngineLogStore;
-    type MetaStore = RaftEngineMetaStore;
-
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
-    }
-}
-
 #[async_trait]
-impl LogStore for RaftEngineLogStore {
+impl StorageEngine for RaftEngineStorage {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -187,20 +162,6 @@ impl LogStore for RaftEngineLogStore {
             .write(&mut batch, false)
             .map_err(|e| StorageError::LogStorage(e.to_string()))?;
         Ok(())
-    }
-
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error> {
-        match self
-            .engine
-            .get_entry::<EntryAdapter>(LOG_REGION_ID, index)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?
-        {
-            Some(r) => Ok(Some(r.entry)),
-            None => Ok(None),
-        }
     }
 
     fn get_entries(
@@ -291,85 +252,6 @@ impl LogStore for RaftEngineLogStore {
         Ok(())
     }
 
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        if new_entries.is_empty() {
-            self.truncate(from_index).await?;
-            return Ok(from_index.saturating_sub(1));
-        }
-
-        // Guard the two append panic conditions in raft-engine's MemTable. An empty
-        // log (never written, or fully purged) has no span to overwrite or leave a
-        // hole in, so only a non-empty log is checked.
-        if let Some(first) = self.engine.first_index(LOG_REGION_ID)
-            && from_index < first
-        {
-            return Err(StorageError::LogStorage(
-                "replace_range would overwrite compacted history".into(),
-            )
-            .into());
-        }
-        if let Some(last) = self.engine.last_index(LOG_REGION_ID)
-            && from_index > last + 1
-        {
-            return Err(
-                StorageError::LogStorage("replace_range would create a hole".into()).into(),
-            );
-        }
-        let mut batch = LogBatch::default();
-        let last = new_entries.last().map(|e| e.index);
-        let raft_entries: Vec<EntryRecord> =
-            new_entries.into_iter().map(EntryRecord::from).collect();
-        batch
-            .add_entries::<EntryAdapter>(LOG_REGION_ID, &raft_entries)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        self.engine
-            .write(&mut batch, false)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(last.unwrap_or(from_index.saturating_sub(1)))
-    }
-
-    fn is_write_durable(&self) -> bool {
-        false
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.engine.sync().map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
-    }
-
-    async fn reset(&self) -> Result<(), Error> {
-        let mut batch = LogBatch::default();
-        batch.add_command(LOG_REGION_ID, Command::Clean);
-        self.engine
-            .write(&mut batch, false)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(())
-    }
-
-    fn last_index(&self) -> u64 {
-        self.engine.last_index(LOG_REGION_ID).unwrap_or(0)
-    }
-
-    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
-        match self.engine.get(META_REGION_ID, PURGE_BOUNDARY_KEY) {
-            Some(bytes) => LogId::decode(&*bytes)
-                .map(Some)
-                .map_err(|e| StorageError::SerializationError(e.to_string()).into()),
-            None => Ok(None),
-        }
-    }
-}
-
-#[async_trait]
-impl MetaStore for RaftEngineMetaStore {
     fn save_hard_state(
         &self,
         state: &HardState,
@@ -379,7 +261,7 @@ impl MetaStore for RaftEngineMetaStore {
         batch
             .put(META_REGION_ID, HARD_STATE_KEY.to_vec(), bytes)
             .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        // Not synced here: the caller flushes the meta store right after this call.
+        // Not synced here: the caller calls `flush()` right after this call.
         self.engine
             .write(&mut batch, false)
             .map_err(|e| StorageError::LogStorage(e.to_string()))?;
@@ -400,7 +282,16 @@ impl MetaStore for RaftEngineMetaStore {
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
+    fn last_index(&self) -> u64 {
+        self.engine.last_index(LOG_REGION_ID).unwrap_or(0)
+    }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        match self.engine.get(META_REGION_ID, PURGE_BOUNDARY_KEY) {
+            Some(bytes) => LogId::decode(&*bytes)
+                .map(Some)
+                .map_err(|e| StorageError::SerializationError(e.to_string()).into()),
+            None => Ok(None),
+        }
     }
 }

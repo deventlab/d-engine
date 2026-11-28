@@ -133,6 +133,10 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ `StateMachineBuilder` (test support)** (#400): `build()` returns new empty storage and the new `reopen()` restarts it.
 
+- **⚠️ `StorageEngineBuilder` (test support)** (#470): the same change. `build()` returns an engine on new, empty storage and the new `reopen()` restarts it; the suite no longer wipes the log between tests.
+
+- **⚠️ A custom storage engine implements one trait, `StorageEngine`** (#470): the Raft log and the hard state (current term and vote) are written and made durable together, so `LogStore` and `MetaStore` are merged into `StorageEngine`. It gains the former `LogStore` methods plus `save_hard_state` and `load_hard_state`; the `LogStore` and `MetaStore` traits, `type LogStore`, `type MetaStore`, `log_store()` and `meta_store()` are removed, and so are the public `FileLogStore` and `RocksDBLogStore` types. `flush` has no default any more and must be implemented, as `Ok(())` when your writes are already durable; it makes both log entries and the hard state durable. `flush_async` is removed. `reset` is removed: the engine never cleared the whole log. `replace_range` is removed: on a conflict the engine calls `truncate` and then `persist_entries`, and `truncate` past the last entry no longer moves `last_index`. `is_write_durable` is removed too: the engine calls `flush()` after every batch for every backend, so a backend that already syncs inside each write returns `Ok(())` from `flush()` instead of `true` from `is_write_durable()`. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
 - **⚠️ `scan_prefix` rejects an empty prefix** (#400): it returns `InvalidRequest` instead of the whole keyspace (file state machine) or nothing (RocksDB).
 
 - **A node starts once a majority of the cluster is healthy** (#400): the startup health check no longer waits for every peer, so a node can restart while one peer is down.
@@ -144,6 +148,8 @@ All notable changes to this project will be documented in this file.
 ### Removed
 
 - **TTL and per-key lease** (#464): d-engine now does consensus and replication only. Removed `put_with_ttl`, the `Lease` trait, `TtlLease`, the `[raft.state_machine.lease]` config section and `StateMachine::lease_background_cleanup`. `Command::Insert` no longer has `ttl_secs`. In the proto, `WriteCommand.Insert.ttl_secs` (field 3) is removed and the number is reserved. Key expiry is now the job of the layer above d-engine. The leader read lease (`LeaseRead`) is a different feature and is unchanged.
+
+- **⚠️ RocksDB unified single-DB mode** (#466): `RocksDBUnifiedEngine`, the `[storage] unified_db` setting and the `[storage]` section itself (`RaftNodeConfig::storage`, `StorageConfig`) are removed. The Raft log and the state machine are always two databases, so the write load of one cannot stall the other. `open_rocksdb(data_dir)` opens both (`data_dir/storage` and `data_dir/state_machine`, the layout a default start has always used); to choose the directories yourself, open `RocksDBStorageEngine::new` and `RocksDBStateMachine::new` separately. A data directory written with `unified_db = true` (it was in `data_dir/db`) is not read, and a `unified_db` key left in a config file is ignored without an error. `atomic_flush` is now on for the state machine database only.
 
 - **File state machine storage format** (#464): The WAL record no longer has an `expire_at` slot, and `snapshot.bin` no longer ends with a TTL section. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 

@@ -28,12 +28,19 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
+    /// The underlying client, e.g. for `common::wait_for_stable_leader`.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     pub async fn new(bootstrap_urls: &[String]) -> std::result::Result<Self, ClientApiError> {
         let bootstrap_urls = bootstrap_urls.to_vec();
 
         let client = match ClientBuilder::new(bootstrap_urls.clone())
             .connect_timeout(Duration::from_secs(600))
             .request_timeout(Duration::from_secs(600))
+            // Startup elections can take several rounds; wait for a leader instead of failing.
+            .cluster_ready_timeout(Duration::from_secs(30))
             .enable_compression(true)
             .build()
             .await

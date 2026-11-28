@@ -4,10 +4,7 @@
 //!
 //! ## Test Coverage
 //!
-//! - `join_cluster_single_join_standalone.rs` - Single node joins existing cluster (standalone
-//!   mode)
-//! - `join_cluster_concurrent_joins_standalone.rs` - Multiple nodes join simultaneously (standalone
-//!   mode)
+//! - `join_cluster_concurrent_joins_embedded.rs` - Two nodes join at the same time, catch up
+//!   from the leader's snapshot while the leader serves reads and writes
 
-mod join_cluster_concurrent_joins_standalone;
-mod join_cluster_single_join_standalone;
+mod join_cluster_concurrent_joins_embedded;

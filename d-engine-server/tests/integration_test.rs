@@ -1,4 +1,9 @@
 // Integration tests organized by business domain
+//
+// Embedded tests run a whole cluster in one process. They use
+// `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`, as a real deployment does: on the
+// default single-thread runtime, one blocking call in any node (opening RocksDB takes hundreds of
+// ms under load) stops every node's timers and triggers elections a real cluster would not see.
 #[cfg(feature = "rocksdb")]
 mod cas_operations;
 #[cfg(feature = "rocksdb")]

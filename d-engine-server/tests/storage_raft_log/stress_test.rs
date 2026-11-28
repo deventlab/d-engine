@@ -6,7 +6,6 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::LogStore;
 use d_engine_core::RaftLog;
 use d_engine_core::StorageEngine;
 use d_engine_proto::common::Entry;
@@ -152,7 +151,7 @@ mod mem_first_tests {
 
         // Verify persistence
         assert_eq!(ctx.raft_log.durable_index(), 100);
-        assert_eq!(ctx.storage.as_ref().log_store().last_index(), 100);
+        assert_eq!(ctx.storage.as_ref().last_index(), 100);
     }
 
     #[tokio::test]
@@ -161,7 +160,6 @@ mod mem_first_tests {
         ctx.append_entries(1, 100, 1).await;
 
         // Simulate power loss before flush
-        // storage.reset() simulates data loss after crash
 
         // In real scenario, durable_index would be 0 after restart
         assert_eq!(ctx.raft_log.durable_index(), 0);

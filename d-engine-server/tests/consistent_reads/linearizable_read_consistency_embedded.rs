@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 use tokio::time::Instant;
 use tracing_test::traced_test;
@@ -73,7 +73,7 @@ state_machine_sync_timeout_ms = 2000
 /// - All reads succeed
 /// - Each read sees monotonically increasing values
 /// - Final value is "10"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_linearizable_read_consistency_with_writes() {
     let (engine, _temp_dir) = create_test_engine("concurrent_writes").await;
@@ -137,7 +137,7 @@ async fn test_linearizable_read_consistency_with_writes() {
 /// # Note
 /// Direct verification of noop_log_id is done in unit tests.
 /// This integration test validates the end-to-end behavior.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_read_index_with_noop_tracking() {
     let (engine, _temp_dir) = create_test_engine("fixed_index").await;
@@ -180,7 +180,7 @@ async fn test_read_index_with_noop_tracking() {
 /// # Success Criteria
 /// - Both consistency levels work correctly
 /// - EC read has lower latency
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_eventual_consistency_reads_unaffected() {
     let (engine, _temp_dir) = create_test_engine("high_load").await;
@@ -238,7 +238,7 @@ async fn test_eventual_consistency_reads_unaffected() {
 /// # Success Criteria
 /// - First read returns "v1"
 /// - Second read returns "v2"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_linearizable_read_sequential_writes() {
     let (engine, _temp_dir) = create_test_engine("slow_apply").await;
@@ -294,7 +294,7 @@ async fn test_linearizable_read_sequential_writes() {
 /// # Success Criteria
 /// - Read completes within timeout
 /// - Latency does not scale linearly with concurrent write count
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[cfg(feature = "rocksdb")]
 async fn test_read_index_fixed_with_concurrent_writes_multi_node()
@@ -328,7 +328,7 @@ async fn test_read_index_fixed_with_concurrent_writes_multi_node()
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-linear-read-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;

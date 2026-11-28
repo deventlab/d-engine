@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
@@ -42,7 +42,10 @@ use crate::common::get_available_ports;
 /// - After snapshot application completes, queued entries are applied
 /// - Final state: Learner has all 2000 entries with correct values
 /// - No data loss or corruption during temporary DB replacement
-#[tokio::test]
+// Multi-threaded, as in a real deployment: on a single thread, any blocking call made while
+// starting a node (opening RocksDB takes hundreds of ms under load) also stops every other
+// node's timers, and the followers start an election the real cluster would never see.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_learner_snapshot_concurrent_replication() -> Result<(), Box<dyn std::error::Error>> {
@@ -104,7 +107,7 @@ retained_log_entries = {}
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
@@ -200,7 +203,7 @@ retained_log_entries = {}
 
     tokio::fs::create_dir_all(&learner_db_path).await?;
 
-    let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
+    let (learner_storage, learner_sm) = open_rocksdb(&learner_db_path)?;
 
     let learner_engine = DefaultEmbeddedEngine::start_custom(
         &learner_db_path,
@@ -367,5 +370,8 @@ retained_log_entries = {}
         "Conclusion: Learner can safely queue and apply AppendEntries during snapshot application"
     );
 
+    for engine in engines.iter().chain([&learner_engine]) {
+        engine.stop().await?;
+    }
     Ok(())
 }

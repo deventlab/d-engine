@@ -13,7 +13,6 @@ use crate::test_utils::RaftLogCoreTestContext;
 #[tokio::test]
 async fn test_first_index_for_term() {
     let ctx = RaftLogCoreTestContext::new("test_first_index_for_term");
-    ctx.raft_log.reset().await.unwrap();
 
     let entries = vec![
         Entry {
@@ -75,14 +74,13 @@ async fn test_first_index_for_term() {
     assert_eq!(ctx.raft_log.first_index_for_term(4), Some(8));
     assert_eq!(ctx.raft_log.first_index_for_term(5), Some(9));
 
-    ctx.raft_log.reset().await.unwrap();
-    assert_eq!(ctx.raft_log.first_index_for_term(1), None);
+    let empty = RaftLogCoreTestContext::new("test_first_index_for_term_empty");
+    assert_eq!(empty.raft_log.first_index_for_term(1), None);
 }
 
 #[tokio::test]
 async fn test_last_index_for_term() {
     let ctx = RaftLogCoreTestContext::new("test_last_index_for_term");
-    ctx.raft_log.reset().await.unwrap();
 
     let entries = vec![
         Entry {
@@ -143,14 +141,13 @@ async fn test_last_index_for_term() {
     ctx.raft_log.append_entries(entries).await.unwrap();
     assert_eq!(ctx.raft_log.last_index_for_term(5), Some(9));
 
-    ctx.raft_log.reset().await.unwrap();
-    assert_eq!(ctx.raft_log.last_index_for_term(1), None);
+    let empty = RaftLogCoreTestContext::new("test_last_index_for_term_empty");
+    assert_eq!(empty.raft_log.last_index_for_term(1), None);
 }
 
 #[tokio::test]
 async fn test_term_index_functions_with_purged_logs() {
     let ctx = RaftLogCoreTestContext::new("test_term_index_with_purged");
-    ctx.raft_log.reset().await.unwrap();
 
     let entries = vec![
         Entry {
@@ -196,7 +193,6 @@ async fn test_term_index_functions_with_purged_logs() {
 #[tokio::test]
 async fn test_term_index_sequential_multi_term_insertion() {
     let ctx = RaftLogCoreTestContext::new("test_term_index_sequential_multi_term");
-    ctx.raft_log.reset().await.unwrap();
 
     // Insert five consecutive term segments sequentially (as the Raft loop would)
     for term in 1u64..=5 {
@@ -274,7 +270,6 @@ async fn test_term_indexes_rebuilt_correctly_after_restart() {
 #[tokio::test]
 async fn test_term_index_performance_large_dataset() {
     let ctx = RaftLogCoreTestContext::new("test_term_index_performance");
-    ctx.raft_log.reset().await.unwrap();
 
     let mut entries = vec![];
     for i in 1..=1000 {

@@ -9,7 +9,6 @@ use tracing::info;
 use tracing_test::traced_test;
 
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
@@ -74,8 +73,6 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
@@ -88,6 +85,7 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
         .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
+    wait_for_stable_leader(&client).await?;
 
     let lock_key = b"failover_lock";
 

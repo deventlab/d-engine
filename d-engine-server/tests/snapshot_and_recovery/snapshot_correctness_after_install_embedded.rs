@@ -13,7 +13,7 @@ use std::time::Duration;
 use d_engine_core::capture_logs_globally_filtered;
 use d_engine_core::logs_contain_globally_since;
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use serial_test::serial;
 use tracing::info;
 
@@ -60,7 +60,7 @@ use crate::common::wait_for_snapshot;
 // a process-wide subscriber via `capture_logs_globally_filtered` (only one global
 // tracing subscriber can exist per process; under `cargo test`, which runs every test
 // in a file in one process, whichever install happened second would panic).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_follower_catchup_within_retained_buffer_and_data_consistency()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -113,7 +113,7 @@ retained_log_entries = {RETAINED_LOGS}
 
         node_paths.push((config_path.clone(), db_path.clone()));
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
@@ -190,7 +190,7 @@ retained_log_entries = {RETAINED_LOGS}
 
     // Phase 4: restart follower with its persisted DB
     info!("Restarting follower node {follower_node_id} from persisted DB");
-    let (storage, sm) = RocksDBUnifiedEngine::open(&follower_db_path)?;
+    let (storage, sm) = open_rocksdb(&follower_db_path)?;
     let restarted = DefaultEmbeddedEngine::start_custom(
         &follower_db_path,
         Arc::new(storage),
@@ -292,7 +292,7 @@ retained_log_entries = {RETAINED_LOGS}
 ///
 /// The follower's own tracing output must contain evidence that it actually received and
 /// applied a snapshot stream — not just that its data happens to be correct at the end.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_follower_catchup_beyond_retained_buffer_requires_install_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -347,7 +347,7 @@ retained_log_entries = {RETAINED_LOGS}
 
         node_paths.push((config_path.clone(), db_path.clone()));
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
@@ -423,7 +423,7 @@ retained_log_entries = {RETAINED_LOGS}
     // entries appended from this point on are evidence about *this* restarted follower.
     let since = logs.lock().unwrap().len();
     info!("Restarting follower node {follower_node_id} from persisted DB");
-    let (storage, sm) = RocksDBUnifiedEngine::open(&follower_db_path)?;
+    let (storage, sm) = open_rocksdb(&follower_db_path)?;
     let restarted = DefaultEmbeddedEngine::start_custom(
         &follower_db_path,
         Arc::new(storage),
@@ -509,7 +509,7 @@ retained_log_entries = {RETAINED_LOGS}
 /// → NeedSnapshot → InstallSnapshot). A brand-new learner with an empty log joins
 /// a leader whose retained log no longer reaches index 1, so AppendEntries cannot
 /// supply the gap — it MUST receive a full snapshot.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_learner_join_after_compaction_requires_install_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -555,7 +555,7 @@ retained_log_entries = {RETAINED_LOGS}
     tokio::fs::write(&leader_config_path, &leader_config).await?;
     let leader_db = data_dir.join("leader/db");
     tokio::fs::create_dir_all(&leader_db).await?;
-    let (storage, sm) = RocksDBUnifiedEngine::open(&leader_db)?;
+    let (storage, sm) = open_rocksdb(&leader_db)?;
     let leader = DefaultEmbeddedEngine::start_custom(
         &leader_db,
         Arc::new(storage),
@@ -604,7 +604,7 @@ retained_log_entries = {RETAINED_LOGS}
     tokio::fs::write(&learner_config_path, &learner_config).await?;
     let learner_db = data_dir.join("learner/db");
     tokio::fs::create_dir_all(&learner_db).await?;
-    let (storage, sm) = RocksDBUnifiedEngine::open(&learner_db)?;
+    let (storage, sm) = open_rocksdb(&learner_db)?;
     let learner = DefaultEmbeddedEngine::start_custom(
         &learner_db,
         Arc::new(storage),

@@ -42,10 +42,8 @@
 //!
 //! ## Key Traits
 //!
-//! - [`StorageEngine`] - Persistent storage for Raft logs
+//! - [`StorageEngine`] - Log entry and hard state (term, voted_for) persistence
 //! - [`StateMachine`] - Application-specific state transitions
-//! - [`LogStore`] - Log entry persistence
-//! - [`MetaStore`] - Metadata persistence (term, voted_for)
 //!
 //! ## Documentation
 //!

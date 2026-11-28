@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::ClientApi;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -19,7 +19,7 @@ use crate::common::get_available_ports;
 /// 3. Verify exactly one client acquires lock (mutual exclusion)
 /// 4. Lock holder releases, another acquires
 /// 5. Verify lock state persists across operations
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -50,7 +50,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-cas-lock-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -129,5 +129,8 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
     assert!(correct_release, "Client B should release own lock");
 
     info!("All CAS distributed lock tests passed");
+    for engine in &engines {
+        engine.stop().await?;
+    }
     Ok(())
 }

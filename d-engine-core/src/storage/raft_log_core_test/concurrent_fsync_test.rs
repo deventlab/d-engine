@@ -16,14 +16,13 @@ use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLog;
 use crate::RaftLogCore;
-use crate::test_utils::drain_and_apply_fsync_completions;
 use crate::test_utils::wait_for_durable_index;
 
 // ── Protocol correctness ──────────────────────────────────────────────────────
 
 /// `durable_index` must not advance before the physical fsync actually completes.
 ///
-/// Use a MockLogStore with a controllable-delay flush(). While the delay is active,
+/// Use a MockStorageEngine with a controllable-delay flush(). While the delay is active,
 /// assert `durable_index()` equals its pre-write value. After unblocking fsync,
 /// assert `durable_index()` reaches the expected index.
 ///
@@ -32,9 +31,8 @@ use crate::test_utils::wait_for_durable_index;
 #[tokio::test]
 async fn test_durable_index_not_advanced_before_fsync_completes() {
     // Gate closed: the first flush() call will block until we send () on `flush_gate`.
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "durable_index_not_advanced_before_fsync_completes".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("durable_index_not_advanced_before_fsync_completes".into());
     // A real log_flush_tx is required now: durable_index only advances when
     // something drains InternalEvent::FsyncCompleted and calls
     // try_advance_durable_index — see drain_and_apply_fsync_completions.
@@ -45,7 +43,7 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
     let pre_write_durable_index = raft_log.durable_index();
 
     // append_entries persists inline, then hands the mark to FsyncWorker::submit(),
-    // which spawns run_until_caught_up() on its own thread — log_store.flush()
+    // which spawns run_until_caught_up() on its own thread — storage.flush()
     // blocks on flush_gate there.
     raft_log
         .append_entries(vec![Entry {
@@ -83,7 +81,7 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
 /// in-memory `last_entry_id` — even when a follower already reports the index, the
 /// leader's own contribution must not count toward quorum until it has itself fsynced.
 ///
-/// Stall every flush() call via a MockLogStore barrier, append entries, then verify that
+/// Stall every flush() call via a MockStorageEngine barrier, append entries, then verify that
 /// majority-matched calculation does NOT advance while fsync is stalled, and does advance
 /// once fsync completes.
 ///
@@ -92,9 +90,8 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
 /// catch it before it reaches production.
 #[tokio::test]
 async fn test_majority_matched_index_uses_durable_not_memory() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "majority_matched_index_uses_durable_not_memory".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("majority_matched_index_uses_durable_not_memory".into());
     let (log_flush_tx, mut log_flush_rx) = mpsc::unbounded_channel();
     let raft_log =
         RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), Some(log_flush_tx), 5000);
@@ -174,14 +171,13 @@ async fn test_majority_matched_index_uses_durable_not_memory() {
 /// then verify every entry's term matches what was written.
 ///
 /// Doubles as a concurrency check for the inline architecture: `append_entries`
-/// now executes `persist_pending_range` + `persisted_index.fetch_max` directly
+/// now executes `persist_from_memory` + `persisted_index.fetch_max` directly
 /// on the caller's own task, so this test exercises genuinely concurrent
 /// callers racing that path, not just concurrent readers.
 #[tokio::test]
 async fn test_entry_term_correct_during_concurrent_fsync_delay() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "entry_term_correct_during_concurrent_fsync_delay".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("entry_term_correct_during_concurrent_fsync_delay".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
 
     // 10 concurrent writers, each appending one entry. Term boundary at 5/6
@@ -293,17 +289,16 @@ async fn test_durable_index_monotonic_when_fsyncs_complete_out_of_order() {
 
 /// A `flush()` caller receives `Ok(())` only after its batch is physically on disk.
 ///
-/// Use a MockLogStore with a release-gate on flush(). Call `flush()`, verify the future
+/// Use a MockStorageEngine with a release-gate on flush(). Call `flush()`, verify the future
 /// is still pending while the gate is closed, open the gate, verify the future resolves
 /// to `Ok(())`.
 ///
 /// Core contract of `FsyncWorker::run_until_caught_up`: the reply is sent after
-/// `log_store.flush()` returns — never before.
+/// `storage.flush()` returns — never before.
 #[tokio::test]
 async fn test_flush_caller_blocked_until_fsync_completes() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "flush_caller_blocked_until_fsync_completes".into(),
-    );
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("flush_caller_blocked_until_fsync_completes".into());
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
 
     raft_log
@@ -343,7 +338,7 @@ async fn test_flush_caller_blocked_until_fsync_completes() {
 /// `inflight`. This is the mechanism this whole rearchitecture depends on for
 /// keeping physical fsync counts low — see §9 in the design discussion.
 ///
-/// Configure a MockLogStore with a flush call counter and a release-gate on the
+/// Configure a MockStorageEngine with a flush call counter and a release-gate on the
 /// first `flush()` call. Append one entry — the inline persist path submits a
 /// fsync round on its own (round 1), winning the CAS and blocking on the gate.
 /// While round 1 is gated, call `raft_log.flush()` three times (A, B, C) — none
@@ -353,10 +348,9 @@ async fn test_flush_caller_blocked_until_fsync_completes() {
 /// `flush_call_count` is 2, not 4 — and all three futures resolve to `Ok(())`.
 #[tokio::test]
 async fn test_flush_callers_arriving_during_inflight_fsync_are_coalesced() {
-    let (storage, flush_gate, flush_call_count) =
-        MockStorageEngine::not_durable_gated_flush_counted(
-            "flush_callers_arriving_during_inflight_fsync_are_coalesced".into(),
-        );
+    let (storage, flush_gate, flush_call_count) = MockStorageEngine::gated_flush_counted(
+        "flush_callers_arriving_during_inflight_fsync_are_coalesced".into(),
+    );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
 
     // Append one entry: the inline persist path submits its own fsync round
@@ -419,7 +413,7 @@ async fn test_flush_callers_arriving_during_inflight_fsync_are_coalesced() {
 /// `close()` has already returned.
 #[tokio::test]
 async fn test_shutdown_with_pending_flush_caller_still_receives_ok_reply() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
+    let (storage, flush_gate) = MockStorageEngine::gated_flush(
         "shutdown_with_pending_flush_caller_still_receives_ok_reply".into(),
     );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 100);
@@ -475,7 +469,7 @@ async fn test_shutdown_with_pending_flush_caller_still_receives_ok_reply() {
 /// caller must receive the real `Err`, not a silent channel-closed error.
 #[tokio::test]
 async fn test_shutdown_with_pending_flush_caller_still_receives_err_reply() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush_failing(
+    let (storage, flush_gate) = MockStorageEngine::gated_flush_failing(
         "shutdown_with_pending_flush_caller_still_receives_err_reply".into(),
     );
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 100);
@@ -518,132 +512,3 @@ async fn test_shutdown_with_pending_flush_caller_still_receives_err_reply() {
 }
 
 // ── Distributed / concurrency ─────────────────────────────────────────────────
-
-/// An in-flight fsync task completing AFTER `reset()` must not "resurrect" the
-/// pre-reset `durable_index`, and must not silently report success to any
-/// caller waiting on that stale round.
-///
-/// Scenario:
-///   1. Write an entry, gate the physical `flush()` call so the round stays in flight.
-///   2. While gated, call `reset()` — bumps `FsyncWorker`'s fence generation, then clears
-///      `durable_index`/`memory_max_index`/entries to 0.
-///   3. Release the gate — the stale round's `flush()` returns, but its generation no longer
-///      matches; it must discard its result instead of resolving durable_index or the queued reply.
-#[tokio::test]
-async fn test_reset_during_inflight_fsync_does_not_resurrect_stale_durable_index() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "reset_during_inflight_fsync_does_not_resurrect_stale_durable_index".into(),
-    );
-    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
-
-    // Append triggers the automatic round (round 1), which wins the CAS and
-    // blocks on the gate.
-    raft_log
-        .append_entries(vec![Entry {
-            index: 1,
-            term: 1,
-            payload: None,
-        }])
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // X arrives while round 1 is gated — queues behind it in FsyncWorker.
-    let raft_log_x = raft_log.clone();
-    let x = tokio::spawn(async move { raft_log_x.flush().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // reset() while round 1 is still gated: bumps the fence generation, then
-    // clears durable_index/memory_max_index/entries to 0.
-    raft_log.reset().await.unwrap();
-
-    // Release the gate: round 1's flush() call returns, but its generation no
-    // longer matches — it must discard instead of resurrecting durable_index.
-    flush_gate.send(()).unwrap();
-
-    let result = tokio::time::timeout(Duration::from_secs(1), x)
-        .await
-        .expect("x must not hang")
-        .unwrap();
-    assert!(
-        result.is_err(),
-        "X's flush() must receive Err — its data was wiped by reset, not a \
-         resurrected Ok(())"
-    );
-
-    assert_eq!(
-        raft_log.durable_index(),
-        0,
-        "durable_index must stay 0 — the stale round must not resurrect the \
-         pre-reset value, not even transiently"
-    );
-}
-
-/// The reset fence must not over-trigger: writes that happen AFTER `reset()`
-/// (in a fresh round, not the stale one) must still advance `durable_index`
-/// normally — the fence only discards the round that was in flight *before*
-/// the reset, not everything that comes after it.
-#[tokio::test]
-async fn test_post_reset_writes_are_not_discarded_by_stale_fence() {
-    let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(
-        "post_reset_writes_are_not_discarded_by_stale_fence".into(),
-    );
-    let (log_flush_tx, mut log_flush_rx) = mpsc::unbounded_channel();
-    let raft_log =
-        RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), Some(log_flush_tx), 5000);
-
-    // Append triggers the automatic round (round 1), which wins the CAS and
-    // blocks on the gate.
-    raft_log
-        .append_entries(vec![Entry {
-            index: 1,
-            term: 1,
-            payload: None,
-        }])
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // reset() while round 1 is still gated: bumps the fence generation and
-    // drains anything already queued.
-    raft_log.reset().await.unwrap();
-
-    // New, post-reset entry — a fresh write, unrelated to the stale round.
-    raft_log
-        .append_entries(vec![Entry {
-            index: 1,
-            term: 1,
-            payload: None,
-        }])
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let raft_log_y = raft_log.clone();
-    let y = tokio::spawn(async move { raft_log_y.flush().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !y.is_finished(),
-        "Y must still be pending behind the still-gated stale round"
-    );
-
-    // Release the gate: the stale round discards itself (generation
-    // mismatch, per the test above); run_until_caught_up loops back,
-    // captures a fresh generation, and processes Y's post-reset round.
-    flush_gate.send(()).unwrap();
-
-    let result = tokio::time::timeout(Duration::from_secs(1), y)
-        .await
-        .expect("y must not hang")
-        .unwrap();
-    assert!(
-        result.is_ok(),
-        "Y's flush() must succeed — its data was written after reset, not stale"
-    );
-    drain_and_apply_fsync_completions(&raft_log, &mut log_flush_rx);
-    assert_eq!(
-        raft_log.durable_index(),
-        1,
-        "durable_index must advance to reflect the post-reset entry"
-    );
-}

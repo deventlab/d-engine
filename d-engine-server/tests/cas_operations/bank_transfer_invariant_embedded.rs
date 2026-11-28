@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
@@ -47,7 +47,7 @@ fn unpack(bytes: &[u8]) -> [u64; 3] {
 /// workers continue without interruption.
 ///
 /// Assert: total balance is invariant throughout; no account goes negative.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_concurrent_transfers_preserve_bank_invariant()
@@ -78,7 +78,7 @@ async fn test_concurrent_transfers_preserve_bank_invariant()
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
         // In this test's own temp dir: a fixed path under /tmp is shared by every process that
         // runs this test at the same time, and each would then start its nodes from another
         // run's ports and data directory.

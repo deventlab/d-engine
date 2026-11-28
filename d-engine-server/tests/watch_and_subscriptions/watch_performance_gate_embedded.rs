@@ -15,11 +15,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper: Create a test engine
 async fn create_test_engine() -> (DefaultEmbeddedEngine, TempDir) {
@@ -31,11 +32,13 @@ async fn create_test_engine() -> (DefaultEmbeddedEngine, TempDir) {
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
 
+{raft_table}
 [raft.watch]
 event_queue_size = 10000
 watcher_buffer_size = 100
@@ -44,8 +47,7 @@ watcher_buffer_size = 100
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
     // Create storage and state machine
-    let (storage, state_machine) =
-        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    let (storage, state_machine) = open_rocksdb(&db_path).expect("Failed to open unified DB");
 
     let engine = DefaultEmbeddedEngine::start_custom(
         temp_dir.path(),
@@ -92,7 +94,7 @@ async fn measure_put_latency(watcher_count: usize) -> f64 {
     elapsed.as_secs_f64()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Run explicitly with: cargo test --release --ignored
 async fn test_watch_overhead_100_watchers_gate() {
     println!("\nPerformance Gate: Testing 100 watchers overhead...\n");
@@ -137,7 +139,7 @@ async fn test_watch_overhead_100_watchers_gate() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Run explicitly with: cargo test --release --ignored
 async fn test_watch_overhead_1000_watchers_gate() {
     println!("\nPerformance Gate: Testing 1000 watchers overhead...\n");

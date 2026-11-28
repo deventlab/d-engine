@@ -12,7 +12,6 @@ use crate::test_utils::simulate_insert_command;
 #[tokio::test]
 async fn test_remove_range_with_concurrent_reads() {
     let ctx = RaftLogCoreTestContext::new("test_remove_range_with_concurrent_reads");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 1000 entries
     simulate_insert_command(&ctx.raft_log, (1..=1000).collect(), 1).await;
@@ -117,7 +116,6 @@ async fn test_get_entries_range_never_returns_torn_result_during_concurrent_purg
     const ITERATIONS: usize = 500;
 
     let ctx = RaftLogCoreTestContext::new("test_get_entries_range_never_returns_torn_result");
-    ctx.raft_log.reset().await.expect("reset successfully!");
     simulate_insert_command(&ctx.raft_log, (1..=TOTAL).collect(), 1).await;
 
     // Reader: repeatedly scans the full still-live range and checks that

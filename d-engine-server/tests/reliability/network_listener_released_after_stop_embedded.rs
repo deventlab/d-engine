@@ -7,7 +7,7 @@ use std::time::Duration;
 use d_engine_core::capture_logs_globally_filtered;
 use d_engine_core::logs_contain_globally;
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 
 use crate::common::get_available_ports;
@@ -23,7 +23,7 @@ use crate::common::get_available_ports;
 ///
 /// Poll window is generous (a few seconds) purely as a CI/OS-jitter tolerance — a
 /// correct fix should make this near-instant, not "eventually within the window."
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_leader_detects_follower_stop_within_bounded_window()
 -> Result<(), Box<dyn std::error::Error>> {
     let logs = capture_logs_globally_filtered(
@@ -65,7 +65,7 @@ general_raft_timeout_duration_in_ms = 5000
         let db_path = data_dir.join(format!("node{node_id}/db"));
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, sm) = open_rocksdb(&db_path)?;
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),

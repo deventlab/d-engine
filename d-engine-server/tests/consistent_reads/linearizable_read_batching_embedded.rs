@@ -14,6 +14,7 @@ use tokio::time::Instant;
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper to create a test DefaultEmbeddedEngine with batching config
 async fn create_engine_with_batching(
@@ -27,12 +28,14 @@ async fn create_engine_with_batching(
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
 single_node = true
 
+{raft_table}
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 5000
 
@@ -71,7 +74,7 @@ size_threshold = {}
 /// - No requests return empty/stale data
 /// - All requests complete successfully
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_batching_preserves_linearizability() {
     let (engine, _temp_dir) = create_engine_with_batching("test_linearizability", 50).await;
 
@@ -139,7 +142,7 @@ async fn test_batching_preserves_linearizability() {
 /// - All 50 requests return v1 (not empty/stale)
 /// - Requests complete within reasonable time (<500ms)
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrent_write_and_read() {
     let (engine, _temp_dir) = create_engine_with_batching("test_concurrent_write", 50).await;
 
@@ -212,7 +215,7 @@ async fn test_concurrent_write_and_read() {
 /// Single-node clusters have optimized quorum verification (only leader confirms),
 /// so requests complete in microseconds, not milliseconds. This is correct behavior.
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_single_request_timeout_trigger() {
     let (engine, _temp_dir) = create_engine_with_batching("test_timeout", 50).await;
 
@@ -270,7 +273,7 @@ async fn test_single_request_timeout_trigger() {
 /// - Flush latency < 5ms (proves size trigger, not time trigger)
 /// - All 50 requests succeed
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_size_threshold_immediate_flush() {
     let (engine, _temp_dir) = create_engine_with_batching("test_performance", 100).await;
 
@@ -315,102 +318,4 @@ async fn test_size_threshold_immediate_flush() {
     );
 
     println!("50 batched reads completed in {elapsed:?} (size threshold verified)");
-}
-
-/// Test 2.8: Throughput regression test (batching doesn't degrade performance)
-///
-/// # Test Scenario
-/// Verifies that batching doesn't degrade performance compared to baseline.
-/// In single-node embedded mode, batching advantage is limited since
-/// verify_leadership() has no network overhead.
-///
-/// # Given
-/// - Two test runs with same workload (1000 concurrent reads)
-/// - Run 1: batching disabled (baseline)
-/// - Run 2: batching enabled
-///
-/// # Then
-/// - Run 2 throughput >= Run 1 throughput (no regression)
-/// - Log actual improvement for monitoring
-#[traced_test]
-#[tokio::test]
-async fn test_batching_throughput_improvement() {
-    // Skip benchmark in non-CI environments to save time
-    if std::env::var("CI").is_ok() {
-        println!("Skipping benchmark (set CI=1 to run)");
-        return;
-    }
-
-    const NUM_REQUESTS: usize = 1000;
-
-    // Run 1: Batching disabled (set size_threshold very high)
-    let (node1, _temp_dir1) = create_engine_with_batching("test_throughput_off", 10000).await;
-
-    let client1 = node1.client();
-    client1
-        .put(Bytes::from("bench_key"), Bytes::from("bench_value"))
-        .await
-        .expect("Failed to write");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let start1 = Instant::now();
-    let mut handles1 = vec![];
-    let base_client1 = node1.client();
-    for _ in 0..NUM_REQUESTS {
-        let client = base_client1.clone();
-        let handle = tokio::spawn(async move { client.get_linearizable(b"bench_key").await });
-        handles1.push(handle);
-    }
-    for handle in handles1 {
-        let _ = handle.await;
-    }
-    let elapsed1 = start1.elapsed();
-    let throughput1 = NUM_REQUESTS as f64 / elapsed1.as_secs_f64();
-
-    node1.stop().await.expect("Failed to stop node1");
-
-    // Run 2: Batching enabled
-    let (node2, _temp_dir2) = create_engine_with_batching("test_throughput_on", 50).await;
-
-    let client2 = node2.client();
-    client2
-        .put(Bytes::from("bench_key"), Bytes::from("bench_value"))
-        .await
-        .expect("Failed to write");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let start2 = Instant::now();
-    let mut handles2 = vec![];
-    let base_client2 = node2.client();
-    for _ in 0..NUM_REQUESTS {
-        let client = base_client2.clone();
-        let handle = tokio::spawn(async move { client.get_linearizable(b"bench_key").await });
-        handles2.push(handle);
-    }
-    for handle in handles2 {
-        let _ = handle.await;
-    }
-    let elapsed2 = start2.elapsed();
-    let throughput2 = NUM_REQUESTS as f64 / elapsed2.as_secs_f64();
-
-    node2.stop().await.expect("Failed to stop node2");
-
-    println!("\n=== Throughput Regression Test ===");
-    println!("Baseline (batching OFF): {throughput1:.0} ops/sec (took {elapsed1:?})");
-    println!("Batching ON:             {throughput2:.0} ops/sec (took {elapsed2:?})");
-    println!("Performance change:      {:.2}x", throughput2 / throughput1);
-
-    // Regression check: batching should not degrade performance
-    assert!(
-        throughput2 >= throughput1,
-        "Batching should not degrade performance: {throughput2:.0} ops/sec < {throughput1:.0} ops/sec"
-    );
-
-    println!("\n✓ No performance regression detected");
-    if throughput2 > throughput1 * 1.5 {
-        println!(
-            "  Bonus: {:.2}x improvement observed",
-            throughput2 / throughput1
-        );
-    }
 }

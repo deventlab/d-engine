@@ -9,7 +9,7 @@ use crate::common::get_available_ports;
 /// most restarts are graceful. It also proves `stop()` truly drops every
 /// `Arc<Node<T>>` clone; a lingering background-task reference would keep
 /// the lock held and make this fail.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_restart_after_clean_stop_reacquires_lock() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut ports = get_available_ports(2).await;

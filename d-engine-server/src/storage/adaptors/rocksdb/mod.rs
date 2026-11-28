@@ -1,10 +1,11 @@
 mod rocksdb_state_machine;
 mod rocksdb_storage_engine;
-mod rocksdb_unified_engine;
 
+use std::path::Path;
+
+use d_engine_core::Error;
 pub use rocksdb_state_machine::*;
 pub use rocksdb_storage_engine::*;
-pub use rocksdb_unified_engine::RocksDBUnifiedEngine;
 
 #[cfg(test)]
 mod rocksdb_state_machine_test;
@@ -13,7 +14,7 @@ mod rocksdb_state_machine_test;
 mod rocksdb_storage_engine_test;
 
 #[cfg(test)]
-mod rocksdb_unified_engine_test;
+mod rocksdb_open_test;
 
 // Column family names — single source of truth for all RocksDB adaptors
 pub(super) const LOG_CF: &str = "logs";
@@ -21,8 +22,41 @@ pub(super) const META_CF: &str = "meta";
 pub(super) const STATE_MACHINE_CF: &str = "state_machine";
 pub(super) const STATE_MACHINE_META_CF: &str = "state_machine_meta";
 
+// Directories under a node's data directory. This is the layout a default start has always used.
+const STORAGE_DIR: &str = "storage";
+const STATE_MACHINE_DIR: &str = "state_machine";
+
+/// Opens the Raft log and the state machine of one node: two RocksDB databases under `data_dir`.
+///
+/// The log is in `data_dir/storage` and the state machine in `data_dir/state_machine`. They are
+/// separate databases so the write load of one cannot stall the other, and this is the layout a
+/// node's default start uses, so an existing data directory is found again.
+///
+/// To put the two databases in directories of your own, open them separately with
+/// [`RocksDBStorageEngine::new`] and [`RocksDBStateMachine::new`], which take any path.
+///
+/// # Errors
+///
+/// Returns an error if either database cannot be opened, for example because another process
+/// holds it.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let (storage, sm) = d_engine_server::open_rocksdb("/data/raft")?;
+/// ```
+pub fn open_rocksdb<P: AsRef<Path>>(
+    data_dir: P
+) -> Result<(RocksDBStorageEngine, RocksDBStateMachine), Error> {
+    let data_dir = data_dir.as_ref();
+    let storage = RocksDBStorageEngine::new(data_dir.join(STORAGE_DIR))?;
+    let sm = RocksDBStateMachine::new(data_dir.join(STATE_MACHINE_DIR))?;
+    Ok((storage, sm))
+}
+
 // ── Shared DB + CF option functions ──────────────────────────────────────────
-// Both One DB and Two DB paths call these functions so tuning changes apply uniformly.
+// The log database and the state machine database call these functions so tuning changes apply
+// uniformly.
 
 use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
@@ -42,10 +76,6 @@ pub(super) fn base_db_options() -> Options {
     // but provides no durability guarantee. Pairs well with Level 3 (flush_wal) if added.
     opts.set_wal_bytes_per_sync(1024 * 1024);
     opts.set_manual_wal_flush(true);
-    // State machine writes skip the WAL, so its data and `last_applied` column families must reach
-    // disk together; otherwise a flush of one without the other leaves `last_applied` ahead of the
-    // data. Checkpoints rely on the same guarantee.
-    opts.set_atomic_flush(true);
     opts.set_max_background_jobs(2);
     opts.set_max_open_files(5000);
     opts.set_use_direct_io_for_flush_and_compaction(true);

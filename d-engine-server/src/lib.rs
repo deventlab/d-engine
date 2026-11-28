@@ -143,14 +143,8 @@ pub use d_engine_core::Command;
 /// Unified error type for all d-engine operations
 pub use d_engine_core::Error;
 // Internal types required by storage implementations — not part of user API
-/// Persisted Raft hard state (current term + voted-for). Required by
-/// [`MetaStore::save_hard_state`]/[`MetaStore::load_hard_state`] — implement these if
-/// you're building a custom storage engine.
+/// Persisted Raft hard state (current term + voted-for).
 pub use d_engine_core::HardState;
-/// Log storage trait
-pub use d_engine_core::LogStore;
-/// Metadata storage trait
-pub use d_engine_core::MetaStore;
 // Purely internal — only reachable via `?`/`From` conversions inside `Error`.
 // No public trait method requires implementors to construct this directly.
 #[doc(hidden)]
@@ -211,7 +205,7 @@ pub use node::Node;
 pub use storage::{FileStateMachine, FileStorageEngine};
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
-pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
+pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, open_rocksdb};
 
 // -------------------- Data Types --------------------
 

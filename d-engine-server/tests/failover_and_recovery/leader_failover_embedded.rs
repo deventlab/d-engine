@@ -4,8 +4,8 @@ use std::time::Duration;
 use d_engine_core::client::ClientApiError;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::client::LeaderHint;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -20,7 +20,7 @@ use crate::common::wait_for_new_leader;
 /// 2. Kill leader node
 /// 3. Verify re-election and data consistency
 /// 4. Verify cluster operational with 2/3 nodes
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -53,7 +53,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-failover-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -210,7 +210,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 /// 3. Verify cluster still operational (2/3 quorum)
 /// 4. Restart killed follower
 /// 5. Verify it rejoins and syncs data
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -242,7 +242,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-rejoin-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -314,7 +314,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_err: Option<Box<dyn std::error::Error>> = None;
         let mut opened = None;
         for attempt in 0..50 {
-            match RocksDBUnifiedEngine::open(&db_path) {
+            match open_rocksdb(&db_path) {
                 Ok(ok) => {
                     opened = Some(ok);
                     break;
@@ -369,7 +369,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Test minority failure (2/3 nodes down) causes cluster unavailability
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -400,7 +400,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-minority-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
@@ -524,7 +524,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 /// 3. Start nodes 1 and 2 and wait for a leader
 /// 4. The leader's term must be small: without PreVote node 3 would have raised its term once per
 ///    round and the whole cluster would have adopted it (term >= 6)
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -552,7 +552,7 @@ async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::e
         let node_db_root = db_root.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
         let config_path = format!("/tmp/d-engine-test-isolated-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
         Ok(DefaultEmbeddedEngine::start_custom(

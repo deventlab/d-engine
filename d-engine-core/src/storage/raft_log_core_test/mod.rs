@@ -21,7 +21,7 @@ mod prev_log_index_zero_idempotency_test;
 mod quorum_durability_test;
 mod raft_properties_test;
 mod remove_range_test;
-mod replace_range_fsync_test;
+mod conflict_replacement_fsync_test;
 mod shutdown_test;
 mod term_index_test;
 mod term_segments_test;

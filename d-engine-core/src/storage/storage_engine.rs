@@ -3,7 +3,6 @@
 //! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-storage-engine.md) for details.
 
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use d_engine_proto::common::Entry;
@@ -18,26 +17,11 @@ use crate::HardState;
 ///
 /// Design principles:
 /// - Zero-cost abstractions through static dispatch
-/// - Physical separation of log and metadata stores
 /// - Async-ready for I/O parallelism
 /// - Minimal interface for maximum performance
-pub trait StorageEngine: Send + Sync + 'static {
-    /// Associated log store type
-    type LogStore: LogStore;
-
-    /// Associated metadata store type
-    type MetaStore: MetaStore;
-
-    /// Get log storage handle
-    fn log_store(&self) -> Arc<Self::LogStore>;
-
-    /// Get metadata storage handle
-    fn meta_store(&self) -> Arc<Self::MetaStore>;
-}
-
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
-pub trait LogStore: Send + Sync + 'static {
+pub trait StorageEngine: Send + Sync + 'static {
     /// Batch persist entries into disk (optimized for sequential writes)
     ///
     /// # Performance
@@ -47,12 +31,6 @@ pub trait LogStore: Send + Sync + 'static {
         &self,
         entries: Vec<Entry>,
     ) -> Result<(), Error>;
-
-    /// Get single log entry by index
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error>;
 
     /// Get entries in range [start, end] (inclusive)
     ///
@@ -69,60 +47,37 @@ pub trait LogStore: Send + Sync + 'static {
         cutoff_index: LogId,
     ) -> Result<(), Error>;
 
-    /// Truncates log from specified index onward
+    /// Delete every entry with index `>= from_index`. The engine calls it when a leader's entries
+    /// conflict with this node's tail, then writes the leader's entries with `persist_entries`.
+    ///
+    /// # Contract
+    /// - If `from_index` is past the last entry, nothing is removed and `last_index()` does not
+    ///   change.
+    /// - It need not be atomic, but it must never leave a hole: remove entries from the tail
+    ///   backward, so a crash midway leaves a shorter, contiguous log.
+    /// - It need not be durable when it returns: the next `flush()` makes it durable.
     async fn truncate(
         &self,
         from_index: u64,
     ) -> Result<(), Error>;
 
-    /// Atomically truncate from `from_index` and persist `new_entries` in one write.
+    /// Persist the hard state (current term and votedFor).
     ///
-    /// # Contract
-    /// The caller guarantees `new_entries[i].index == from_index + i`: contiguous, starting at
-    /// `from_index`. Implementations do not re-check it; the Raft log rejects a malformed
-    /// AppendEntries batch before it reaches storage.
-    /// Where `from_index` sits relative to the existing log (below the purge boundary,
-    /// beyond `last_index + 1`) is the caller's responsibility; behavior there is unspecified.
-    ///
-    /// Default implementation calls `truncate` then `persist_entries` sequentially
-    /// (non-atomic). Override with a single WriteBatch for true crash atomicity.
-    /// Returns the highest log index on disk after the operation: the last of
-    /// `new_entries`, or `from_index - 1` when `new_entries` is empty.
-    async fn replace_range(
+    /// It becomes durable with the next `flush()`: the engine calls `save_hard_state` and then
+    /// `flush()` before it answers a vote or an AppendEntries that changed the term.
+    fn save_hard_state(
         &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        let new_last = new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
-        self.truncate(from_index).await?;
-        if !new_entries.is_empty() {
-            self.persist_entries(new_entries).await?;
-        }
-        Ok(new_last)
-    }
+        state: &HardState,
+    ) -> Result<(), Error>;
 
-    /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
+    /// Load the persisted hard state, or `None` on a node that has never saved one.
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error>;
+
+    /// Make everything written so far durable: log entries and the hard state.
     ///
-    /// Return `true` if your backend writes are immediately durable (e.g. any backend
-    /// with synchronous write-through to stable storage). Return `false` if durability
-    /// requires an explicit `flush()` call (e.g. RocksDB without `sync=true`, sled,
-    /// file I/O without `sync_all`).
-    ///
-    /// **This value must be accurate.** A wrong `true` causes `durable_index` to advance
-    /// before data is crash-safe, silently breaking Raft's durability guarantee.
-    fn is_write_durable(&self) -> bool;
-
-    /// Optional: Flush pending writes (use with caution)
-    fn flush(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
-
-    /// Optional: Flush pending writes (use with caution)
-    async fn flush_async(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
-
-    async fn reset(&self) -> Result<(), Error>;
+    /// The engine calls it before it answers an RPC that depends on what was written. A store
+    /// whose writes are already durable when they return still implements it, as `Ok(())`.
+    fn flush(&self) -> Result<(), Error>;
 
     /// Get last log index (optimized for frequent access)
     ///
@@ -137,31 +92,5 @@ pub trait LogStore: Send + Sync + 'static {
     /// uses this to restore `last_purged_index/term` after a restart so that
     /// `entry_term(last_purged_index)` returns the correct term even though
     /// the entry has been removed from the in-memory log.
-    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
-        Ok(None) // Default: not persisted
-    }
-}
-
-/// Metadata storage operations
-#[cfg_attr(any(test, feature = "__test_support"), automock)]
-#[async_trait]
-pub trait MetaStore: Send + Sync + 'static {
-    /// Atomically persist hard state (current term and votedFor)
-    fn save_hard_state(
-        &self,
-        state: &HardState,
-    ) -> Result<(), Error>;
-
-    /// Load persisted hard state
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error>;
-
-    /// Optional: Flush pending writes (use with caution)
-    fn flush(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
-
-    /// Optional: Flush pending writes (use with caution)
-    async fn flush_async(&self) -> Result<(), Error> {
-        Ok(()) // Default no-op for engines with auto-flush
-    }
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error>;
 }

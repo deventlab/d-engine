@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::open_rocksdb;
 use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
@@ -51,7 +51,7 @@ const LOG_DIR: &str = "./logs/embedded/readonly";
 ///
 /// ## Conclusion
 /// **ReadOnly Learners are fully supported in Embedded mode** ✅
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_readonly_mode_learner_embedded() -> Result<(), Box<dyn std::error::Error>> {
@@ -93,7 +93,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     tokio::fs::create_dir_all(&db_path1).await?;
 
-    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
+    let (storage1, sm1) = open_rocksdb(&db_path1)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &db_path1,
@@ -128,7 +128,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     tokio::fs::create_dir_all(&db_path2).await?;
 
-    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
+    let (storage2, sm2) = open_rocksdb(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &db_path2,
@@ -194,7 +194,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     tokio::fs::create_dir_all(&db_path3).await?;
 
-    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
+    let (storage3, sm3) = open_rocksdb(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &db_path3,

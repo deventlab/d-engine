@@ -123,12 +123,6 @@ use tracing::info;
 
 use super::embedded_client::EmbeddedClient;
 use crate::Result;
-#[cfg(feature = "rocksdb")]
-use crate::RocksDBStateMachine;
-#[cfg(feature = "rocksdb")]
-use crate::RocksDBStorageEngine;
-#[cfg(feature = "rocksdb")]
-use crate::RocksDBUnifiedEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::node::NodeBuilder;
@@ -201,22 +195,11 @@ impl EmbeddedEngine {
         // one even checks this lock.
         let data_dir_lock = crate::node::DataDirLock::acquire(data_dir.as_path())?;
 
-        let (storage, sm) = if config.storage.unified_db {
-            let db_path = data_dir.unified_db_path()?;
-            info!(
-                "Starting embedded engine with unified RocksDB at {:?}",
-                db_path
-            );
-            RocksDBUnifiedEngine::open(&db_path)?
-        } else {
-            info!(
-                "Starting embedded engine with separate RocksDB instances at {:?}",
-                data_dir.as_path()
-            );
-            let storage = RocksDBStorageEngine::new(data_dir.storage_path()?)?;
-            let sm = RocksDBStateMachine::new(data_dir.state_machine_path()?)?;
-            (storage, sm)
-        };
+        info!(
+            "Starting embedded engine with RocksDB at {:?}",
+            data_dir.as_path()
+        );
+        let (storage, sm) = crate::open_rocksdb(data_dir.as_path())?;
 
         Self::start_node_inner(
             data_dir.as_path().to_path_buf(),
@@ -251,22 +234,11 @@ impl EmbeddedEngine {
         let data_dir = crate::node::DataDir::new(data_dir.as_ref())?;
         let data_dir_lock = crate::node::DataDirLock::acquire(data_dir.as_path())?;
 
-        let (storage, sm) = if config.storage.unified_db {
-            let db_path = data_dir.unified_db_path()?;
-            info!(
-                "Starting embedded engine with unified RocksDB at {:?}",
-                db_path
-            );
-            RocksDBUnifiedEngine::open(&db_path)?
-        } else {
-            info!(
-                "Starting embedded engine with separate RocksDB instances at {:?}",
-                data_dir.as_path()
-            );
-            let storage = RocksDBStorageEngine::new(data_dir.storage_path()?)?;
-            let sm = RocksDBStateMachine::new(data_dir.state_machine_path()?)?;
-            (storage, sm)
-        };
+        info!(
+            "Starting embedded engine with RocksDB at {:?}",
+            data_dir.as_path()
+        );
+        let (storage, sm) = crate::open_rocksdb(data_dir.as_path())?;
 
         // start_node_inner directly, not start_custom — config is
         // already loaded/validated here, and the lock is already held;

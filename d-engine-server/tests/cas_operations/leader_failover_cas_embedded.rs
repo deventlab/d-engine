@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::ClientApi;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
@@ -28,7 +28,7 @@ use crate::common::wait_for_new_leader;
 /// - No partial writes (atomicity guarantee)
 /// - Lock state remains consistent after failover
 /// - Clients can retry and succeed after new leader elected
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,7 +60,7 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
 
         tokio::fs::create_dir_all(&db_path).await?;
 
-        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, state_machine) = open_rocksdb(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-cas-failover-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;

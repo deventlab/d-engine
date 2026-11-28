@@ -83,7 +83,7 @@ fn test_options_invalid_values_are_rejected() {
 #[tokio::test]
 async fn test_options_target_file_size_controls_rotation() {
     use d_engine::common::{Entry, EntryPayload, entry_payload};
-    use d_engine::{LogStore, StorageEngine};
+    use d_engine::StorageEngine;
     use prost::bytes::Bytes;
 
     let entries = |range: std::ops::RangeInclusive<u64>| -> Vec<Entry> {
@@ -111,7 +111,6 @@ async fn test_options_target_file_size_controls_rotation() {
     .unwrap();
     for chunk in 0..3 {
         small
-            .log_store()
             .persist_entries(entries(chunk * 1000 + 1..=chunk * 1000 + 1000))
             .await
             .unwrap();
@@ -128,7 +127,6 @@ async fn test_options_target_file_size_controls_rotation() {
     .unwrap();
     for chunk in 0..3 {
         default
-            .log_store()
             .persist_entries(entries(chunk * 1000 + 1..=chunk * 1000 + 1000))
             .await
             .unwrap();

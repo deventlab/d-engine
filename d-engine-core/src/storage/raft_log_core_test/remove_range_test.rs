@@ -19,7 +19,6 @@ fn entry(
 #[tokio::test]
 async fn test_remove_middle_range() {
     let ctx = RaftLogCoreTestContext::new("test_remove_middle_range");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 100 entries
     simulate_insert_command(&ctx.raft_log, (1..=100).collect(), 1).await;
@@ -45,7 +44,6 @@ async fn test_remove_middle_range() {
 #[tokio::test]
 async fn test_remove_from_start() {
     let ctx = RaftLogCoreTestContext::new("test_remove_from_start");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 100 entries
     simulate_insert_command(&ctx.raft_log, (1..=100).collect(), 1).await;
@@ -66,7 +64,6 @@ async fn test_remove_from_start() {
 #[tokio::test]
 async fn test_remove_to_end() {
     let ctx = RaftLogCoreTestContext::new("test_remove_to_end");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 100 entries
     simulate_insert_command(&ctx.raft_log, (1..=100).collect(), 1).await;
@@ -88,7 +85,6 @@ async fn test_remove_to_end() {
 #[tokio::test]
 async fn test_remove_empty_range() {
     let ctx = RaftLogCoreTestContext::new("test_remove_empty_range");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     simulate_insert_command(&ctx.raft_log, vec![1, 2, 3], 1).await;
 
@@ -103,7 +99,6 @@ async fn test_remove_empty_range() {
 #[tokio::test]
 async fn test_remove_entire_log() {
     let ctx = RaftLogCoreTestContext::new("test_remove_entire_log");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Insert 100 entries
     simulate_insert_command(&ctx.raft_log, (1..=100).collect(), 1).await;
@@ -121,7 +116,6 @@ async fn test_remove_entire_log() {
 #[tokio::test]
 async fn test_remove_single_entry() {
     let ctx = RaftLogCoreTestContext::new("test_remove_single_entry");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     simulate_insert_command(&ctx.raft_log, vec![1, 2, 3], 1).await;
 
@@ -150,7 +144,6 @@ async fn test_remove_single_entry() {
 #[tokio::test]
 async fn test_remove_range_clears_term_indexes_for_removed_entries() {
     let ctx = RaftLogCoreTestContext::new("test_remove_range_clears_term_indexes");
-    ctx.raft_log.reset().await.unwrap();
 
     // Arrange: term1=[1-3], term2=[4-6], term3=[7-9]
     for i in 1u64..=3 {
@@ -211,7 +204,6 @@ async fn test_remove_range_clears_term_indexes_for_removed_entries() {
 #[tokio::test]
 async fn test_purge_prefix_removes_entries_and_records_boundary_together() {
     let ctx = RaftLogCoreTestContext::new("test_purge_prefix_boundary_atomicity");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Arrange: entries 1..=100, all term 1.
     simulate_insert_command(&ctx.raft_log, (1..=100).collect(), 1).await;
@@ -254,7 +246,6 @@ async fn test_purge_prefix_removes_entries_and_records_boundary_together() {
 #[tokio::test]
 async fn test_purge_prefix_multi_term_cutoff_updates_term_indexes_and_boundary() {
     let ctx = RaftLogCoreTestContext::new("test_purge_prefix_multi_term_cutoff");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Arrange: term1=[1-30], term2=[31-60], term3=[61-90].
     for i in 1u64..=30 {

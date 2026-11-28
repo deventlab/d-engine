@@ -81,5 +81,3 @@ concurrency_limit_per_connection = 100  # Increased for higher concurrent replic
 max_concurrent_streams = 4096           # Increased to reduce stream creation overhead
 max_pending_accept_reset_streams = 2000 # Higher pending stream limit for Rapid Reset mitigation
 
-[storage]
-unified_db = false

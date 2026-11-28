@@ -70,17 +70,15 @@ cargo nextest run --all-features --nocapture
 ```
 
 The tests include the shared `StorageEngine` contract suite from
-`d_engine::storage_engine_test`, plus restart recovery, tail replacement and
-truncation, `reset` keeping the metadata, purge-boundary and hard-state
-persistence, and purge-thread shutdown.
+`d_engine::storage_engine_test`, plus restart recovery, truncation,
+purge-boundary and hard-state persistence, and purge-thread shutdown.
 
 ## Behavior to know
 
 - raft-engine has no suffix-truncate command, so `truncate` re-appends the entry
   just before the cut, which drops everything after it in one atomic write.
-  `replace_range` overwrites the tail the same way.
 - Log entries and the metadata (hard state, purge boundary) live in separate
-  raft-engine regions, so `reset` clears the log without touching the metadata.
+  raft-engine regions, so compacting the log never touches the metadata.
 - `persist_entries` and `save_hard_state` write without syncing. `flush()` runs
   `fdatasync`, matching the RocksDB adapter's drain-then-fsync model, so
   `durable_index` advances only after the physical sync.

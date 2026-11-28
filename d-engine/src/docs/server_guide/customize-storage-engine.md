@@ -5,25 +5,22 @@ d-engine supports **pluggable storage** through the `StorageEngine` trait. This 
 ## Architecture Context
 
 - The **StorageEngine** trait provides a **generic interface** for storage backends
-- **Physical separation** between log storage (`LogStore`) and metadata storage (`MetaStore`)
+- One trait, `StorageEngine`, keeps both the Raft log and the hard state (current term and vote)
 - **Built-in implementations** include:
-  - **File-based**: Production-ready file system storage
+  - **File-based**: Simple file system storage, for development and tests
   - **RocksDB**: High-performance embedded database (requires `features = ["rocksdb"]`)
-  - **Sled**: Modern embedded database
-  - **In-memory**: Volatile storage for testing
 - Custom implementations enable support for cloud storage, SQL databases, etc.
 
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::storage::{StorageEngine, LogStore, MetaStore};
+use d_engine::StorageEngine;
 use async_trait::async_trait;
 
-struct CustomLogStore;
-struct CustomMetaStore;
+struct CustomStorageEngine;
 
 #[async_trait]
-impl LogStore for CustomLogStore {
+impl StorageEngine for CustomStorageEngine {
     async fn persist_entries(&self, entries: Vec<Entry>) -> Result<(), Error> {
         // Your implementation - batch operations recommended
         Ok(())
@@ -34,60 +31,35 @@ impl LogStore for CustomLogStore {
         Ok(None)
     }
 
-    /// Return true only if a single persist_entries() call is crash-safe without flush().
-    /// Examples: sled (synchronous commit), any backend with write-through to stable storage.
-    /// Return false if durability requires an explicit flush() call (e.g. RocksDB, file I/O).
-    fn is_write_durable(&self) -> bool {
-        false // conservative default; override to true only when writes are immediately durable
+    fn save_hard_state(&self, state: &HardState) -> Result<(), Error> {
+        // Persist the hard state (term and vote); it is made durable by the next flush()
+        Ok(())
+    }
+
+    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
+        // Load the persisted hard state, or None on a node that never saved one
+        Ok(None)
     }
 
     fn flush(&self) -> Result<(), Error> {
-        // Sync pending writes to stable storage (called by RaftLogCore when is_write_durable() == false)
+        // Make everything written so far durable: log entries and the hard state.
+        // A store whose writes are already durable still implements it, as Ok(()).
         Ok(())
     }
 
     // Implement all required methods...
 }
-
-impl MetaStore for CustomMetaStore {
-    fn save_hard_state(&self, state: &HardState) -> Result<(), Error> {
-        // Persist hard state atomically
-        Ok(())
-    }
-
-    fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
-        // Load persisted hard state
-        Ok(None)
-    }
-}
-
-// Combine log and metadata stores
-struct CustomStorageEngine {
-    log_store: Arc<CustomLogStore>,
-    meta_store: Arc<CustomMetaStore>,
-}
-
-impl StorageEngine for CustomStorageEngine {
-    type LogStore = CustomLogStore;
-    type MetaStore = CustomMetaStore;
-
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
-    }
-}
-
 ```
 
 ## 2. Key Implementation Notes
 
 - **Atomicity**: Ensure write operations are atomic—use batch operations where possible
-- **Durability**: Implement `is_write_durable()` accurately—this controls whether `RaftLogCore`
-  calls `flush()` after each batch. A wrong `true` advances `durable_index` before data is
-  crash-safe, silently breaking Raft's durability guarantee.
+- **Durability**: The engine calls `flush()` after every batch and counts entries as durable
+  only once it returns `Ok`. If `flush()` returns before the data is on stable storage, a power
+  loss can discard writes the cluster already acknowledged. If your backend already syncs inside
+  each write (for example a store that fsyncs on every commit), `flush()` returns `Ok(())`.
+- **Hard state**: `save_hard_state()` is always followed by `flush()` before the node answers a
+  vote or an AppendEntries that changed the term, so both must make the hard state durable
 - **Consistency**: Maintain exactly-once semantics for log entries
 - **Performance**: Target >100k ops/sec for log persistence. Do not call `fsync` inside
   `persist_entries()`—the framework batches entries and calls `flush()` once per batch,
@@ -96,7 +68,7 @@ impl StorageEngine for CustomStorageEngine {
 
 ## 3. StorageEngine API Reference
 
-### LogStore Methods
+### StorageEngine Methods
 
 | Method               | Purpose                                                                                                         | Performance Target     |
 | -------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------- |
@@ -105,44 +77,50 @@ impl StorageEngine for CustomStorageEngine {
 | `get_entries()`      | Get entries in range                                                                                            | <1ms for 10k entries   |
 | `purge()`            | Remove logs up to index                                                                                         | <100ms for 10k entries |
 | `truncate()`         | Remove entries from index                                                                                       | <100ms                 |
-| `replace_range()`    | Atomically truncate + persist new entries (default: truncate then persist; override for single-batch atomicity) | Varies by backend      |
-| `is_write_durable()` | Whether persist_entries() is crash-safe without flush()                                                         | sync, no I/O           |
-| `flush()`            | Sync writes to stable storage (called when `is_write_durable() == false`)                                       | Varies by backend      |
-| `reset()`            | Clear all data                                                                                                  | <1s                    |
+| `save_hard_state()`  | Persist term/vote state (durable after the next `flush()`)                                                      | High - atomic required |
+| `load_hard_state()`  | Load persisted term/vote state                                                                                  | High                   |
+| `flush()`            | Make log entries and the hard state durable; required, `Ok(())` if writes are already durable                   | Varies by backend      |
 | `last_index()`       | Get highest persisted index                                                                                     | <100μs                 |
-
-### MetaStore Methods
-
-| Method              | Purpose                 | Criticality            |
-| ------------------- | ----------------------- | ---------------------- |
-| `save_hard_state()` | Persist term/vote state | High - atomic required |
-| `load_hard_state()` | Load persisted state    | High                   |
-| `flush()`           | Sync metadata writes    | Medium                 |
 
 ## 4. Testing Your Implementation
 
 Use the standardized test suite to ensure compatibility:
 
 ```rust,ignore
+use std::sync::atomic::{AtomicUsize, Ordering};
 use d_engine::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
 use tempfile::TempDir;
 
 struct CustomStorageEngineBuilder {
     temp_dir: TempDir,
+    builds: AtomicUsize, // every build() gets its own directory
 }
 
 #[async_trait]
 impl StorageEngineBuilder for CustomStorageEngineBuilder {
     type Engine = CustomStorageEngine;
 
+    // A new, empty engine on every call: tests never have to wipe it first.
+    // The number `fetch_add` returns is this call's own, so two builds never share a directory.
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
-        let path = self.temp_dir.path().join("storage");
-        let engine = CustomStorageEngine::new(path).await?;
-        Ok(Arc::new(engine))
+        let n = self.builds.fetch_add(1, Ordering::SeqCst) + 1;
+        self.open(n).await
+    }
+
+    // The storage the last `build()` used, opened again: a restart.
+    async fn reopen(&self) -> Result<Arc<Self::Engine>, Error> {
+        self.open(self.builds.load(Ordering::SeqCst)).await
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
         Ok(()) // TempDir auto-cleans on drop
+    }
+}
+
+impl CustomStorageEngineBuilder {
+    async fn open(&self, n: usize) -> Result<Arc<CustomStorageEngine>, Error> {
+        let path = self.temp_dir.path().join(format!("storage_{n}"));
+        Ok(Arc::new(CustomStorageEngine::new(path).await?))
     }
 }
 
@@ -156,15 +134,13 @@ async fn test_custom_storage_engine() -> Result<(), Error> {
 async fn test_performance() -> Result<(), Error> {
     let builder = CustomStorageEngineBuilder::new();
     let engine = builder.build().await?;
-    let log_store = engine.log_store();
-
     // Performance test: persist 10,000 entries
     let start = std::time::Instant::now();
     let entries = (1..=10000)
         .map(|i| create_test_entry(i, i))
         .collect();
 
-    log_store.persist_entries(entries).await?;
+    engine.persist_entries(entries).await?;
     let duration = start.elapsed();
 
     assert!(duration.as_millis() < 1000, "Should persist 10k entries in <1s");
@@ -196,9 +172,9 @@ Running a standalone gRPC server instead of embedding? Use `StandaloneEngine::ru
 Reference implementations available in:
 
 - `d-engine-server/src/storage/adaptors/rocksdb/` - RocksDB storage engine
-- `d-engine-server/src/storage/adaptors/sled/` - Sled storage engine
 - `d-engine-server/src/storage/adaptors/file/` - File-based storage
-- `d-engine-server/src/storage/adaptors/mem/` - In-memory storage
+- `examples/sled-cluster/` - Sled storage engine
+- `examples/raft-engine-log/` - raft-engine storage engine
 
 Enable RocksDB feature in your `Cargo.toml`:
 

@@ -68,7 +68,7 @@ async fn test_truncate_from_removes_the_suffix_and_keeps_the_prefix() {
 #[tokio::test]
 async fn test_truncate_from_is_durable_on_return_and_survives_restart() {
     let (mut ctx, flush_count) =
-        RaftLogCoreTestContext::new_not_durable("truncate_from_is_durable_on_return");
+        RaftLogCoreTestContext::new_with_flush_counter("truncate_from_is_durable_on_return");
     ctx.append_entries(1, 12, 2).await;
     ctx.raft_log.flush().await.unwrap();
     ctx.drain_fsync_completions();
@@ -112,8 +112,9 @@ async fn test_truncate_from_lets_a_newer_term_reuse_the_indexes() {
 /// say 12 is durable.
 #[tokio::test]
 async fn test_truncate_from_never_reports_removed_entries_as_durable() {
-    let (mut ctx, _flush_count) =
-        RaftLogCoreTestContext::new_not_durable("truncate_from_never_reports_removed_durable");
+    let (mut ctx, _flush_count) = RaftLogCoreTestContext::new_with_flush_counter(
+        "truncate_from_never_reports_removed_durable",
+    );
     ctx.append_entries(1, 12, 2).await;
     ctx.raft_log.flush().await.unwrap();
     ctx.drain_fsync_completions();

@@ -14,12 +14,20 @@ pub fn free_listen_address() -> SocketAddr {
     listener.local_addr().expect("ephemeral port has a local address")
 }
 
-/// Default node config for a test, listening on a free port.
+/// Client request timeout for tests (`general_raft_timeout_duration_in_ms`).
+///
+/// The 50ms default bounds one whole client request, and a write includes a physical fsync: a
+/// loaded CI runner can stretch that past 50ms. Tests that check timeout behavior set their own
+/// value.
+pub const TEST_CLIENT_TIMEOUT_MS: u64 = 5000;
+
+/// Default node config for a test, listening on a free port, with [`TEST_CLIENT_TIMEOUT_MS`].
 ///
 /// The config is not validated: `start_node` validates it.
 pub fn test_node_config() -> RaftNodeConfig {
     let mut config = RaftNodeConfig::new().expect("default config loads");
     config.cluster.listen_address = free_listen_address();
+    config.raft.general_raft_timeout_duration_in_ms = TEST_CLIENT_TIMEOUT_MS;
     config
 }
 

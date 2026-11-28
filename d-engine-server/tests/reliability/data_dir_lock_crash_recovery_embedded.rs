@@ -14,7 +14,7 @@ const READY_MARKER: &str = "LOCK_ACQUIRED";
 /// shutdown). The OS must release the flock on process exit — otherwise a
 /// crashed node would permanently block itself (or any replacement) from
 /// ever restarting against the same data_dir.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_lock_released_after_process_crash() {
     // Child branch: re-invocation of this same test binary, acting as the
     // "process that crashes". Selected via env var set by the parent below.

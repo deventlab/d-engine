@@ -119,9 +119,8 @@ DefaultEmbeddedEngine::start("./data").await?
 This one line:
 
 1. Created `./data/storage/` (`logs`, `meta`) and `./data/state_machine/`
-   (`state_machine`, `state_machine_meta`) — two separate RocksDB instances by
-   default, for workload isolation. (Set `[storage] unified_db = true` for one
-   shared instance at `./data/db/` instead.)
+   (`state_machine`, `state_machine_meta`) — two separate RocksDB instances, for
+   workload isolation.
 2. Built Raft node with node_id=1
 3. Spawned `node.run()` in background (Raft protocol)
 4. Returned immediately (non-blocking)

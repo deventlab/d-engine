@@ -5,8 +5,6 @@ use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 
-use crate::MockLogStore;
-use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLogCore;
@@ -159,38 +157,29 @@ async fn test_close_flushes_multiple_batches() {
     );
 }
 
-/// Verifies that a fatal `replace_range` failure:
+/// Verifies that a fatal `truncate` failure while resolving a term conflict:
 /// 1. Propagates the error synchronously to the caller.
 /// 2. Poisons the log — writes after the failure are rejected outright, not silently accepted into
 ///    memory with nothing left to ever persist them.
 #[tokio::test]
-async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
-    let mut log_store = MockLogStore::new();
+async fn test_conflict_truncate_failure_poisons_log_and_rejects_future_writes() {
+    let mut mock = MockStorageEngine::new();
 
-    // replace_range always fails — simulates an unrecoverable disk error.
-    log_store
-        .expect_replace_range()
-        .returning(|_, _| Err(crate::Error::Fatal("simulated disk failure".into())));
+    // truncate always fails — simulates an unrecoverable disk error.
+    mock.expect_truncate()
+        .returning(|_| Err(crate::Error::Fatal("simulated disk failure".into())));
 
-    log_store.expect_last_index().returning(|| 0);
-    log_store.expect_persist_entries().returning(|_| Ok(()));
-    log_store.expect_entry().returning(|_| Ok(None));
-    log_store.expect_get_entries().returning(|_| Ok(vec![]));
-    log_store.expect_purge().returning(|_| Ok(()));
-    log_store.expect_load_purge_boundary().returning(|| Ok(None));
-    log_store.expect_reset().returning(|| Ok(()));
-    log_store.expect_truncate().returning(|_| Ok(()));
-    log_store.expect_is_write_durable().returning(|| true);
-    log_store.expect_flush().returning(|| Ok(()));
-    log_store.expect_flush_async().returning(|| Ok(()));
+    mock.expect_last_index().returning(|| 0);
+    mock.expect_persist_entries().returning(|_| Ok(()));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_flush().returning(|| Ok(()));
 
-    let mut meta_store = MockMetaStore::new();
-    meta_store.expect_save_hard_state().returning(|_| Ok(()));
-    meta_store.expect_load_hard_state().returning(|| Ok(None));
-    meta_store.expect_flush().returning(|| Ok(()));
-    meta_store.expect_flush_async().returning(|| Ok(()));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
 
-    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let storage = Arc::new(mock);
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     // Append [1..4] term=1 — persisted inline.
@@ -199,23 +188,49 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
         .await
         .unwrap();
 
-    // Trigger replace_range: term conflict at index 3 (term 1 → 2).
+    // Trigger the conflict path: term conflict at index 3 (term 1 → 2).
     let result = raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await;
 
     assert!(
         result.is_err(),
-        "expected replace_range failure to be propagated to caller"
+        "expected truncate failure to be propagated to caller"
     );
     assert!(
         raft_log.is_poisoned(),
-        "a replace_range() failure must poison the log"
+        "a truncate() failure must poison the log"
     );
 
     let append_result = raft_log.append_entries(vec![entry(5, 2)]).await;
     assert!(
         append_result.is_err(),
         "writes must be rejected once poisoned"
+    );
+}
+
+/// `close()` must return within `shutdown_timeout_ms` even when the log has nothing left to make
+/// durable and the disk's flush is stuck.
+///
+/// A node that is shut down before it ever wrote an entry (or after everything is already durable)
+/// still goes through `close()`. If the disk stalls at that moment, a flush outside the timeout
+/// would keep the shutdown waiting forever.
+#[tokio::test]
+async fn test_close_with_nothing_to_flush_returns_while_disk_flush_is_stuck() {
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("close_with_nothing_to_flush".into());
+    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 100);
+
+    // The gate stays closed: any call to the disk's flush() blocks its thread. Run close() on the
+    // blocking pool so a blocked call cannot also stop this test's timer.
+    let handle = tokio::runtime::Handle::current();
+    let close = tokio::task::spawn_blocking(move || handle.block_on(raft_log.close()));
+    let returned = tokio::time::timeout(Duration::from_secs(1), close).await;
+
+    // Release the gate before asserting, so a stuck close() can finish and the runtime can shut down.
+    let _ = flush_gate.send(());
+    assert!(
+        returned.is_ok(),
+        "close() must return within shutdown_timeout_ms, not wait on a stuck disk flush"
     );
 }

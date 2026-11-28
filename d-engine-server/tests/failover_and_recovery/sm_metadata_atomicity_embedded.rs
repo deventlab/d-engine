@@ -21,9 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::StateMachine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tracing_test::traced_test;
 
 use crate::common::SharedStateMachine;
@@ -80,7 +80,7 @@ async fn start_single_node(
     let db_path = node1_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path).await?;
 
-    let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, sm) = open_rocksdb(&db_path)?;
     let storage_arc = Arc::new(storage);
     let sm_arc = Arc::new(sm);
 
@@ -102,8 +102,8 @@ async fn start_single_node(
 ///
 /// `get_linearizable()` on the last write guarantees the SM has fully applied
 /// the whole batch (both the data and the atomically-written last_applied
-/// metadata are already in the MemTable) before `flush_async()` runs.
-#[tokio::test]
+/// metadata are already in the MemTable) before `flush()` runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_flush_then_crash_preserves_data_and_last_applied_together()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -151,7 +151,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
     // sm_wal_disabled_crash_recovery_embedded.rs).
     let _ = engine.stop().await;
 
-    let (_recovered_storage, recovered_sm) = RocksDBUnifiedEngine::open(&snapshot_path)?;
+    let (_recovered_storage, recovered_sm) = open_rocksdb(&snapshot_path)?;
     assert_eq!(
         recovered_sm.last_applied().index,
         last_applied_after_flush,
@@ -162,7 +162,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
         assert_eq!(
             recovered_sm.get(key.as_bytes())?,
             Some(Bytes::from(format!("val-{i:02}").into_bytes())),
-            "key {key} was applied before flush_async() — must survive the crash"
+            "key {key} was applied before flush() — must survive the crash"
         );
     }
 

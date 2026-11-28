@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    Error, HardState, LogStore, MetaStore, ProstError, Result, StorageEngine, StorageError,
+    Error, HardState, ProstError, Result, StorageEngine, StorageError,
     common::{Entry, LogId},
 };
 use prost::Message;
@@ -10,48 +10,23 @@ use sled::Batch;
 use sled::IVec;
 use std::ops::RangeInclusive;
 use std::path::Path;
-use std::sync::Arc;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
 
 const HARD_STATE_KEY: &[u8] = b"hard_state";
+const PURGE_BOUNDARY_KEY: &[u8] = b"purge_boundary";
 const RAFT_LOG_NAMESPACE: &str = "raft_log";
 const RAFT_META_NAMESPACE: &str = "raft_meta";
 
-/// Dedicated log store implementation
-pub struct SledLogStore {
-    tree: sled::Tree,
-}
-
-/// Dedicated metadata store implementation
-pub struct SledMetaStore {
-    tree: sled::Tree,
-}
-
-/// Unified storage engine
+/// Storage engine: the Raft log in one tree, the hard state in another
 pub struct SledStorageEngine {
-    log_store: Arc<SledLogStore>,
-    meta_store: Arc<SledMetaStore>,
-}
-
-impl StorageEngine for SledStorageEngine {
-    type LogStore = SledLogStore;
-    type MetaStore = SledMetaStore;
-
-    #[inline]
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-
-    #[inline]
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
-    }
+    tree: sled::Tree,
+    meta_tree: sled::Tree,
 }
 
 #[async_trait]
-impl LogStore for SledLogStore {
+impl StorageEngine for SledStorageEngine {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -71,20 +46,6 @@ impl LogStore for SledLogStore {
         self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         Ok(())
-    }
-
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>> {
-        let key = SledStorageEngine::index_to_key(index);
-        match self.tree.get(key).map_err(|e| StorageError::DbError(e.to_string()))? {
-            Some(bytes) => {
-                Entry::decode(&*bytes).map(Some).map_err(|e| ProstError::Decode(e).into())
-            }
-
-            None => Ok(None),
-        }
     }
 
     fn get_entries(
@@ -108,17 +69,15 @@ impl LogStore for SledLogStore {
         &self,
         cutoff_index: LogId,
     ) -> Result<()> {
-        let start = SledStorageEngine::index_to_key(0);
-        let end = SledStorageEngine::index_to_key(cutoff_index.index);
-        let mut batch = Batch::default();
+        // The boundary reaches disk before any entry is removed: sled does not order writes
+        // across trees, and losing the entries but not the boundary would lose the term of the
+        // last purged entry. A crash after this flush leaves old entries, which `new` drops.
+        self.meta_tree
+            .insert(PURGE_BOUNDARY_KEY, cutoff_index.encode_to_vec())
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.meta_tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        for item in self.tree.range(start..=end) {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.remove(key);
-        }
-
-        self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
+        self.remove_up_to(cutoff_index.index)
     }
 
     async fn truncate(
@@ -137,81 +96,6 @@ impl LogStore for SledLogStore {
         Ok(())
     }
 
-    /// Atomically truncate from `from_index` and persist `new_entries` in one sled Batch.
-    ///
-    /// Combines removes and inserts in a single `apply_batch()` call, which sled guarantees
-    /// to be atomic. Eliminates the two-batch window of the default implementation.
-    ///
-    /// Note: sled has no range-delete; keys >= from_index must be scanned before removal.
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64> {
-        let new_last = new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
-        let mut batch = sled::Batch::default();
-
-        // collect and remove all keys >= from_index
-        let start_key = SledStorageEngine::index_to_key(from_index);
-        for item in self.tree.range(start_key..) {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.remove(key);
-        }
-
-        // insert new entries in same batch
-        for entry in &new_entries {
-            let key = SledStorageEngine::index_to_key(entry.index);
-            batch.insert(key.as_ref(), entry.encode_to_vec());
-        }
-
-        self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(new_last)
-    }
-
-    fn is_write_durable(&self) -> bool {
-        // apply_batch writes to sled's in-memory log; tree.flush() in flush() provides crash-safety.
-        false
-    }
-
-    fn flush(&self) -> Result<()> {
-        trace!("LogStore flush");
-        self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<()> {
-        trace!("LogStore flush");
-        self.tree
-            .flush_async()
-            .await
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn reset(&self) -> Result<()> {
-        self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    fn last_index(&self) -> u64 {
-        match self.tree.last() {
-            Ok(Some((key, _))) => {
-                if key.len() >= 8 {
-                    let mut bytes = [0u8; 8];
-                    bytes.copy_from_slice(&key[0..8]);
-                    u64::from_be_bytes(bytes)
-                } else {
-                    tracing::warn!("Invalid key format in sled: key too short");
-                    0
-                }
-            }
-            _ => 0,
-        }
-    }
-}
-
-#[async_trait]
-impl MetaStore for SledMetaStore {
     fn save_hard_state(
         &self,
         state: &HardState,
@@ -219,7 +103,7 @@ impl MetaStore for SledMetaStore {
         let config = config::standard();
         match bincode::serde::encode_to_vec(state, config) {
             Ok(v) => {
-                self.tree
+                self.meta_tree
                     .insert(HARD_STATE_KEY, IVec::from(v.as_ref() as &[u8]))
                     .map_err(|e| StorageError::DbError(e.to_string()))?;
 
@@ -288,17 +172,39 @@ impl MetaStore for SledMetaStore {
     }
 
     fn flush(&self) -> Result<()> {
+        trace!("StorageEngine flush");
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.meta_tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<()> {
-        trace!("MetaStore flush");
-        self.tree
-            .flush_async()
-            .await
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
+    fn last_index(&self) -> u64 {
+        match self.tree.last() {
+            Ok(Some((key, _))) => {
+                if key.len() >= 8 {
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&key[0..8]);
+                    u64::from_be_bytes(bytes)
+                } else {
+                    tracing::warn!("Invalid key format in sled: key too short");
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>> {
+        match self
+            .meta_tree
+            .get(PURGE_BOUNDARY_KEY)
+            .map_err(|e| StorageError::DbError(e.to_string()))?
+        {
+            Some(bytes) => LogId::decode(bytes.as_ref())
+                .map(Some)
+                .map_err(|e| StorageError::DbError(e.to_string()).into()),
+            None => Ok(None),
+        }
     }
 }
 
@@ -313,13 +219,9 @@ impl std::fmt::Debug for SledStorageEngine {
 
 impl Drop for SledStorageEngine {
     fn drop(&mut self) {
-        match self.log_store.flush() {
-            Ok(_) => info!("Successfully flush log_store"),
-            Err(e) => error!(?e, "Failed to flush log_store"),
-        }
-        match self.meta_store.flush() {
-            Ok(_) => info!("Successfully flush meta_store"),
-            Err(e) => error!(?e, "Failed to flush meta_store"),
+        match self.flush() {
+            Ok(_) => info!("Successfully flushed the storage engine"),
+            Err(e) => error!(?e, "Failed to flush the storage engine"),
         }
     }
 }
@@ -341,10 +243,31 @@ impl SledStorageEngine {
             "CRITICAL: Log and metadata must use different trees"
         );
 
-        Ok(Self {
-            log_store: Arc::new(SledLogStore { tree: log_tree }),
-            meta_store: Arc::new(SledMetaStore { tree: meta_tree }),
-        })
+        let engine = Self {
+            tree: log_tree,
+            meta_tree,
+        };
+        // Entries at or below the boundary may survive a crash inside `purge`: drop them.
+        if let Some(boundary) = engine.load_purge_boundary()? {
+            engine.remove_up_to(boundary.index)?;
+        }
+        Ok(engine)
+    }
+
+    /// Remove every log entry with index <= `up_to`.
+    fn remove_up_to(
+        &self,
+        up_to: u64,
+    ) -> Result<()> {
+        let start = SledStorageEngine::index_to_key(0);
+        let end = SledStorageEngine::index_to_key(up_to);
+        let mut batch = Batch::default();
+        for item in self.tree.range(start..=end) {
+            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            batch.remove(key);
+        }
+        self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
     }
 
     /// Helper: convert index to big-endian bytes
@@ -362,7 +285,7 @@ impl SledStorageEngine {
     }
 }
 
-impl SledLogStore {
+impl SledStorageEngine {
     #[cfg(test)]
     pub fn insert<K, V>(
         &self,
@@ -408,9 +331,10 @@ impl SledLogStore {
     }
 }
 
-impl SledMetaStore {
+impl SledStorageEngine {
+    /// Test helper: write a raw key into the hard state tree.
     #[cfg(test)]
-    pub fn insert<K, V>(
+    pub fn insert_meta<K, V>(
         &self,
         key: K,
         value: V,
@@ -420,37 +344,13 @@ impl SledMetaStore {
         V: AsRef<[u8]> + 'static,
     {
         match self
-            .tree
+            .meta_tree
             .insert(key, IVec::from(value.as_ref()))
             .map_err(|e| StorageError::DbError(e.to_string()))?
         {
             Some(ivec) => Ok(Some(ivec.to_vec())),
             None => Ok(None),
         }
-    }
-
-    #[cfg(test)]
-    pub fn get<K>(
-        &self,
-        key: K,
-    ) -> Result<Option<Bytes>>
-    where
-        K: AsRef<[u8]> + Send + 'static,
-    {
-        match self.tree.get(key.as_ref()).map_err(|e| StorageError::DbError(e.to_string()))? {
-            Some(ivec) => Ok(Some(Bytes::copy_from_slice(ivec.as_ref()))),
-            None => Ok(None),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.tree.len()
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 

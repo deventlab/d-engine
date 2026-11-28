@@ -13,6 +13,7 @@ use tempfile::TempDir;
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper to create a test DefaultEmbeddedEngine with lease configuration
 async fn create_test_engine_with_lease(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
@@ -23,12 +24,14 @@ async fn create_test_engine_with_lease(test_name: &str) -> (DefaultEmbeddedEngin
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
 single_node = true
 
+{raft_table}
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 2000
 "#,
@@ -71,7 +74,7 @@ state_machine_sync_timeout_ms = 2000
 /// # Success Criteria
 /// - Lease read returns correct value
 /// - No errors during read
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_lease_read_with_valid_lease() {
     // Given: Create engine with lease enabled
@@ -98,6 +101,8 @@ async fn test_lease_read_with_valid_lease() {
     );
 
     println!("✅ Lease read with valid lease succeeded (local read path)");
+
+    engine.stop().await.expect("stop");
 }
 
 /// Test T4: Lease Read - Multiple Reads Verifying Consistency
@@ -125,7 +130,7 @@ async fn test_lease_read_with_valid_lease() {
 /// # Success Criteria
 /// - All reads return correct sequential values
 /// - Monotonically increasing values observed
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_lease_read_consistency_across_writes() {
     // Given: Create engine with lease enabled
@@ -152,6 +157,8 @@ async fn test_lease_read_consistency_across_writes() {
     }
 
     println!("✅ Lease read consistency verified across 5 sequential writes");
+
+    engine.stop().await.expect("stop");
 }
 
 /// Test: Lease Read vs Linearizable Read - Both Return Correct Data
@@ -175,7 +182,7 @@ async fn test_lease_read_consistency_across_writes() {
 /// # Success Criteria
 /// - lease_result == linearizable_result
 /// - Both return correct committed value
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_lease_vs_linearizable_read_consistency() {
     let (engine, _temp_dir) = create_test_engine_with_lease("lease_vs_lin").await;
@@ -206,4 +213,6 @@ async fn test_lease_vs_linearizable_read_consistency() {
     );
 
     println!("✅ Lease and linearizable reads return consistent data");
+
+    engine.stop().await.expect("stop");
 }

@@ -18,6 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper to create a single-node test engine with embedded mode
 async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
@@ -28,12 +29,14 @@ async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir)
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
 single_node = true
 
+{raft_table}
 [raft.batching]
 max_batch_size = 100
 
@@ -72,7 +75,7 @@ max_batch_size = 100
 /// - System remains responsive to protocol messages
 ///
 /// **Success Criteria**: Fair scheduling, no protocol deadlocks
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_select_fairness_drain_no_starvation() {
     // Create single-node cluster
     let (engine, _temp_dir) = create_test_engine("select_fairness").await;
@@ -229,4 +232,6 @@ async fn test_select_fairness_drain_no_starvation() {
     );
 
     println!("✅ Select fairness test passed: no starvation detected");
+
+    engine.stop().await.expect("stop");
 }

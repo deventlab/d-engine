@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::fs::{self};
@@ -10,7 +9,6 @@ use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -18,8 +16,6 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::HardState;
-use d_engine_core::LogStore;
-use d_engine_core::MetaStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
@@ -29,38 +25,20 @@ use tracing::info;
 
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
-pub(crate) const HARD_STATE_KEY: &[u8] = b"hard_state";
+const PURGE_BOUNDARY_FILE_NAME: &str = "purge_boundary.bin";
 
-/// All mutable state for the log store, protected by a single Mutex.
+/// All mutable state of the file storage engine, protected by a single Mutex.
 ///
 /// Combining entries, file handle, and position index under one lock eliminates
-/// the three-lock ordering problem and makes replace_range() atomic at the
-/// memory level with no visible intermediate state.
+/// the three-lock ordering problem, and readers never see a write half applied.
 #[derive(Debug)]
-struct FileLogStoreInner {
+struct FileStorageEngineInner {
     entries: BTreeMap<u64, Entry>,
     file: File,
     /// Maps log index to the file offset of the byte *after* the entry
     /// (i.e. the start of the next entry). truncate(from) sets file length to
     /// index_end_pos[from - 1], with no extra file read required.
     index_end_pos: BTreeMap<u64, u64>,
-}
-
-/// File-based log store implementation
-#[derive(Debug)]
-pub struct FileLogStore {
-    #[allow(unused)]
-    data_dir: PathBuf,
-    inner: Mutex<FileLogStoreInner>,
-    /// Cached last index for hot-path reads without locking.
-    last_index: AtomicU64,
-}
-
-/// File-based metadata store implementation
-#[derive(Debug)]
-pub struct FileMetaStore {
-    data_dir: PathBuf,
-    data: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 /// File-based Raft log storage
@@ -82,51 +60,28 @@ pub struct FileMetaStore {
 /// via the `rocksdb` feature.
 #[derive(Debug)]
 pub struct FileStorageEngine {
-    log_store: Arc<FileLogStore>,
-    meta_store: Arc<FileMetaStore>,
     data_dir: PathBuf,
-}
-
-impl StorageEngine for FileStorageEngine {
-    type LogStore = FileLogStore;
-    type MetaStore = FileMetaStore;
-
-    #[inline]
-    fn log_store(&self) -> Arc<Self::LogStore> {
-        self.log_store.clone()
-    }
-
-    #[inline]
-    fn meta_store(&self) -> Arc<Self::MetaStore> {
-        self.meta_store.clone()
-    }
+    inner: Mutex<FileStorageEngineInner>,
+    /// Cached last index for hot-path reads without locking.
+    last_index: AtomicU64,
+    /// Directory of the hard state file.
+    meta_dir: PathBuf,
+    /// The serialized hard state, kept in memory so a read does not touch the file.
+    hard_state: Mutex<Option<Vec<u8>>>,
+    /// The last purged entry, kept in memory; persisted in `meta_dir` by `purge`.
+    purge_boundary: Mutex<Option<LogId>>,
 }
 
 impl FileStorageEngine {
-    /// Creates new file-based storage engine
+    /// Creates new file-based storage engine: the log in `data_dir/logs`, the hard state in
+    /// `data_dir/meta`.
     pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        fs::create_dir_all(&data_dir)?;
-        let log_store = Arc::new(FileLogStore::new(data_dir.join("logs"))?);
-        let meta_store = Arc::new(FileMetaStore::new(data_dir.join("meta"))?);
-        Ok(Self {
-            log_store,
-            meta_store,
-            data_dir,
-        })
-    }
+        let log_dir = data_dir.join("logs");
+        let meta_dir = data_dir.join("meta");
+        fs::create_dir_all(&log_dir)?;
+        fs::create_dir_all(&meta_dir)?;
 
-    /// Get the data directory path
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-}
-
-impl FileLogStore {
-    /// Creates new file-based log store
-    pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        fs::create_dir_all(&data_dir)?;
-
-        let log_file_path = data_dir.join("log.data");
+        let log_file_path = log_dir.join("log.data");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -134,19 +89,92 @@ impl FileLogStore {
             .truncate(false)
             .open(log_file_path)?;
 
-        let mut inner = FileLogStoreInner {
+        let mut inner = FileStorageEngineInner {
             entries: BTreeMap::new(),
             file,
             index_end_pos: BTreeMap::new(),
         };
 
-        let last_index = inner.load_from_file()?;
+        let mut last_index = inner.load_from_file()?;
 
-        Ok(Self {
+        // `purge` records the boundary before it rewrites the log, so a crash between the two
+        // leaves entries at or below the boundary in the file. They are already purged: drop them.
+        let purge_boundary = Self::load_purge_boundary_from_file(&meta_dir)?;
+        if let Some(boundary) = purge_boundary
+            && inner.entries.keys().next().is_some_and(|&first| first <= boundary.index)
+        {
+            inner.remove_up_to(boundary.index);
+            last_index = inner.entries.keys().next_back().copied().unwrap_or(0);
+        }
+
+        let engine = Self {
             data_dir,
             inner: Mutex::new(inner),
             last_index: AtomicU64::new(last_index),
-        })
+            meta_dir,
+            hard_state: Mutex::new(None),
+            purge_boundary: Mutex::new(purge_boundary),
+        };
+        engine.load_hard_state_from_file()?;
+
+        Ok(engine)
+    }
+
+    /// Get the data directory path
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// Read the purge boundary file, or `None` if `purge` never ran.
+    ///
+    /// A file that exists but does not decode is an error: the engine must not start believing
+    /// nothing was purged.
+    fn load_purge_boundary_from_file(meta_dir: &Path) -> Result<Option<LogId>, Error> {
+        let path = meta_dir.join(PURGE_BOUNDARY_FILE_NAME);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)?;
+        let boundary =
+            LogId::decode(bytes.as_slice()).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(Some(boundary))
+    }
+
+    /// Load the hard state from its file on startup.
+    fn load_hard_state_from_file(&self) -> Result<(), Error> {
+        let hard_state_path = self.meta_dir.join(HARD_STATE_FILE_NAME);
+
+        if hard_state_path.exists() {
+            let mut file = File::open(hard_state_path)?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer)?;
+
+            match bincode::deserialize::<HardState>(&buffer) {
+                Ok(_hard_state) => {
+                    *self.hard_state.lock().unwrap() = Some(buffer);
+                    info!("Loaded hard state from file");
+                }
+                Err(e) => {
+                    eprintln!("Failed to decode hard state: {e}",);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write the serialized hard state to its file.
+    fn write_hard_state_file(
+        &self,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        // The vote must survive a crash and a power loss: replace the file atomically, synced to
+        // disk, so a crash midway leaves the old hard state, never an empty or partial file.
+        super::file_state_machine::write_file_atomically(
+            &self.meta_dir.join(HARD_STATE_FILE_NAME),
+            value,
+        )?;
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -163,7 +191,7 @@ impl FileLogStore {
     }
 }
 
-impl FileLogStoreInner {
+impl FileStorageEngineInner {
     /// Load entries from file on startup. Returns the last index found.
     fn load_from_file(&mut self) -> Result<u64, Error> {
         self.file.seek(SeekFrom::Start(0))?;
@@ -236,6 +264,18 @@ impl FileLogStoreInner {
             .unwrap_or(0)
     }
 
+    /// Remove all in-memory state for indices <= up_to.
+    fn remove_up_to(
+        &mut self,
+        up_to: u64,
+    ) {
+        let keys: Vec<u64> = self.entries.range(..=up_to).map(|(&k, _)| k).collect();
+        for k in keys {
+            self.entries.remove(&k);
+            self.index_end_pos.remove(&k);
+        }
+    }
+
     /// Remove all in-memory state for indices >= from_index.
     fn remove_from_index(
         &mut self,
@@ -250,7 +290,7 @@ impl FileLogStoreInner {
 }
 
 #[async_trait]
-impl LogStore for FileLogStore {
+impl StorageEngine for FileStorageEngine {
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -278,14 +318,6 @@ impl LogStore for FileLogStore {
         Ok(())
     }
 
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error> {
-        let inner = self.inner.lock().unwrap();
-        Ok(inner.entries.get(&index).cloned())
-    }
-
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
@@ -299,6 +331,16 @@ impl LogStore for FileLogStore {
         cutoff_index: LogId,
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().unwrap();
+
+        // Record the boundary before removing anything: a crash after this point leaves the
+        // boundary with the old entries still in the file, which `new` drops. The other order
+        // could lose the entries and the boundary together, and with them the term of the last
+        // purged entry.
+        super::file_state_machine::write_file_atomically(
+            &self.meta_dir.join(PURGE_BOUNDARY_FILE_NAME),
+            &cutoff_index.encode_to_vec(),
+        )?;
+        *self.purge_boundary.lock().unwrap() = Some(cutoff_index);
 
         let entries_to_keep: Vec<Entry> = inner
             .entries
@@ -342,168 +384,24 @@ impl LogStore for FileLogStore {
         Ok(())
     }
 
-    /// Atomically truncate from `from_index` and persist `new_entries` under a single lock.
-    ///
-    /// All memory and file mutations happen within one `Mutex` critical section, so no
-    /// intermediate state is visible to concurrent readers of `last_index` or `entry()`.
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        let encoded: Vec<Vec<u8>> = new_entries.iter().map(|e| e.encode_to_vec()).collect();
-
-        let new_last = {
-            let mut inner = self.inner.lock().unwrap();
-
-            // Truncate file to the end of the last kept entry.
-            let truncate_to = inner.end_pos_before(from_index);
-            inner.file.set_len(truncate_to)?;
-
-            // Remove in-memory state for truncated range.
-            inner.remove_from_index(from_index);
-
-            // Append new entries and update in-memory state.
-            for (entry, enc) in new_entries.iter().zip(encoded.iter()) {
-                let end_pos = inner.write_encoded(enc)?;
-                inner.entries.insert(entry.index, entry.clone());
-                inner.index_end_pos.insert(entry.index, end_pos);
-            }
-
-            if !new_entries.is_empty() {
-                inner.file.flush()?;
-            }
-
-            inner.entries.keys().next_back().copied().unwrap_or(0)
-        };
-
-        self.last_index.store(new_last, Ordering::SeqCst);
-        Ok(new_last)
-    }
-
-    fn is_write_durable(&self) -> bool {
-        // File writes are buffered by the OS; sync_all() is required for crash-safety.
-        false
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        let t0 = std::time::Instant::now();
-        let mut inner = self.inner.lock().unwrap();
-        inner.file.flush()?;
-        inner.file.sync_all()?;
-        drop(inner);
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        metrics::histogram!("server.storage.file.flush_ms").record(ms);
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
-    }
-
-    async fn reset(&self) -> Result<(), Error> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.file.set_len(0)?;
-        inner.file.seek(SeekFrom::Start(0))?;
-        inner.file.flush()?;
-        inner.entries.clear();
-        inner.index_end_pos.clear();
-        self.last_index.store(0, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn last_index(&self) -> u64 {
-        self.last_index.load(Ordering::SeqCst)
-    }
-}
-
-impl Drop for FileLogStore {
-    fn drop(&mut self) {
-        if let Err(e) = self.flush() {
-            tracing::error!("Failed to flush FileLogStore on drop: {}", e);
-        } else {
-            tracing::debug!("FileLogStore flushed successfully on drop");
-        }
-    }
-}
-
-impl FileMetaStore {
-    /// Creates new file-based metadata store
-    pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        fs::create_dir_all(&data_dir)?;
-
-        let store = Self {
-            data_dir,
-            data: Mutex::new(HashMap::new()),
-        };
-
-        store.load_from_file()?;
-
-        Ok(store)
-    }
-
-    /// Load metadata from file
-    fn load_from_file(&self) -> Result<(), Error> {
-        let hard_state_path = self.data_dir.join(HARD_STATE_FILE_NAME);
-
-        if hard_state_path.exists() {
-            let mut file = File::open(hard_state_path)?;
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer)?;
-
-            match bincode::deserialize::<HardState>(&buffer) {
-                Ok(_hard_state) => {
-                    let mut data = self.data.lock().unwrap();
-                    data.insert(HARD_STATE_KEY.to_vec(), buffer);
-                    info!("Loaded hard state from file");
-                }
-                Err(e) => {
-                    eprintln!("Failed to decode hard state: {e}",);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Save metadata to file
-    fn save_to_file(
-        &self,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), Error> {
-        if key == HARD_STATE_KEY {
-            let hard_state_path = self.data_dir.join(HARD_STATE_FILE_NAME);
-            let mut file = File::create(hard_state_path)?;
-            file.write_all(value)?;
-            file.flush()?;
-        }
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl MetaStore for FileMetaStore {
     fn save_hard_state(
         &self,
         state: &HardState,
     ) -> Result<(), Error> {
         let serialized = bincode::serialize(state).map_err(StorageError::BincodeError)?;
 
-        let mut data = self.data.lock().unwrap();
-        data.insert(HARD_STATE_KEY.to_vec(), serialized.clone());
-
-        self.save_to_file(HARD_STATE_KEY, &serialized)?;
+        // Held through the write: saves never share the temporary file, and the cache
+        // only ever shows a value that reached disk.
+        let mut cached = self.hard_state.lock().unwrap();
+        self.write_hard_state_file(&serialized)?;
+        *cached = Some(serialized);
 
         info!("Persisted hard state to file");
         Ok(())
     }
 
     fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
-        let data = self.data.lock().unwrap();
-
-        match data.get(HARD_STATE_KEY) {
+        match self.hard_state.lock().unwrap().as_deref() {
             Some(bytes) => {
                 let state = bincode::deserialize(bytes).map_err(StorageError::BincodeError)?;
                 info!("Loaded hard state from memory");
@@ -517,10 +415,31 @@ impl MetaStore for FileMetaStore {
     }
 
     fn flush(&self) -> Result<(), Error> {
+        let t0 = std::time::Instant::now();
+        let mut inner = self.inner.lock().unwrap();
+        inner.file.flush()?;
+        inner.file.sync_all()?;
+        drop(inner);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        metrics::histogram!("server.storage.file.flush_ms").record(ms);
         Ok(())
     }
 
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
+    fn last_index(&self) -> u64 {
+        self.last_index.load(Ordering::SeqCst)
+    }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        Ok(*self.purge_boundary.lock().unwrap())
+    }
+}
+
+impl Drop for FileStorageEngine {
+    fn drop(&mut self) {
+        if let Err(e) = self.flush() {
+            tracing::error!("Failed to flush FileStorageEngine on drop: {}", e);
+        } else {
+            tracing::debug!("FileStorageEngine flushed successfully on drop");
+        }
     }
 }

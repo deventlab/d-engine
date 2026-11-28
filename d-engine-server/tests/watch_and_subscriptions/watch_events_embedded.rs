@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::watch::WatchEventType;
-use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
+use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper function to create a test DefaultEmbeddedEngine with RocksDB
 async fn setup_engine() -> Result<(DefaultEmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
@@ -21,11 +22,13 @@ async fn setup_engine() -> Result<(DefaultEmbeddedEngine, TempDir), Box<dyn std:
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
 
+{raft_table}
 [raft.watch]
 event_queue_size = 1000
 watcher_buffer_size = 10
@@ -34,7 +37,7 @@ watcher_buffer_size = 10
     std::fs::write(&config_path, config_content)?;
 
     // Start engine with RocksDB storage
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,
@@ -50,7 +53,7 @@ watcher_buffer_size = 10
     Ok((engine, temp_dir))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_registration() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -67,7 +70,7 @@ async fn test_embedded_watch_registration() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_receives_put_events() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -96,7 +99,7 @@ async fn test_embedded_watch_receives_put_events() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_always_available_when_compiled()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -108,16 +111,18 @@ async fn test_embedded_watch_always_available_when_compiled()
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
+{raft_table}
 "#
     );
     std::fs::write(&config_path, config_content)?;
 
     // Start engine with RocksDB storage
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,
@@ -139,7 +144,7 @@ listen_address = "127.0.0.1:{port}"
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_watch_node_crash_embedded_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Scenario:
     // 1. Node1: DefaultEmbeddedEngine.watch(key)
@@ -202,7 +207,7 @@ async fn test_watch_node_crash_embedded_mode() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_receives_delete_events() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -240,7 +245,7 @@ async fn test_embedded_watch_receives_delete_events() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -298,7 +303,7 @@ async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_multiple_watchers_same_key() -> Result<(), Box<dyn std::error::Error>>
 {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -339,28 +344,35 @@ async fn test_embedded_watch_multiple_watchers_same_key() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_integration() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("db");
 
     // Create a minimal config with Watch enabled
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_path = temp_dir.path().join("d-engine.toml");
+    let raft_table = test_raft_table();
     std::fs::write(
         &config_path,
-        r#"
+        format!(
+            r#"
 [cluster]
-listen_address = "127.0.0.1:50055" # Fixed port
+listen_address = "127.0.0.1:{port}"
 
+{raft_table}
 [raft.watch]
 event_queue_size = 1000
 watcher_buffer_size = 10
-"#,
+"#
+        ),
     )?;
 
     // Start engine with RocksDB storage
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,
@@ -427,7 +439,7 @@ watcher_buffer_size = 10
 /// #300: Prefix watcher must fire for every child key under the prefix, regardless
 /// of which specific child key is written.  Clients use this to watch an entire
 /// namespace (e.g. "/services/") without registering per-key watchers.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_prefix_watch_receives_child_key_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -473,7 +485,7 @@ async fn test_embedded_prefix_watch_receives_child_key_events()
 /// #300: A key that shares the prefix string but is not a child (e.g. "/config" with no
 /// trailing slash) must NOT be delivered to a "/config/" prefix watcher.  The slash
 /// boundary is the contract boundary for namespace isolation.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_prefix_watch_does_not_fire_for_parent_key()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -507,7 +519,7 @@ async fn test_embedded_prefix_watch_does_not_fire_for_parent_key()
 
 /// #300: Root prefix "/" must match every key written (since all paths start with "/").
 /// Useful for administrative observers that need a full-namespace view.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_root_prefix_watch_receives_all_keys()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -544,7 +556,7 @@ async fn test_embedded_root_prefix_watch_receives_all_keys()
 /// #300: `revision` in each WatchEvent must be a positive Raft applied index —
 /// it increases monotonically with each committed write.  Clients depend on this
 /// to detect gaps and decide whether to re-sync.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_event_revision_is_positive_and_increases()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -585,7 +597,7 @@ async fn test_embedded_watch_event_revision_is_positive_and_increases()
 
 /// #300: Prefix watcher handle must be automatically cleaned up when dropped, just
 /// like exact-key watchers.  No zombie entries left in the registry.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_prefix_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::error::Error>>
 {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -617,7 +629,7 @@ async fn test_embedded_prefix_watch_handle_drop_cleanup() -> Result<(), Box<dyn 
 /// #300 / fix: watch_prefix must reject prefixes that don't start and end with '/'.
 /// `InvalidPrefix` maps to an immediate `Err` at the embedded-client layer;
 /// no partial state must be left in the registry.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_prefix_invalid_format_returns_error()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;

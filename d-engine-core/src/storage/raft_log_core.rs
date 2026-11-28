@@ -1,5 +1,5 @@
 //! Direct, single-threaded implementation of `RaftLog`: `persist_entries`/
-//! `replace_range`/`purge`/`reset` execute inline on the caller's own task —
+//! `truncate`/`purge` execute inline on the caller's own task —
 //! no dedicated OS thread, no command channel. Only the physical fsync is
 //! handed off, to `FsyncWorker`'s own execution context (see fsync_worker.rs).
 
@@ -26,8 +26,6 @@ use tracing::warn;
 use crate::Error;
 use crate::HardState;
 use crate::InternalEvent;
-use crate::LogStore;
-use crate::MetaStore;
 use crate::NetworkError;
 use crate::RaftLog;
 use crate::ReplicationError;
@@ -44,8 +42,7 @@ where
 {
     node_id: u32,
 
-    pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
-    pub(crate) meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
+    pub(crate) storage: Arc<SOF<T>>,
 
     /// Max time `close()` waits for a final flush before giving up. The
     /// in-flight fsync task itself is never cancelled — it keeps running in
@@ -63,7 +60,7 @@ where
     // regardless of what's already visible in `entries`.
     pub(crate) durable_index: AtomicU64,
 
-    // How far entries have been written to the log store (page cache, not
+    // How far entries have been written to the storage engine (page cache, not
     // yet fsynced) — the frontier `persist_entries` scans forward from.
     // Advance with `fetch_max`, never a plain store: a slower concurrent
     // call must not regress a value a faster call already advanced past.
@@ -103,7 +100,7 @@ where
     // None in tests; Some(internal_event_tx) in production.
     internal_event_tx: Option<mpsc::UnboundedSender<crate::InternalEvent>>,
 
-    fsync_worker: Arc<FsyncWorker<<SOF<T> as StorageEngine>::LogStore>>,
+    fsync_worker: Arc<FsyncWorker<SOF<T>>>,
 
     // set once on first fsync failure, never cleared for this instance's lifetime
     pub(super) poisoned: Arc<AtomicBool>,
@@ -233,7 +230,7 @@ where
         entries: Vec<Entry>,
     ) -> Result<()> {
         // Fast-fail optimization, not a correctness gate — the real durability
-        // boundary is persist_pending_range()/fsync_worker. Poisoned data
+        // boundary is persist_from_memory()/fsync_worker. Poisoned data
         // reaching memory here is harmless as long as it never gets marked durable.
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
@@ -251,7 +248,7 @@ where
         // already at `memory_max_index` and no-op here (#446).
         let start = self.persisted_index.load(Ordering::Acquire) + 1;
         let end = self.memory_max_index.load(Ordering::Acquire);
-        match self.persist_pending_range(start, end, "persist").await {
+        match self.persist_from_memory(start, end, "persist").await {
             Ok(Some(mark)) => {
                 self.persisted_index.fetch_max(mark.index, Ordering::AcqRel);
                 self.fsync_worker.submit(mark, Vec::new());
@@ -357,13 +354,11 @@ where
                             )));
                         }
 
-                        // Real term conflict: truncate from diverge_index, replace with tail.
-                        // Await the done channel so callers can flush() knowing the truncation
-                        // is durable — durable_index may exceed memory_max_index after truncation,
-                        // which would cause flush() to short-circuit before the replace lands.
+                        // Real term conflict: drop the divergent tail from diverge_index and
+                        // replace it with the leader's entries.
                         self.remove_range(diverge_index..=u64::MAX);
                         self.insert_to_memory(tail);
-                        self.replace_range_and_submit(diverge_index, tail.to_vec()).await?;
+                        self.truncate_and_persist_tail(diverge_index).await?;
                     } else {
                         // No conflict — pipeline overlap consumed, append only the new tail.
                         self.append_entries(tail.to_vec()).await?;
@@ -399,13 +394,13 @@ where
         }
 
         self.remove_range(from_index..=u64::MAX);
-        self.persisted_index.fetch_min(from_index - 1, Ordering::AcqRel);
+        self.persisted_index.fetch_min(from_index.saturating_sub(1), Ordering::AcqRel);
 
         // Remove from the storage engine. Like every other write, the removal reaches disk
         // through the fsync worker: its next fsync covers whatever the engine has written.
         // No later append carries it there, so wait for that fsync here. `remove_range` above
         // already bumped the fsync generation, so this round cannot be judged stale.
-        if let Err(e) = self.log_store.truncate(from_index).await {
+        if let Err(e) = self.storage.truncate(from_index).await {
             error!(?self.node_id, "truncate_from failed (fatal): {e:?}");
             self.mark_poisoned_and_notify(format!("truncate_from failed: {e:?}"));
             return Err(e);
@@ -513,7 +508,7 @@ where
         }
         let persisted = self.persisted_index.load(Ordering::Acquire);
         if persisted < target
-            && let Some(m) = self.persist_pending_range(persisted + 1, target, "flush").await?
+            && let Some(m) = self.persist_from_memory(persisted + 1, target, "flush").await?
         {
             self.persisted_index.fetch_max(m.index, Ordering::AcqRel);
         }
@@ -530,13 +525,8 @@ where
             .map_err(|_| NetworkError::SingalSendFailed("flush channel closed".into()))?
     }
 
-    async fn reset(&self) -> Result<()> {
-        let _timer = ScopedTimer::new("raft_log_core::reset");
-        self.reset_internal().await
-    }
-
     fn load_hard_state(&self) -> Result<Option<HardState>> {
-        self.meta_store.load_hard_state()
+        self.storage.load_hard_state()
     }
 
     fn save_hard_state(
@@ -546,9 +536,9 @@ where
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
-        self.meta_store
+        self.storage
             .save_hard_state(hard_state)
-            .and_then(|()| self.meta_store.flush())
+            .and_then(|()| self.storage.flush())
             .inspect_err(|e| {
                 error!(?self.node_id, "save_hard_state failed (fatal): {e:?}");
                 self.mark_poisoned_and_notify(format!("save_hard_state failed: {e:?}"));
@@ -556,12 +546,18 @@ where
     }
 
     async fn close(&self) {
-        let timed_out = tokio::time::timeout(
+        let result = tokio::time::timeout(
             Duration::from_millis(self.shutdown_timeout_ms),
             self.flush(),
         )
-        .await
-        .is_err();
+        .await;
+        let timed_out = result.is_err();
+        if let Ok(Err(e)) = &result {
+            error!(
+                ?self.node_id,
+                "close(): flush() failed: {e:?} — entries not yet durable may be lost"
+            );
+        }
         if timed_out {
             error!(
                 ?self.node_id,
@@ -571,7 +567,6 @@ where
                 self.shutdown_timeout_ms
             );
         }
-        let _ = self.meta_store.flush();
     }
 }
 
@@ -585,9 +580,7 @@ where
         internal_event_tx: Option<mpsc::UnboundedSender<InternalEvent>>,
         shutdown_timeout_ms: u64,
     ) -> Arc<Self> {
-        let log_store = storage.log_store();
-        let meta_store = storage.meta_store();
-        let disk_len = log_store.last_index();
+        let disk_len = storage.last_index();
 
         let entries = SkipMap::new();
 
@@ -599,7 +592,7 @@ where
         // Load all entries from disk to memory
         let mut loaded_count = 0;
         if disk_len > 0 {
-            match log_store.get_entries(1..=disk_len) {
+            match storage.get_entries(1..=disk_len) {
                 Ok(all_entries) if !all_entries.is_empty() => {
                     loaded_count = all_entries.len();
                     debug!(
@@ -651,7 +644,7 @@ where
 
         // Restore purge boundary from storage so entry_term() returns the correct
         // term for the snapshot boundary entry even after a restart.
-        let (last_purged_index_val, last_purged_term_val) = match log_store.load_purge_boundary() {
+        let (last_purged_index_val, last_purged_term_val) = match storage.load_purge_boundary() {
             Ok(Some(lid)) => (lid.index, lid.term),
             Ok(None) => (0, 0),
             Err(e) => {
@@ -666,15 +659,14 @@ where
         let poisoned = Arc::new(AtomicBool::new(false));
         let fsync_worker = Arc::new(FsyncWorker::new(
             node_id,
-            log_store.clone(),
+            storage.clone(),
             poisoned.clone(),
             internal_event_tx.clone(),
         ));
 
         Arc::new(Self {
             node_id,
-            log_store,
-            meta_store,
+            storage,
             shutdown_timeout_ms,
             entries: RwLock::new(entries),
             min_index: AtomicU64::new(min_index),
@@ -762,12 +754,12 @@ where
         }
     }
 
-    /// Persists entries in `(from, to]` that aren't in the OS page cache yet
+    /// Persists entries in `[from, to]` that aren't in the OS page cache yet
     /// (no fsync). `from` / `to` are only scan bounds — the caller passes
     /// `persisted_index + 1` and a `memory_max_index` snapshot.
     ///
     /// The SkipMap range scan returns only entries that still exist. If a
-    /// concurrent term-conflict truncation removed the top of `(from, to]`
+    /// concurrent term-conflict truncation removed the top of `[from, to]`
     /// between the caller's `memory_max_index` read and this scan, those
     /// indices are simply absent and never written.
     ///
@@ -775,7 +767,7 @@ where
     /// be *below* `to` in that truncation-race case — or `None` when the scan
     /// found nothing. Callers advance `persisted_index` and submit this mark to
     /// the fsync coordinator, so neither points past a real entry.
-    async fn persist_pending_range(
+    async fn persist_from_memory(
         &self,
         from: u64,
         to: u64,
@@ -797,7 +789,7 @@ where
         };
 
         let t0 = std::time::Instant::now();
-        self.log_store.persist_entries(entries).await.inspect_err(|e| {
+        self.storage.persist_entries(entries).await.inspect_err(|e| {
             error!(
                 ?self.node_id,
                 persist_path = ctx,
@@ -924,43 +916,38 @@ where
         self.last_purged_index.store(cutoff.index, Ordering::Release);
     }
 
-    /// Truncate the log from `truncate_from` and replace with `new_entries`,
-    /// then submit the new tail for fsync. fdatasync is whole-WAL, so this also
-    /// covers any leading persist from the same turn.
-    async fn replace_range_and_submit(
+    /// Remove the divergent tail from storage, write the new tail already held in memory,
+    /// then submit it for fsync.
+    ///
+    /// Two storage writes. A crash between them leaves the log ending at `from_index - 1`,
+    /// a shorter prefix. That is safe: no new entry counts as durable before the fsync
+    /// submitted here completes, and every removed entry is above `commit_index`.
+    async fn truncate_and_persist_tail(
         &self,
-        truncate_from: u64,
-        new_entries: Vec<Entry>,
+        from_index: u64,
     ) -> Result<()> {
-        // Result is relied on immediately for protocol answers (entry_term(),
-        // AppendEntries consistency checks) — must not proceed on an
-        // already-untrusted disk.
+        debug_assert!(
+            self.memory_max_index.load(Ordering::Acquire) >= from_index,
+            "caller must insert the new tail into memory before truncating storage"
+        );
+
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
 
-        // Capture the new tail's term before `new_entries` is moved.
-        let new_tail_term = new_entries.last().map(|e| e.term).unwrap_or(0);
-        let new_tail = match self.log_store.replace_range(truncate_from, new_entries).await {
-            Ok(new_tail) => new_tail,
-            Err(e) => {
-                error!(?self.node_id, "replace_range failed (fatal): {e:?}");
-                self.mark_poisoned_and_notify(format!("replace_range failed: {e:?}"));
-                return Err(e);
-            }
-        };
-
-        if new_tail >= truncate_from {
-            self.fsync_worker.submit(
-                LogId {
-                    term: new_tail_term,
-                    index: new_tail,
-                },
-                vec![],
-            );
+        if let Err(e) = self.storage.truncate(from_index).await {
+            error!(?self.node_id, "truncate failed (fatal): {e:?}");
+            self.mark_poisoned_and_notify(format!("truncate failed: {e:?}"));
+            return Err(e);
         }
-        self.persisted_index.store(new_tail, Ordering::Release);
+        self.persisted_index.fetch_min(from_index.saturating_sub(1), Ordering::AcqRel);
 
+        let start = self.persisted_index.load(Ordering::Acquire) + 1;
+        let end = self.memory_max_index.load(Ordering::Acquire);
+        if let Some(mark) = self.persist_from_memory(start, end, "conflict").await? {
+            self.persisted_index.fetch_max(mark.index, Ordering::AcqRel);
+            self.fsync_worker.submit(mark, Vec::new());
+        }
         Ok(())
     }
 
@@ -971,7 +958,7 @@ where
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
-        if let Err(e) = self.log_store.purge(cutoff).await {
+        if let Err(e) = self.storage.purge(cutoff).await {
             error!(?self.node_id, "purge failed (fatal): {e:?}");
             self.mark_poisoned_and_notify(format!("Purge failed: {e:?}"));
             return Err(e);
@@ -1023,33 +1010,6 @@ where
                      but still running; durability is no longer guaranteed"
             );
         }
-    }
-
-    async fn reset_internal(&self) -> Result<()> {
-        // Fence first: bump generation before clearing state, so any fsync task
-        // still in flight will observe a mismatch and discard its stale result.
-        self.fsync_worker.fence_reset();
-
-        self.entries.write().clear();
-        self.durable_index.store(0, Ordering::Release);
-
-        // Reset boundaries
-        self.min_index.store(0, Ordering::Release);
-        self.memory_max_index.store(0, Ordering::Release);
-
-        // Clear term indexes to ensure consistency after reset
-        self.term_first_index.clear();
-        self.term_last_index.clear();
-        self.term_segments.clear();
-
-        if let Err(e) = self.log_store.reset().await {
-            error!(?self.node_id, "reset failed (fatal): {e:?}");
-            self.mark_poisoned_and_notify(format!("Reset failed: {e:?}"));
-            return Err(e);
-        }
-        self.persisted_index.store(0, Ordering::Release);
-
-        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -1260,13 +1220,6 @@ impl TermSegments {
             self.last_term.store(entry.term, Ordering::Release);
         }
     }
-
-    /// Reset to empty. Called on log reset (snapshot install / full rewind).
-    pub(crate) fn clear(&self) {
-        self.seg_count.store(0, Ordering::Release);
-        self.last_term.store(0, Ordering::Release);
-        self.last_term_start.store(0, Ordering::Release);
-    }
 }
 
 impl<T> std::fmt::Debug for RaftLogCore<T>
@@ -1334,8 +1287,8 @@ mod raft_properties_test;
 mod remove_range_test;
 
 #[cfg(test)]
-#[path = "raft_log_core_test/replace_range_fsync_test.rs"]
-mod replace_range_fsync_test;
+#[path = "raft_log_core_test/conflict_replacement_fsync_test.rs"]
+mod conflict_replacement_fsync_test;
 
 #[cfg(test)]
 #[path = "raft_log_core_test/shutdown_test.rs"]

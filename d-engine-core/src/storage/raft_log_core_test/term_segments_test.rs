@@ -124,37 +124,6 @@ fn test_term_segments_truncation_reappend_pulls_start_back() {
     assert_eq!(ts.get(7), Some(2));
 }
 
-/// clear() resets all state; get() returns None afterwards.
-#[test]
-fn test_term_segments_clear_resets_state() {
-    let ts = TermSegments::new();
-    ts.on_append(&entries(1..=10, 1));
-    ts.on_append(&entries(11..=20, 2));
-    assert_eq!(ts.get(5), Some(1));
-    assert_eq!(ts.get(15), Some(2));
-
-    ts.clear();
-
-    assert_eq!(ts.get(1), None);
-    assert_eq!(ts.get(15), None);
-}
-
-/// After clear(), the structure can be reused from scratch.
-/// Note: TermSegments.get() does not enforce log bounds — that is entry_term()'s job.
-/// After re-appending [1..5] term=3, last_term_start=1, so any index >= 1 returns Some(3).
-#[test]
-fn test_term_segments_reuse_after_clear() {
-    let ts = TermSegments::new();
-    ts.on_append(&entries(1..=10, 1));
-    ts.clear();
-
-    ts.on_append(&entries(1..=5, 3)); // new epoch, different term
-    assert_eq!(ts.get(3), Some(3));
-    assert_eq!(ts.get(5), Some(3));
-    // Index 0 is below last_term_start=1 and seg_count=0 → None
-    assert_eq!(ts.get(0), None);
-}
-
 // ---------------------------------------------------------------------------
 // End-to-end via entry_term() (full-stack integration)
 // ---------------------------------------------------------------------------
@@ -244,22 +213,4 @@ async fn test_entry_term_after_truncation_reappend() {
     }
     assert_eq!(ctx.raft_log.entry_term(6), Some(2));
     assert_eq!(ctx.raft_log.entry_term(1), Some(1));
-}
-
-#[tokio::test]
-async fn test_entry_term_after_reset_returns_none() {
-    let ctx = ctx("ts_e2e_reset");
-    for i in 1u64..=5 {
-        ctx.raft_log
-            .append_entries(vec![Entry {
-                index: i,
-                term: 1,
-                payload: None,
-            }])
-            .await
-            .unwrap();
-    }
-    assert_eq!(ctx.raft_log.entry_term(3), Some(1));
-    ctx.raft_log.reset().await.unwrap();
-    assert_eq!(ctx.raft_log.entry_term(1), None);
 }

@@ -54,7 +54,6 @@ use d_engine_core::RaftLogCore;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::StateMachine;
-use d_engine_core::StorageEngine;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::ROF;
@@ -173,7 +172,7 @@ pub fn setup_raft_components(
     let path = PathBuf::from(db_path);
     let storage_engine = Arc::new(FileStorageEngine::new(path).unwrap());
     if restart {
-        storage_engine.log_store().reset_sync().unwrap();
+        storage_engine.reset_sync().unwrap();
     }
 
     let buffered_raft_log = RaftLogCore::new(id, storage_engine.clone(), None, 5000);

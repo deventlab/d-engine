@@ -2,32 +2,28 @@
 //!
 //! Scenario:
 //!
-//! 1. Create a cluster with 3 nodes (1, 2, 3).
-//! 2. Node 1 appends 3 log entries with Term=1.
-//! 3. Node 2 appends 4 log entries with Term=1.
-//! 4. Node 3 appends 10 log entries with Term=2.
-//! 5. All three node state machine has log1, 2, 3
-//! 6. Node 3 will be Leader
-//! 7. According to the config `max_log_entries_before_snapshot = 1`, snapshot should be generated
-//!    in node 3
+//! 1. Create a cluster with 3 nodes (1, 2, 3). All of them hold entries 1..=3 from term 1.
+//! 2. Node 2 also holds entry 4 from term 1.
+//! 3. In term 2, node 1 voted for node 3, which became leader and wrote entries 4..=10 but did
+//!    not replicate them. Node 2 was unreachable and is still in term 1.
+//! 4. The cluster restarts. Node 2 or node 3 becomes leader of term 3; node 3's entries 4..=10 were
+//!    never committed, so either outcome is legal.
+//! 5. With `max_log_entries_before_snapshot = 1`, node 3 generates a snapshot.
 //!
 //! Expected Result:
 //!
-//! - Node 3 becomes the leader
-//! - last_commit_index is 10
-//! - Node 1 and 2's log-3's term is 2
+//! - Node 3 has a snapshot and has purged log entries 1..=3
 
+use d_engine_core::storage_engine_test::EntryAt;
 use std::time::Duration;
 
 use d_engine_core::ClientApiError;
-use d_engine_server::LogStore;
-use d_engine_server::StorageEngine;
+use d_engine_proto::server::election::VotedFor;
 use tokio::time::sleep;
 use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;
 use crate::common::TestContext;
-use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
 use crate::common::check_path_contents;
 use crate::common::create_bootstrap_urls;
@@ -41,6 +37,7 @@ use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
+use crate::common::wait_for_stable_leader;
 
 // Constants for test configuration
 const SNAPSHOT_CASE1_DIR: &str = "snapshot/case1";
@@ -72,11 +69,28 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1).await;
-    init_hard_state(&r1, 1, None);
+    // Node 1 voted for node 3 in term 2: that is how node 3 could lead term 2.
+    init_hard_state(
+        &r1,
+        2,
+        Some(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 2,
+            committed: false,
+        }),
+    );
     manipulate_log(&r2, vec![1, 2, 3, 4], 1).await;
     init_hard_state(&r2, 1, None);
     manipulate_log(&r3, (1..=3).collect(), 1).await;
-    init_hard_state(&r3, 2, None);
+    init_hard_state(
+        &r3,
+        2,
+        Some(VotedFor {
+            voted_for_id: 3,
+            voted_for_term: 2,
+            committed: true,
+        }),
+    );
     manipulate_log(&r3, (4..=last_log_id).collect(), 2).await;
 
     // Start cluster nodes
@@ -130,14 +144,15 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         ctx.node_handles.push(node_handle);
     }
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
-
     // Verify cluster is ready
     for port in ports {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
     println!("[test_snapshot_scenario] Cluster started. Running tests...");
+
+    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
+    wait_for_stable_leader(client_manager.client()).await?;
 
     // Poll instead of a fixed sleep + single assert: a fixed window races CI
     // scheduling jitter (see the election_timeout widening above for why that
@@ -157,14 +172,26 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     }
 
     // Verify state machine data via client API (snapshot has been applied to leader)
-    let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
 
     // Verify data via client API - this confirms snapshot was applied and committed
     test_put_get(&mut client_manager, 3, 3).await?;
 
-    // Verify raft log been purged (log entries before snapshot should be deleted)
-    for i in 1..=3 {
-        assert!(r3.log_store().entry(i).await.unwrap().is_none());
+    // Verify raft log been purged (log entries before snapshot should be deleted). The purge runs
+    // after the snapshot file appears, so wait for it instead of checking once.
+    let purge_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let mut purged = true;
+        for i in 1..=3 {
+            purged &= r3.entry_at(i).unwrap().is_none();
+        }
+        if purged {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < purge_deadline,
+            "node 3 did not purge log entries 1..=3 within 15s of its snapshot"
+        );
+        sleep(Duration::from_millis(200)).await;
     }
 
     // Clean up

@@ -13,8 +13,9 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::TempDir;
 
+use super::RocksDBStateMachine;
 use super::RocksDBStorageEngine;
-use super::RocksDBUnifiedEngine;
+use super::open_rocksdb;
 use crate::Error;
 use crate::StateMachine;
 
@@ -45,7 +46,7 @@ impl RocksDBStateMachineBuilder {
     }
 
     fn open_current(&self) -> Result<Arc<dyn StateMachine>, Error> {
-        let (storage, sm) = RocksDBUnifiedEngine::open(self.current_dir())?;
+        let (storage, sm) = open_rocksdb(self.current_dir())?;
         *self.storage.lock().unwrap() = Some(storage);
         Ok(Arc::new(sm))
     }
@@ -71,7 +72,7 @@ impl StateMachineBuilder for RocksDBStateMachineBuilder {
         let image = self.temp_dir.path().join("rocksdb_sm_crash_image");
         let _ = std::fs::remove_dir_all(&image);
         copy_storage_dir(&self.current_dir(), &image)?;
-        let (storage, sm) = RocksDBUnifiedEngine::open(&image)?;
+        let (storage, sm) = open_rocksdb(&image)?;
         *self.image_storage.lock().unwrap() = Some(storage);
         Ok(Some(Arc::new(sm)))
     }
@@ -138,7 +139,7 @@ async fn test_rocksdb_state_machine_performance() {
 #[tokio::test]
 async fn test_scan_prefix_returns_only_matching_keys() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[
         insert_at(b"/services/node1", b"10.0.0.1", 1),
@@ -171,7 +172,7 @@ async fn test_scan_prefix_returns_only_matching_keys() {
 #[tokio::test]
 async fn test_scan_prefix_upper_bound_excludes_adjacent_namespace() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[
         insert_at(b"/services/last", b"v", 1),
@@ -197,7 +198,7 @@ async fn test_scan_prefix_upper_bound_excludes_adjacent_namespace() {
 #[tokio::test]
 async fn test_scan_prefix_empty_namespace_returns_empty_vec() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"/other/key", b"v", 1)]).await.unwrap();
 
@@ -219,7 +220,7 @@ async fn test_scan_prefix_empty_namespace_returns_empty_vec() {
 #[tokio::test]
 async fn test_scan_prefix_revision_reflects_applied_index() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     // Apply 3 entries as a single chunk; last_applied_index becomes 3
     sm.apply_chunk(&[
@@ -248,7 +249,7 @@ async fn test_scan_prefix_revision_reflects_applied_index() {
 #[tokio::test]
 async fn test_scan_prefix_0xff_suffix_carry_propagation() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     // Key: b"/\xFF/node1" — prefix b"/\xFF/" ends with 0xFF then 0x2F
     // Use a simpler case: prefix = b"a\xFF", key = b"a\xFFnode"
@@ -282,7 +283,7 @@ async fn test_scan_prefix_0xff_suffix_carry_propagation() {
 #[tokio::test]
 async fn test_scan_prefix_empty_prefix_returns_empty() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"/services/node1", b"v", 1)]).await.unwrap();
 
@@ -304,7 +305,7 @@ async fn test_scan_prefix_empty_prefix_returns_empty() {
 #[tokio::test]
 async fn test_scan_prefix_all_0xff_no_upper_bound() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     // Key that starts with [0xFF, 0xFF] — sits at the very top of the keyspace.
     let prefix: &[u8] = b"\xFF\xFF";
@@ -343,7 +344,7 @@ async fn test_scan_prefix_all_0xff_no_upper_bound() {
 #[tokio::test]
 async fn test_get_multi_rocksdb_snapshot_reads_consistent_state() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     // Apply v1: initial deployment state
     sm.apply_chunk(&[
@@ -435,7 +436,7 @@ async fn test_get_multi_rocksdb_snapshot_reads_consistent_state() {
 #[tokio::test]
 async fn test_get_multi_single_key_present_returns_value() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
 
@@ -449,7 +450,7 @@ async fn test_get_multi_single_key_present_returns_value() {
 #[tokio::test]
 async fn test_get_multi_single_key_absent_returns_none() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     let result = sm.get_multi(&[Bytes::from_static(b"missing")]).unwrap();
     assert_eq!(result, vec![None]);
@@ -462,7 +463,7 @@ async fn test_get_multi_single_key_absent_returns_none() {
 #[tokio::test]
 async fn test_get_multi_single_key_matches_get_for_present_and_absent_keys() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
 
@@ -487,7 +488,7 @@ async fn test_get_multi_single_key_matches_get_for_present_and_absent_keys() {
 #[tokio::test]
 async fn test_get_multi_single_key_reflects_latest_applied_value() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"/svc/version", b"v1", 1)]).await.unwrap();
     let v1_result = sm.get_multi(&[Bytes::from_static(b"/svc/version")]).unwrap();
@@ -504,7 +505,7 @@ async fn test_get_multi_single_key_reflects_latest_applied_value() {
 #[tokio::test]
 async fn test_get_multi_empty_keys_returns_empty_vec() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     let result = sm.get_multi(&[]).unwrap();
     assert_eq!(result, Vec::<Option<Bytes>>::new());
@@ -517,7 +518,7 @@ async fn test_get_multi_empty_keys_returns_empty_vec() {
 #[tokio::test]
 async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[
         insert_at(b"/svc/addr", b"10.0.0.1:8080", 1),
@@ -568,7 +569,7 @@ async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
 #[tokio::test]
 async fn test_close_prevents_reads() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
     assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from_static(b"v")));
 
@@ -589,7 +590,7 @@ async fn test_close_prevents_reads() {
 #[test]
 fn test_close_twice_is_safe() {
     let dir = TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
     sm.close().unwrap();
     sm.close().unwrap();
     assert!(sm.get(b"k").is_err(), "still closed after the second close");
@@ -602,7 +603,7 @@ fn test_close_twice_is_safe() {
 async fn test_drop_after_close_does_not_panic() {
     let dir = TempDir::new().unwrap();
     {
-        let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+        let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
         sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
         sm.close().unwrap();
         // sm drops here — Drop must be a no-op
@@ -662,7 +663,7 @@ fn cas_at(
 #[tokio::test]
 async fn test_apply_chunk_cas_match_succeeds_and_writes_new_value() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     // Pre-populate key
     sm.apply_chunk(&[insert_at(b"k", b"old", 1)]).await.unwrap();
@@ -682,7 +683,7 @@ async fn test_apply_chunk_cas_match_succeeds_and_writes_new_value() {
 #[tokio::test]
 async fn test_apply_chunk_cas_mismatch_returns_failure_and_preserves_value() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"k", b"current", 1)]).await.unwrap();
 
@@ -703,7 +704,7 @@ async fn test_apply_chunk_cas_mismatch_returns_failure_and_preserves_value() {
 #[tokio::test]
 async fn test_apply_chunk_cas_none_expected_on_absent_key_succeeds() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     let results = sm.apply_chunk(&[cas_at(b"new_key", None, b"value", 1)]).await.unwrap();
 
@@ -718,7 +719,7 @@ async fn test_apply_chunk_cas_none_expected_on_absent_key_succeeds() {
 #[tokio::test]
 async fn test_apply_chunk_cas_none_expected_on_existing_key_fails() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"k", b"exists", 1)]).await.unwrap();
 
@@ -741,7 +742,7 @@ async fn test_apply_chunk_cas_none_expected_on_existing_key_fails() {
 #[tokio::test]
 async fn test_apply_chunk_two_cas_same_key_second_must_see_first_write() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"k", b"v0", 1)]).await.unwrap();
 
@@ -771,7 +772,7 @@ async fn test_apply_chunk_two_cas_same_key_second_must_see_first_write() {
 #[tokio::test]
 async fn test_apply_chunk_delete_removes_key() {
     let dir = tempfile::TempDir::new().unwrap();
-    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    let (_storage, sm) = open_rocksdb(dir.path()).unwrap();
 
     sm.apply_chunk(&[insert_at(b"to_delete", b"v", 1)]).await.unwrap();
     sm.apply_chunk(&[delete_at(b"to_delete", 2)]).await.unwrap();
@@ -791,7 +792,7 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
 
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("rocksdb");
-    let (_storage, sm) = RocksDBUnifiedEngine::open(&db_path).unwrap();
+    let sm = RocksDBStateMachine::new(&db_path).unwrap();
 
     // Confirm the state machine works normally first
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
@@ -858,8 +859,7 @@ async fn test_snapshot_join_error_reports_cancellation() {
 async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join("test_applied_snapshot");
-    let (_storage, state_machine) =
-        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    let (_storage, state_machine) = open_rocksdb(&db_path).expect("Failed to open unified DB");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -876,7 +876,7 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
     drop(state_machine);
     drop(_storage);
     let (_storage, state_machine) =
-        RocksDBUnifiedEngine::open(temp_dir.path().join("test_behind")).expect("open behind");
+        open_rocksdb(temp_dir.path().join("test_behind")).expect("open behind");
     assert_eq!(state_machine.last_applied(), LogId::default());
 
     let checksum = compute_checksum_from_folder_path(&snapshot_dir)
@@ -907,8 +907,7 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
 async fn test_snapshot_taken_during_writes_exports_position_equal_to_data() {
     for attempt in 0..3 {
         let source_dir = TempDir::new().expect("source dir");
-        let (source_storage, source) =
-            RocksDBUnifiedEngine::open(source_dir.path()).expect("open source");
+        let (source_storage, source) = open_rocksdb(source_dir.path()).expect("open source");
         let source = Arc::new(source);
 
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -940,8 +939,7 @@ async fn test_snapshot_taken_during_writes_exports_position_equal_to_data() {
         let target_dir = TempDir::new().expect("target dir");
         let target_path = target_dir.path().join("target");
         {
-            let (_target_storage, target) =
-                RocksDBUnifiedEngine::open(&target_path).expect("open target");
+            let (_target_storage, target) = open_rocksdb(&target_path).expect("open target");
             let checksum =
                 compute_checksum_from_folder_path(&snapshot_dir).await.expect("checksum");
             let metadata = SnapshotMetadata {
@@ -955,8 +953,7 @@ async fn test_snapshot_taken_during_writes_exports_position_equal_to_data() {
         drop(source_storage);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let (_restarted_storage, restarted) =
-            RocksDBUnifiedEngine::open(&target_path).expect("reopen target");
+        let (_restarted_storage, restarted) = open_rocksdb(&target_path).expect("reopen target");
         let position = restarted.last_applied().index;
         let data: u64 = restarted
             .get(b"orders")
@@ -980,7 +977,7 @@ async fn test_snapshot_taken_during_writes_exports_position_equal_to_data() {
 #[tokio::test]
 async fn test_state_machine_database_opens_with_atomic_flush() {
     let dir = TempDir::new().expect("dir");
-    let (_storage, _sm) = RocksDBUnifiedEngine::open(dir.path()).expect("open");
+    let _sm = RocksDBStateMachine::new(dir.path()).expect("open");
 
     let options_file = std::fs::read_dir(dir.path())
         .expect("read db dir")
