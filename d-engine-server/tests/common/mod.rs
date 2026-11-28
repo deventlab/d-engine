@@ -94,6 +94,18 @@ impl TestContext {
 //     println!("setup logger for unit test.");
 // }
 
+/// Client request timeout for tests (`general_raft_timeout_duration_in_ms`).
+///
+/// The 50ms default bounds one whole client request, and a write includes a physical fsync: a
+/// loaded CI runner can stretch that past 50ms. Tests that check timeout behavior set their own
+/// value.
+pub const TEST_CLIENT_TIMEOUT_MS: u64 = 5000;
+
+/// The `[raft]` table every test config starts from; tests that write their own TOML include it.
+pub fn test_raft_table() -> String {
+    format!("[raft]\ngeneral_raft_timeout_duration_in_ms = {TEST_CLIENT_TIMEOUT_MS}\n")
+}
+
 pub async fn create_node_config(
     node_id: u64,
     port: u16,
@@ -123,7 +135,7 @@ pub async fn create_node_config(
         ]
 
         [raft]
-        general_raft_timeout_duration_in_ms = 5000
+        general_raft_timeout_duration_in_ms = {TEST_CLIENT_TIMEOUT_MS}
 
         [raft.election]
         election_timeout_min = 300
@@ -528,7 +540,7 @@ initial_cluster = [
 ]
 
 [raft]
-general_raft_timeout_duration_in_ms = 5000
+general_raft_timeout_duration_in_ms = {TEST_CLIENT_TIMEOUT_MS}
 [raft.election]
 election_timeout_min = 3000
 election_timeout_max = 6000

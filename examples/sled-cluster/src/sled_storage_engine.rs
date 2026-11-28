@@ -111,37 +111,6 @@ impl StorageEngine for SledStorageEngine {
         Ok(())
     }
 
-    /// Atomically truncate from `from_index` and persist `new_entries` in one sled Batch.
-    ///
-    /// Combines removes and inserts in a single `apply_batch()` call, which sled guarantees
-    /// to be atomic. Eliminates the two-batch window of the default implementation.
-    ///
-    /// Note: sled has no range-delete; keys >= from_index must be scanned before removal.
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64> {
-        let new_last = new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
-        let mut batch = sled::Batch::default();
-
-        // collect and remove all keys >= from_index
-        let start_key = SledStorageEngine::index_to_key(from_index);
-        for item in self.tree.range(start_key..) {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.remove(key);
-        }
-
-        // insert new entries in same batch
-        for entry in &new_entries {
-            let key = SledStorageEngine::index_to_key(entry.index);
-            batch.insert(key.as_ref(), entry.encode_to_vec());
-        }
-
-        self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(new_last)
-    }
-
     fn save_hard_state(
         &self,
         state: &HardState,

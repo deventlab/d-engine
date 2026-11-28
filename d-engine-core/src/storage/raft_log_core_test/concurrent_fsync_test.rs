@@ -171,7 +171,7 @@ async fn test_majority_matched_index_uses_durable_not_memory() {
 /// then verify every entry's term matches what was written.
 ///
 /// Doubles as a concurrency check for the inline architecture: `append_entries`
-/// now executes `persist_pending_range` + `persisted_index.fetch_max` directly
+/// now executes `persist_from_memory` + `persisted_index.fetch_max` directly
 /// on the caller's own task, so this test exercises genuinely concurrent
 /// callers racing that path, not just concurrent readers.
 #[tokio::test]

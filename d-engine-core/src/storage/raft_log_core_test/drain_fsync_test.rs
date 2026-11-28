@@ -268,14 +268,14 @@ async fn test_fsync_failure_poisons_and_rejects_later_writes() {
     raft_log.close().await;
 }
 
-/// A `replace_range()` failure (conflict-resolution truncate+write) poisons
-/// the log, same as persist_entries/fsync failures — disk state is uncertain
+/// A `truncate()` failure while resolving a term conflict poisons the log,
+/// same as persist_entries/fsync failures — disk state is uncertain
 /// either way. Exercised end-to-end via `filter_out_conflicts_and_append`'s
 /// real conflict-truncation path, not by forcing the flag directly.
 #[tokio::test]
-async fn test_replace_range_failure_poisons() {
-    let storage = Arc::new(MockStorageEngine::replace_range_fails(
-        "replace_range_failure_poisons".into(),
+async fn test_conflict_truncate_failure_poisons() {
+    let storage = Arc::new(MockStorageEngine::truncate_fails(
+        "conflict_truncate_failure_poisons".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
     std::thread::sleep(Duration::from_millis(10)); // let the spawned fsync task start
@@ -304,7 +304,7 @@ async fn test_replace_range_failure_poisons() {
     sleep(Duration::from_millis(20)).await;
 
     // A new leader (term 2) overwrites from index 2 onward — a real conflict
-    // that must truncate + replace, routing through `replace_range_and_submit`.
+    // that must truncate + replace, routing through `truncate_and_persist_tail`.
     let result = raft_log
         .filter_out_conflicts_and_append(
             1,
@@ -326,12 +326,12 @@ async fn test_replace_range_failure_poisons() {
         .await;
     assert!(
         result.is_err(),
-        "the failed replace_range() must surface as an error"
+        "the failed truncate() must surface as an error"
     );
 
     assert!(
         raft_log.is_poisoned(),
-        "a replace_range() failure must poison the log — disk state is uncertain"
+        "a truncate() failure must poison the log — disk state is uncertain"
     );
 
     let append_result = raft_log
@@ -344,6 +344,96 @@ async fn test_replace_range_failure_poisons() {
     assert!(
         append_result.is_err(),
         "writes must be rejected once poisoned"
+    );
+}
+
+/// Resolving a term conflict takes two storage writes: `truncate()` removes the divergent
+/// tail, then `persist_entries()` writes the new one. If the second write fails after the
+/// first succeeded, the disk holds a shorter log than memory, so the log must be poisoned
+/// exactly like a failed `truncate()` — no further write may be accepted.
+#[tokio::test]
+async fn test_conflict_persist_failure_after_truncate_poisons() {
+    let truncate_calls = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let persist_should_fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut mock = MockStorageEngine::new();
+    mock.expect_last_index().returning(|| 0);
+    {
+        let should_fail = persist_should_fail.clone();
+        mock.expect_persist_entries().returning(move |_| {
+            if should_fail.load(Ordering::Acquire) {
+                Err(Error::Fatal("simulated persist failure".into()))
+            } else {
+                Ok(())
+            }
+        });
+    }
+    {
+        let calls = truncate_calls.clone();
+        mock.expect_truncate().returning(move |from| {
+            calls.lock().unwrap().push(from);
+            Ok(())
+        });
+    }
+    mock.expect_entry().returning(|_| Ok(None));
+    mock.expect_get_entries().returning(|_| Ok(vec![]));
+    mock.expect_purge().returning(|_| Ok(()));
+    mock.expect_load_purge_boundary().returning(|| Ok(None));
+    mock.expect_flush().returning(|| Ok(()));
+    mock.expect_save_hard_state().returning(|_| Ok(()));
+    mock.expect_load_hard_state().returning(|| Ok(None));
+
+    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(mock), None, 5000);
+
+    // Base log: 1..=3 at term 1, written while healthy.
+    let base = (1..=3)
+        .map(|i| Entry {
+            index: i,
+            term: 1,
+            payload: None,
+        })
+        .collect();
+    raft_log.append_entries(base).await.unwrap();
+
+    // New leader (term 2) conflicts at index 2. truncate(2) succeeds, the write of the
+    // new tail fails.
+    persist_should_fail.store(true, Ordering::Release);
+    let new_tail = (2..=3)
+        .map(|i| Entry {
+            index: i,
+            term: 2,
+            payload: None,
+        })
+        .collect();
+    let result = raft_log.filter_out_conflicts_and_append(1, 1, new_tail, 0).await;
+
+    assert_eq!(
+        *truncate_calls.lock().unwrap(),
+        vec![2],
+        "the divergent tail must be removed from index 2 before the new tail is written"
+    );
+    match result {
+        Err(Error::Fatal(msg)) => assert!(
+            msg.contains("simulated persist failure"),
+            "the caller must get the failed write's own error, got: {msg}"
+        ),
+        other => panic!("expected the persist failure to surface, got: {other:?}"),
+    }
+    assert!(
+        raft_log.is_poisoned(),
+        "a failed write after a successful truncate must poison the log"
+    );
+
+    let append_result = raft_log
+        .append_entries(vec![Entry {
+            index: 4,
+            term: 2,
+            payload: None,
+        }])
+        .await;
+    assert!(
+        append_result.is_err(),
+        "writes after the failure must be rejected"
     );
 }
 
@@ -457,20 +547,20 @@ async fn test_poisoned_rejects_save_hard_state() {
 
 // ============================================================================
 // Gap fix: run_storage_tasks now checks is_poisoned() before executing
-// ReplaceRange/Purge/Reset, instead of only checking it in run_batch_turn's
+// conflict truncation/Purge, instead of only checking it in run_batch_turn's
 // drain loop (which missed the direct-dispatch path in batch_processor's
 // top-level select, and the "just poisoned mid-turn" race).
 // ============================================================================
 
-/// Once already poisoned, `ReplaceRange` must be rejected immediately
-/// without ever calling `storage.replace_range()`. Proven by checking the
+/// Once already poisoned, a term-conflict replacement must be rejected
+/// immediately without ever calling `storage.truncate()`. Proven by checking the
 /// error message: if the underlying mock's own failure ("simulated
-/// replace_range failure") had been reached, the message would differ from
+/// truncate failure") had been reached, the message would differ from
 /// the immediate "raft log storage is poisoned" rejection.
 #[tokio::test]
-async fn test_poisoned_skips_replace_range() {
-    let storage = Arc::new(MockStorageEngine::replace_range_fails(
-        "poisoned_skips_replace_range".into(),
+async fn test_poisoned_skips_conflict_truncate() {
+    let storage = Arc::new(MockStorageEngine::truncate_fails(
+        "poisoned_skips_conflict_truncate".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
     std::thread::sleep(Duration::from_millis(10));
@@ -523,7 +613,7 @@ async fn test_poisoned_skips_replace_range() {
     match result {
         Err(Error::Fatal(msg)) => assert!(
             msg.contains("poisoned"),
-            "expected the poisoned short-circuit to fire before replace_range() \
+            "expected the poisoned short-circuit to fire before truncate() \
              was ever called, got: {msg}"
         ),
         other => panic!("expected Err(Fatal(\"...poisoned...\")), got: {other:?}"),
@@ -534,7 +624,7 @@ async fn test_poisoned_skips_replace_range() {
 /// calling `storage.purge()`. Proven by checking the error message: if the
 /// underlying mock's own failure had been reached, the message would differ
 /// from the immediate "raft log storage is poisoned" rejection — the same
-/// pattern `test_poisoned_skips_replace_range` uses. `purge_and_advance` now
+/// pattern `test_poisoned_skips_conflict_truncate` uses. `purge_and_advance` now
 /// returns `Result<()>` directly, so this is no longer just a weak check.
 #[tokio::test]
 async fn test_poisoned_skips_purge() {
@@ -583,10 +673,10 @@ async fn test_new_raft_log_core_starts_unpoisoned() {
 
 /// A `persist_entries()` (page-cache write) failure poisons the log, exactly
 /// like an fsync failure does — these are two independent failure surfaces
-/// (`persist_pending_range` vs `FsyncWorker::run_until_caught_up`) and both
+/// (`persist_from_memory` vs `FsyncWorker::run_until_caught_up`) and both
 /// must reach the same fatal outcome.
 ///
-/// `persist_pending_range` now runs inline, awaited directly inside
+/// `persist_from_memory` now runs inline, awaited directly inside
 /// `append_entries`, so the poison lands synchronously — this same call
 /// returns `Err`, not just some later one.
 ///
@@ -601,7 +691,7 @@ async fn test_persist_entries_failure_poisons() {
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
     std::thread::sleep(Duration::from_millis(10));
 
-    // persist_pending_range hits the mock's first (failing) persist_entries()
+    // persist_from_memory hits the mock's first (failing) persist_entries()
     // inline — this call itself must fail, not a later one.
     let result = raft_log
         .append_entries(vec![Entry {
@@ -713,9 +803,6 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_replace_range().returning(|from, new_entries| {
-        Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
-    });
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -788,8 +875,6 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_replace_range()
-        .returning(|from, e| Ok(e.last().map(|x| x.index).unwrap_or(from.saturating_sub(1))));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -845,9 +930,6 @@ async fn test_save_hard_state_flushes_before_returning() {
     let mut mock = MockStorageEngine::new();
     mock.expect_last_index().returning(|| 0);
     mock.expect_persist_entries().returning(|_| Ok(()));
-    mock.expect_replace_range().returning(|from, entries| {
-        Ok(entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
-    });
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));

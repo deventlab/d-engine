@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
 
+use crate::common::TEST_CLIENT_TIMEOUT_MS;
 use crate::common::get_available_ports;
 
 /// Purpose: a second `start()` on an already-locked data_dir must fail
@@ -17,6 +18,10 @@ async fn test_second_start_on_same_data_dir_fails_first_unaffected() {
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var(
+            "RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS",
+            TEST_CLIENT_TIMEOUT_MS.to_string(),
+        );
+        std::env::set_var(
             "RAFT__CLUSTER__LISTEN_ADDRESS",
             format!("127.0.0.1:{}", ports[0]),
         );
@@ -26,6 +31,7 @@ async fn test_second_start_on_same_data_dir_fails_first_unaffected() {
         .expect("first start must succeed");
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
+        std::env::remove_var("RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
     engine1
@@ -36,6 +42,10 @@ async fn test_second_start_on_same_data_dir_fails_first_unaffected() {
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
         std::env::set_var(
+            "RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS",
+            TEST_CLIENT_TIMEOUT_MS.to_string(),
+        );
+        std::env::set_var(
             "RAFT__CLUSTER__LISTEN_ADDRESS",
             format!("127.0.0.1:{}", ports[1]),
         );
@@ -43,6 +53,7 @@ async fn test_second_start_on_same_data_dir_fails_first_unaffected() {
     let second = DefaultEmbeddedEngine::start(temp_dir.path()).await;
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
+        std::env::remove_var("RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
     // Must fail with the data_dir lock's own error — not a RocksDB-level `LOCK`

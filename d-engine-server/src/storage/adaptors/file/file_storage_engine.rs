@@ -29,8 +29,7 @@ const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
 /// All mutable state of the file storage engine, protected by a single Mutex.
 ///
 /// Combining entries, file handle, and position index under one lock eliminates
-/// the three-lock ordering problem and makes replace_range() atomic at the
-/// memory level with no visible intermediate state.
+/// the three-lock ordering problem, and readers never see a write half applied.
 #[derive(Debug)]
 struct FileStorageEngineInner {
     entries: BTreeMap<u64, Entry>,
@@ -340,45 +339,6 @@ impl StorageEngine for FileStorageEngine {
         self.last_index.store(new_last, Ordering::SeqCst);
 
         Ok(())
-    }
-
-    /// Atomically truncate from `from_index` and persist `new_entries` under a single lock.
-    ///
-    /// All memory and file mutations happen within one `Mutex` critical section, so no
-    /// intermediate state is visible to concurrent readers of `last_index` or `entry()`.
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        let encoded: Vec<Vec<u8>> = new_entries.iter().map(|e| e.encode_to_vec()).collect();
-
-        let new_last = {
-            let mut inner = self.inner.lock().unwrap();
-
-            // Truncate file to the end of the last kept entry.
-            let truncate_to = inner.end_pos_before(from_index);
-            inner.file.set_len(truncate_to)?;
-
-            // Remove in-memory state for truncated range.
-            inner.remove_from_index(from_index);
-
-            // Append new entries and update in-memory state.
-            for (entry, enc) in new_entries.iter().zip(encoded.iter()) {
-                let end_pos = inner.write_encoded(enc)?;
-                inner.entries.insert(entry.index, entry.clone());
-                inner.index_end_pos.insert(entry.index, end_pos);
-            }
-
-            if !new_entries.is_empty() {
-                inner.file.flush()?;
-            }
-
-            inner.entries.keys().next_back().copied().unwrap_or(0)
-        };
-
-        self.last_index.store(new_last, Ordering::SeqCst);
-        Ok(new_last)
     }
 
     fn save_hard_state(

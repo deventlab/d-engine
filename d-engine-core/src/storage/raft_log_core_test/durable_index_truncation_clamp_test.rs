@@ -88,15 +88,16 @@ async fn test_durable_index_lands_on_new_tail_after_truncate_and_resync() {
 ///    `append_entries` returned immediately and the gated persist ran elsewhere).
 /// 2. New leader (term 2): index 2 conflicts, on a second task, concurrent with the still-gated
 ///    persist from step 1. In-memory truncation (`remove_range`) is synchronous, so it's visible
-///    immediately; the `replace_range_and_submit` await behind it does not depend on step 1's gate
-///    at all — the two tasks touch independent code paths, only `entries`'s `RwLock` briefly
-///    serializes them.
+///    immediately. The storage write behind it (`truncate_and_persist_tail`) then waits for step
+///    1: the mock runs every `persist_entries` call under one lock, and step 1 holds it while
+///    gated. That wait blocks a worker thread, so the runtime needs a third worker to keep timers
+///    (and this test's sleeps) running.
 /// 3. Release the gate: the stale persist (step 1) completes and reports a stale fsync-completion
 ///    for index 10; a flush() drives one legitimate fsync-completion for index 2.
 ///
 /// Expected: draining the fsync completions advances `durable_index` to 2 and
 /// rejects the stale report for index 10.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
     let (storage, persist_gate) =
         MockStorageEngine::gated_persist("stale_persist_after_truncation".into());
@@ -113,8 +114,8 @@ async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
     };
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Step 2: term conflict at index 2 — on a second, independent task. Its
-    // in-memory truncation does not wait on step 1's gate at all.
+    // Step 2: term conflict at index 2 — on a second task. Its in-memory
+    // truncation does not wait on step 1's gate; its storage write does.
     let truncate = {
         let raft_log = raft_log.clone();
         tokio::spawn(async move {
@@ -158,7 +159,7 @@ async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
     );
 }
 
-/// `persist_pending_range` must report the highest index it *actually wrote*,
+/// `persist_from_memory` must report the highest index it *actually wrote*,
 /// not the upper scan bound it was handed. The two differ during a truncation
 /// race: the IO thread latched `memory_max_index` = 10 (an old leader had sent
 /// 8, 9, 10), then a term-conflict truncation removed everything above 7 before
@@ -169,16 +170,16 @@ async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
 /// plus a spurious `FsyncCompleted{10}` that the term check then has to reject.
 /// Reporting 7 keeps every downstream watermark on real data.
 #[tokio::test]
-async fn test_persist_pending_range_reports_written_max_not_scan_bound() {
+async fn test_persist_from_memory_reports_written_max_not_scan_bound() {
     let storage = Arc::new(MockStorageEngine::with_id(
-        "persist_pending_range_reports_written_max".into(),
+        "persist_from_memory_reports_written_max".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
 
     raft_log.append_entries((1..=7).map(|i| entry(i, 1)).collect()).await.unwrap();
 
     // Scan bound is 10 (stale latch); the SkipMap holds only 1..=7.
-    let written = raft_log.persist_pending_range(5, 10, "test").await.unwrap();
+    let written = raft_log.persist_from_memory(5, 10, "test").await.unwrap();
 
     assert_eq!(
         written,
@@ -188,14 +189,14 @@ async fn test_persist_pending_range_reports_written_max_not_scan_bound() {
 }
 
 /// After a term-conflict truncation, the persist frontier (`persisted_index`) must land
-/// *past* the new tail — not on it. `replace_range_and_submit` already wrote the new
-/// tail via `replace_range` and submitted its fsync; the next write's persist scan must
+/// *past* the new tail — not on it. `truncate_and_persist_tail` already wrote the new
+/// tail via `persist_entries` and submitted its fsync; the next write's persist scan must
 /// start at `new_tail + 1`. If the frontier is left *at* `new_tail`, every
 /// subsequent write re-scans and re-`persist_entries` that one boundary entry
 /// (and re-submits a redundant fsync for it) — the exact waste #446 removes.
 ///
-/// Guards the "highest-persisted" watermark semantics: `ReplaceRange` sets the
-/// watermark to `new_tail`, and scans start at `watermark + 1`.
+/// Guards the "highest-persisted" watermark semantics: the conflict path leaves the
+/// watermark at `new_tail`, and scans start at `watermark + 1`.
 #[tokio::test]
 async fn test_persist_frontier_skips_new_tail_after_truncation() {
     // Records the index list of every persist_entries() call.
@@ -210,9 +211,6 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
             Ok(())
         });
     }
-    mock.expect_replace_range().returning(|from, new_entries| {
-        Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
-    });
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
@@ -232,7 +230,7 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
 
     // New leader (term 2): conflict at index 6 → truncate [6..], replace with
     // [6, 7] (term 2). `filter_out_conflicts_and_append` awaits
-    // `replace_range_and_submit`, so the frontier is at new-tail 7 on return.
+    // `truncate_and_persist_tail`, so the frontier is at new-tail 7 on return.
     raft_log
         .filter_out_conflicts_and_append(5, 1, vec![entry(6, 2), entry(7, 2)], 0)
         .await
@@ -261,24 +259,23 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     let re_persisted_tail = calls.iter().flatten().any(|&idx| idx <= 7);
     assert!(
         !re_persisted_tail,
-        "after ReplaceRange set the frontier at new-tail 7, the next persist must \
+        "after the conflict path set the frontier at new-tail 7, the next persist must \
          start at 8 — entry 7 (or below) must not be handed to persist_entries again. \
          Got calls: {calls:?}"
     );
 }
 
 /// Regression test for a bug where a *shrinking* truncation left
-/// `persisted_index` stuck above the new (shorter) tail. `replace_range_and_submit`
-/// used to update the frontier with `fetch_max(new_tail)`, which — unlike a
-/// plain store — can never pull a stale higher value back down. Every append
+/// `persisted_index` stuck above the new (shorter) tail. The conflict path
+/// used to update the frontier with `fetch_max(new_tail)`, which can never pull
+/// a stale higher value back down. Every append
 /// after the truncation then computed `start = persisted_index + 1 > end =
-/// memory_max_index`, so `persist_pending_range` silently no-op'd and the new
+/// memory_max_index`, so `persist_from_memory` silently no-op'd and the new
 /// entry was never handed to `persist_entries` at all. Worse: `flush()` would
 /// still see `persisted_index >= target` and report the entry durable off pure
 /// (stale) bookkeeping — `durable_index` advancing past data that was never
-/// actually written to disk. The fix is a plain `store(new_tail)`, matching
-/// `reset_internal`'s treatment of the same "authoritative reset, not an
-/// advance" situation.
+/// actually written to disk. The fix: `truncate_and_persist_tail` first pulls
+/// the frontier down with `fetch_min(from_index - 1)`, then persists the new tail.
 #[tokio::test]
 async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -292,9 +289,6 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
             Ok(())
         });
     }
-    mock.expect_replace_range().returning(|from, new_entries| {
-        Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
-    });
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
@@ -337,17 +331,17 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     );
 }
 
-/// `persist_pending_range` must refuse to touch storage once the log is
+/// `persist_from_memory` must refuse to touch storage once the log is
 /// poisoned — this is its *own* guard, not something callers must each
 /// remember to check first. `flush()` is the one `RaftLog` method that calls
-/// `persist_pending_range` without checking `is_poisoned()` itself, so this
+/// `persist_from_memory` without checking `is_poisoned()` itself, so this
 /// guard being missing would let `flush()` write to an already-untrusted disk.
 ///
 /// The setup relies on `append_entries`'s own ordering: `insert_to_memory`
 /// runs *before* the persist attempt, so a failed persist leaves
 /// `memory_max_index` ahead of `persisted_index` — exactly the condition
 /// `flush()` needs to decide there's something to persist and reach
-/// `persist_pending_range` at all.
+/// `persist_from_memory` at all.
 #[tokio::test]
 async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     let persist_calls: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -367,7 +361,6 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
             }
         });
     }
-    mock.expect_replace_range().returning(|_, _| Ok(0));
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
@@ -403,7 +396,7 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     persist_calls.lock().unwrap().clear();
 
     // flush() must refuse once poisoned. persisted_index (1) < memory_max_index
-    // (2) here, so without persist_pending_range's own is_poisoned() guard,
+    // (2) here, so without persist_from_memory's own is_poisoned() guard,
     // flush() would call persist_entries again on the now-untrusted disk.
     let flush_result = raft_log.flush().await;
     assert!(
@@ -430,7 +423,6 @@ async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
     mock.expect_last_index().returning(|| 0);
     mock.expect_persist_entries()
         .returning(|_| Err(crate::Error::Fatal("simulated disk failure".into())));
-    mock.expect_replace_range().returning(|_, _| Ok(0));
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));

@@ -13,6 +13,7 @@ use tempfile::TempDir;
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper to create a test DefaultEmbeddedEngine with lease configuration
 async fn create_test_engine_with_lease(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
@@ -23,12 +24,14 @@ async fn create_test_engine_with_lease(test_name: &str) -> (DefaultEmbeddedEngin
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
 single_node = true
 
+{raft_table}
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 2000
 "#,

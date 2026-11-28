@@ -21,8 +21,8 @@ use raft_engine::{Command, Config, Engine, LogBatch, MessageExt, ReadableSize};
 
 /// Raft log entries.
 const LOG_REGION_ID: u64 = 1;
-/// Hard state and purge boundary. Kept apart from the entries because `reset`
-/// clears every key of a region and must leave these untouched.
+/// Hard state and purge boundary. Kept apart from the entries because compacting
+/// the log region drops its keys and must leave these untouched.
 const META_REGION_ID: u64 = 2;
 
 const HARD_STATE_KEY: &[u8] = b"hard_state";
@@ -264,47 +264,6 @@ impl StorageEngine for RaftEngineStorage {
             .write(&mut batch, false)
             .map_err(|e| StorageError::LogStorage(e.to_string()))?;
         Ok(())
-    }
-
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        if new_entries.is_empty() {
-            self.truncate(from_index).await?;
-            return Ok(from_index.saturating_sub(1));
-        }
-
-        // Guard the two append panic conditions in raft-engine's MemTable. An empty
-        // log (never written, or fully purged) has no span to overwrite or leave a
-        // hole in, so only a non-empty log is checked.
-        if let Some(first) = self.engine.first_index(LOG_REGION_ID)
-            && from_index < first
-        {
-            return Err(StorageError::LogStorage(
-                "replace_range would overwrite compacted history".into(),
-            )
-            .into());
-        }
-        if let Some(last) = self.engine.last_index(LOG_REGION_ID)
-            && from_index > last + 1
-        {
-            return Err(
-                StorageError::LogStorage("replace_range would create a hole".into()).into(),
-            );
-        }
-        let mut batch = LogBatch::default();
-        let last = new_entries.last().map(|e| e.index);
-        let raft_entries: Vec<EntryRecord> =
-            new_entries.into_iter().map(EntryRecord::from).collect();
-        batch
-            .add_entries::<EntryAdapter>(LOG_REGION_ID, &raft_entries)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        self.engine
-            .write(&mut batch, false)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(last.unwrap_or(from_index.saturating_sub(1)))
     }
 
     fn save_hard_state(

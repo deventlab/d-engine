@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper function to create a test DefaultEmbeddedEngine with RocksDB
 async fn setup_engine() -> Result<(DefaultEmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
@@ -21,11 +22,13 @@ async fn setup_engine() -> Result<(DefaultEmbeddedEngine, TempDir), Box<dyn std:
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
 
+{raft_table}
 [raft.watch]
 event_queue_size = 1000
 watcher_buffer_size = 10
@@ -108,10 +111,12 @@ async fn test_embedded_watch_always_available_when_compiled()
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
+{raft_table}
 "#
     );
     std::fs::write(&config_path, config_content)?;
@@ -347,16 +352,20 @@ async fn test_embedded_watch_integration() -> Result<(), Box<dyn std::error::Err
 
     // Create a minimal config with Watch enabled
     let config_path = temp_dir.path().join("d-engine.toml");
+    let raft_table = test_raft_table();
     std::fs::write(
         &config_path,
-        r#"
+        format!(
+            r#"
 [cluster]
 listen_address = "127.0.0.1:50055" # Fixed port
 
+{raft_table}
 [raft.watch]
 event_queue_size = 1000
 watcher_buffer_size = 10
-"#,
+"#
+        ),
     )?;
 
     // Start engine with RocksDB storage

@@ -6,8 +6,7 @@
 //! - Partial overlap with real term conflict (truncate only from conflict point)
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 
 use d_engine_proto::common::Entry;
 
@@ -305,11 +304,11 @@ async fn test_filter_conflicts_bench_pattern_no_truncation() {
     assert_eq!(ctx.raft_log.entry(6).unwrap().unwrap().term, 1);
 }
 
-/// ReplaceRange durability: after conflict-triggered truncate + re-append, a crash+recovery
+/// Conflict durability: after conflict-triggered truncate + re-append, a crash+recovery
 /// must restore the post-conflict entries, not the original pre-conflict ones.
 ///
 /// # Why this matters
-/// A real term conflict routes through `replace_range_and_submit`
+/// A real term conflict routes through `truncate_and_persist_tail`
 /// (truncate old entries from disk, persist new ones). If this path is not correctly
 /// flushed, crash recovery would replay the original WAL and restore the stale entries —
 /// violating the Raft log matching property (§5.3).
@@ -319,11 +318,11 @@ async fn test_filter_conflicts_bench_pattern_no_truncation() {
 /// Leader sends: prev=2, entries=[3(t1), 4(t2), 5(t2)] — conflict at index=4
 /// After recovery: [1,2,3(t1), 4(t2), 5(t2)] — index=4 must be term=2
 #[tokio::test]
-async fn test_replace_range_conflict_persists_correctly_after_crash() {
+async fn test_conflict_replacement_persists_correctly_after_crash() {
     use tokio::time::Duration;
     use tokio::time::sleep;
 
-    let ctx = ctx("replace_range_crash_recovery");
+    let ctx = ctx("conflict_replacement_crash_recovery");
 
     // Arrange: follower log [1,2,3,4] all term=1, flushed to disk
     for i in 1u64..=4 {
@@ -334,7 +333,7 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
 
     // Act: leader sends conflict — index=4 was term=1, leader has term=2
     // filter_out_conflicts_and_append detects conflict at index=4,
-    // calls replace_range_and_submit(truncate_from=4, new_entries=[4(t2), 5(t2)])
+    // calls truncate_and_persist_tail(4), which writes the new tail [4(t2), 5(t2)]
     let result = ctx
         .raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 2), entry(5, 2)], 0)
@@ -372,7 +371,8 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
     assert_eq!(recovered.raft_log.last_entry_id(), 5);
 }
 
-/// ReplaceRange with fewer new entries than the truncated range must remove trailing old entries.
+/// A conflict replacement with fewer new entries than the truncated range must remove trailing
+/// old entries.
 ///
 /// # Why this matters
 /// When a leader sends a shorter suffix than the follower had (e.g. follower had [1-5]
@@ -385,11 +385,11 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
 /// Leader sends: prev_index=2, prev_term=1, entries=[3(t2), 4(t2)] — conflict at index=3, no entry
 /// 5 After: log must be [1,2,3(t2),4(t2)] — entry 5 must not exist
 #[tokio::test]
-async fn test_replace_range_removes_entries_beyond_new_tail() {
+async fn test_conflict_replacement_removes_entries_beyond_new_tail() {
     use tokio::time::Duration;
     use tokio::time::sleep;
 
-    let ctx = ctx("replace_range_removes_trailing");
+    let ctx = ctx("conflict_replacement_removes_trailing");
 
     // Arrange: follower log [1..5] all term=1, flushed to disk
     for i in 1u64..=5 {
@@ -399,7 +399,7 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     assert_eq!(ctx.raft_log.last_entry_id(), 5);
 
     // Act: leader conflict at index=3 (term mismatch); new suffix is only [3(t2), 4(t2)]
-    // replace_range_and_submit(truncate_from=3, new_entries=[3(t2), 4(t2)]) — entry 5 must vanish
+    // truncate_and_persist_tail(3) writes the new tail [3(t2), 4(t2)] — entry 5 must vanish
     ctx.raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await
@@ -414,7 +414,7 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     );
     assert!(
         ctx.raft_log.entry(5).unwrap().is_none(),
-        "entry 5 must be removed by truncate — stale tail must not survive ReplaceRange"
+        "entry 5 must be removed by truncate — stale tail must not survive the conflict replacement"
     );
     assert_eq!(ctx.raft_log.entry(3).unwrap().unwrap().term, 2);
     assert_eq!(ctx.raft_log.entry(4).unwrap().unwrap().term, 2);
@@ -431,40 +431,42 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     assert_eq!(recovered.raft_log.entry(3).unwrap().unwrap().term, 2);
 }
 
-/// `replace_range_and_submit` must call StorageEngine::replace_range() as a single operation,
-/// not truncate() + persist_entries() separately.
+/// A term conflict removes the stale tail from storage, then writes the leader's entries.
 ///
 /// # Why
-/// Delegating to replace_range() lets storage backends provide atomic crash semantics
-/// (e.g. single RocksDB WriteBatch). Calling truncate + persist_entries separately
-/// breaks this contract regardless of what the backend implements.
+/// The storage engine has no single "replace the tail" call. The conflict path must
+/// truncate at the diverge point first: writing first and truncating second would
+/// delete the new entries, and skipping the truncate would leave stale entries
+/// above the new tail.
 ///
 /// # Invariant
-/// One conflict resolution issues exactly one replace_range() call and never truncate().
+/// One conflict resolution issues exactly one `truncate(diverge_index)`, followed by
+/// exactly one `persist_entries` holding the new tail and nothing else.
 #[tokio::test]
-async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate() {
-    let replace_range_count = Arc::new(AtomicU64::new(0));
-    let truncate_count = Arc::new(AtomicU64::new(0));
+async fn test_conflict_resolution_truncates_then_persists_new_tail() {
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Truncate(u64),
+        Persist(Vec<(u64, u64)>),
+    }
+    let calls = Arc::new(Mutex::new(Vec::<Call>::new()));
 
     let mut mock = MockStorageEngine::new();
 
-    // replace_range() must be called exactly once for one conflict resolution
-    let rr_counter = replace_range_count.clone();
-    mock.expect_replace_range().returning(move |_from, new_entries| {
-        rr_counter.fetch_add(1, Ordering::Relaxed);
-        Ok(new_entries.last().map(|e| e.index).unwrap_or(0))
+    let truncate_calls = calls.clone();
+    mock.expect_truncate().returning(move |from| {
+        truncate_calls.lock().unwrap().push(Call::Truncate(from));
+        Ok(())
     });
-
-    // truncate() must NOT be called — replace_range_and_submit owns the full operation
-    let tr_counter = truncate_count.clone();
-    mock.expect_truncate().returning(move |_| {
-        tr_counter.fetch_add(1, Ordering::Relaxed);
+    let persist_calls = calls.clone();
+    mock.expect_persist_entries().returning(move |entries| {
+        let ids = entries.iter().map(|e| (e.index, e.term)).collect();
+        persist_calls.lock().unwrap().push(Call::Persist(ids));
         Ok(())
     });
 
     // Standard expectations for other operations
     mock.expect_last_index().returning(|| 0);
-    mock.expect_persist_entries().returning(|_| Ok(()));
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
@@ -482,8 +484,10 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
         .append_entries(vec![entry(1, 1), entry(2, 1), entry(3, 1), entry(4, 1)])
         .await
         .unwrap();
+    raft_log.flush().await.unwrap();
+    calls.lock().unwrap().clear();
 
-    // Trigger replace_range_and_submit: conflict at index=3 (term mismatch 1 vs 2)
+    // Conflict at index=3 (term mismatch 1 vs 2)
     raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await
@@ -491,15 +495,35 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
     raft_log.flush().await.unwrap();
 
     assert_eq!(
-        replace_range_count.load(Ordering::Relaxed),
-        1,
-        "replace_range() must be called exactly once"
+        *calls.lock().unwrap(),
+        vec![Call::Truncate(3), Call::Persist(vec![(3, 2), (4, 2)])],
+        "conflict path must truncate at the diverge point once, then persist only the new tail"
     );
-    assert_eq!(
-        truncate_count.load(Ordering::Relaxed),
-        0,
-        "truncate() must not be called separately — replace_range() owns the full operation"
-    );
+}
+
+/// `truncate_and_persist_tail` writes only what memory already holds, so the caller must
+/// insert the new tail into memory before calling it.
+///
+/// # Why
+/// If the caller skipped the insert, storage would be truncated and then the memory scan
+/// would find nothing to write: the new tail would be silently missing from storage. The
+/// debug assertion turns that silent gap into an immediate failure.
+#[cfg(debug_assertions)]
+#[tokio::test]
+#[should_panic(expected = "caller must insert the new tail into memory before truncating storage")]
+async fn test_truncate_and_persist_tail_without_new_tail_in_memory_panics() {
+    let ctx = ctx("truncate_and_persist_tail_without_new_tail");
+
+    ctx.raft_log
+        .append_entries(vec![entry(1, 1), entry(2, 1), entry(3, 1), entry(4, 1)])
+        .await
+        .unwrap();
+
+    // Drop the divergent tail from memory but skip inserting the new one: memory now
+    // ends at 2, below the truncation point 3.
+    ctx.raft_log.remove_range(3..=u64::MAX);
+
+    let _ = ctx.raft_log.truncate_and_persist_tail(3).await;
 }
 
 // ---------------------------------------------------------------------------

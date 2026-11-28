@@ -53,37 +53,19 @@ pub trait StorageEngine: Send + Sync + 'static {
         cutoff_index: LogId,
     ) -> Result<(), Error>;
 
-    /// Truncates log from specified index onward
+    /// Delete every entry with index `>= from_index`. The engine calls it when a leader's entries
+    /// conflict with this node's tail, then writes the leader's entries with `persist_entries`.
+    ///
+    /// # Contract
+    /// - If `from_index` is past the last entry, nothing is removed and `last_index()` does not
+    ///   change.
+    /// - It need not be atomic, but it must never leave a hole: remove entries from the tail
+    ///   backward, so a crash midway leaves a shorter, contiguous log.
+    /// - It need not be durable when it returns: the next `flush()` makes it durable.
     async fn truncate(
         &self,
         from_index: u64,
     ) -> Result<(), Error>;
-
-    /// Atomically truncate from `from_index` and persist `new_entries` in one write.
-    ///
-    /// # Contract
-    /// The caller guarantees `new_entries[i].index == from_index + i`: contiguous, starting at
-    /// `from_index`. Implementations do not re-check it; the Raft log rejects a malformed
-    /// AppendEntries batch before it reaches storage.
-    /// Where `from_index` sits relative to the existing log (below the purge boundary,
-    /// beyond `last_index + 1`) is the caller's responsibility; behavior there is unspecified.
-    ///
-    /// Default implementation calls `truncate` then `persist_entries` sequentially
-    /// (non-atomic). Override with a single WriteBatch for true crash atomicity.
-    /// Returns the highest log index on disk after the operation: the last of
-    /// `new_entries`, or `from_index - 1` when `new_entries` is empty.
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        let new_last = new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
-        self.truncate(from_index).await?;
-        if !new_entries.is_empty() {
-            self.persist_entries(new_entries).await?;
-        }
-        Ok(new_last)
-    }
 
     /// Persist the hard state (current term and votedFor).
     ///

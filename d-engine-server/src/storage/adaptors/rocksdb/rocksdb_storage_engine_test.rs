@@ -145,15 +145,15 @@ async fn build_engine() -> (Arc<RocksDBStorageEngine>, tempfile::TempDir) {
     (Arc::new(engine), temp_dir)
 }
 
-/// replace_range removes stale tail and persists new entries atomically.
+/// A term conflict replaces the tail with `truncate` then `persist_entries`.
 ///
-/// Verifies the three invariants of replace_range:
+/// Verifies the three invariants of the replacement:
 ///   1. Entries before from_index are untouched
 ///   2. Old entries at from_index and beyond are gone
 ///   3. New entries replace them correctly, last_index reflects new tail
 #[tokio::test]
 #[traced_test]
-async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
+async fn test_truncate_then_persist_removes_stale_tail_and_stores_new_entries() {
     let (engine, _dir) = build_engine().await;
 
     // Arrange: [1(t1), 2(t1), 3(t1), 4(t1), 5(t1)]
@@ -163,7 +163,8 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
         .unwrap();
 
     // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
-    engine.replace_range(3, vec![make_entry(3, 2), make_entry(4, 2)]).await.unwrap();
+    engine.truncate(3).await.unwrap();
+    engine.persist_entries(vec![make_entry(3, 2), make_entry(4, 2)]).await.unwrap();
 
     // Entries before conflict are unchanged
     assert_eq!(engine.entry(1).await.unwrap().unwrap().term, 1);
@@ -177,27 +178,6 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
         "entry 5 must be removed"
     );
     assert_eq!(engine.last_index(), 4);
-}
-
-/// replace_range with empty new_entries truncates only — no new entries written.
-///
-/// Edge case: leader sends truncate-only (no replacement entries),
-/// e.g. when follower log is longer than leader's.
-#[tokio::test]
-#[traced_test]
-async fn test_replace_range_with_empty_entries_truncates_only() {
-    let (engine, _dir) = build_engine().await;
-
-    engine
-        .persist_entries((1..=5).map(|i| make_entry(i, 1)).collect())
-        .await
-        .unwrap();
-
-    engine.replace_range(3, vec![]).await.unwrap();
-
-    assert_eq!(engine.entry(2).await.unwrap().unwrap().term, 1);
-    assert!(engine.entry(3).await.unwrap().is_none());
-    assert_eq!(engine.last_index(), 2);
 }
 
 fn create_test_command_payload(index: u64) -> d_engine_proto::common::EntryPayload {

@@ -20,6 +20,7 @@ use d_engine_server::open_rocksdb;
 use tempfile::TempDir;
 
 use crate::common::get_available_ports;
+use crate::common::test_raft_table;
 
 /// Helper: Create a test engine
 async fn create_test_engine() -> (DefaultEmbeddedEngine, TempDir) {
@@ -31,11 +32,13 @@ async fn create_test_engine() -> (DefaultEmbeddedEngine, TempDir) {
     let mut port_guard = get_available_ports(1).await;
     port_guard.release_listeners();
     let port = port_guard.as_slice()[0];
+    let raft_table = test_raft_table();
     let config_content = format!(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
 
+{raft_table}
 [raft.watch]
 event_queue_size = 10000
 watcher_buffer_size = 100

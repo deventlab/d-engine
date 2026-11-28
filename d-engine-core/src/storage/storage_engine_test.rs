@@ -62,8 +62,8 @@ impl StorageEngineTestSuite {
         Self::test_batch_persistence(builder.build().await?).await?;
         Self::test_purge_logs(builder.build().await?).await?;
         Self::test_truncation(builder.build().await?).await?;
-        Self::test_replace_range(builder.build().await?).await?;
-        Self::test_replace_range_empty_entries_truncates(builder.build().await?).await?;
+        Self::test_truncate_past_end_keeps_last_index(builder.build().await?).await?;
+        Self::test_truncate_then_persist_replaces_tail(builder.build().await?).await?;
         Self::test_edge_cases(builder.build().await?).await?;
         Self::test_purge_empty_range(builder.build().await?).await?;
         Self::test_hard_state_persistence(builder.build().await?).await?;
@@ -174,11 +174,38 @@ impl StorageEngineTestSuite {
         Ok(())
     }
 
-    /// `replace_range` drops the old tail from `from_index` and stores the new entries.
+    /// Truncating at or past the end of the log removes nothing, so `last_index` must not move.
     ///
-    /// Raft requirement: on a term conflict a follower replaces its divergent suffix in one
-    /// step; nothing of the old suffix may survive past the new entries.
-    pub async fn test_replace_range<E>(engine: Arc<E>) -> Result<(), Error>
+    /// `last_index` must report the last entry actually stored. Setting it to `from_index - 1`
+    /// would point it at an entry that does not exist (log 1..=10, truncate(20) -> 19).
+    pub async fn test_truncate_past_end_keeps_last_index<E>(engine: Arc<E>) -> Result<(), Error>
+    where
+        E: StorageEngine + Send + Sync + 'static,
+    {
+        engine.persist_entries(create_test_entries(1..=10)).await?;
+
+        // Right after the last entry: nothing to remove.
+        engine.truncate(11).await?;
+        assert_eq!(engine.last_index(), 10);
+
+        // Far past the last entry: still nothing to remove.
+        engine.truncate(20).await?;
+        assert_eq!(
+            engine.last_index(),
+            10,
+            "truncate past the end must not move last_index beyond the stored entries"
+        );
+        assert!(engine.entry(10).await?.is_some(), "entry 10 must survive");
+        assert_eq!(engine.get_entries(1..=10)?.len(), 10);
+
+        Ok(())
+    }
+
+    /// `truncate` followed by `persist_entries` replaces the old tail from `from_index`.
+    ///
+    /// Raft requirement: on a term conflict a follower replaces its divergent suffix; nothing
+    /// of the old suffix may survive past the new entries, and the prefix stays untouched.
+    pub async fn test_truncate_then_persist_replaces_tail<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
     {
@@ -188,9 +215,9 @@ impl StorageEngineTestSuite {
         for e in &mut replacement {
             e.term = 99;
         }
-        let last = engine.replace_range(6, replacement.clone()).await?;
+        engine.truncate(6).await?;
+        engine.persist_entries(replacement).await?;
 
-        assert_eq!(last, 7, "replace_range must return the last replaced index");
         assert_eq!(engine.last_index(), 7);
         assert_eq!(engine.entry(6).await?.map(|e| e.term), Some(99));
         assert_eq!(engine.entry(7).await?.map(|e| e.term), Some(99));
@@ -201,24 +228,6 @@ impl StorageEngineTestSuite {
             Some(5),
             "prefix is untouched"
         );
-        Ok(())
-    }
-
-    /// `replace_range` with no new entries is a plain truncate and returns `from_index - 1`.
-    ///
-    /// This is the documented behavior of the trait, so every engine must agree on it.
-    pub async fn test_replace_range_empty_entries_truncates<E>(engine: Arc<E>) -> Result<(), Error>
-    where
-        E: StorageEngine + Send + Sync + 'static,
-    {
-        engine.persist_entries(create_test_entries(1..=10)).await?;
-
-        let last = engine.replace_range(6, Vec::new()).await?;
-
-        assert_eq!(last, 5);
-        assert_eq!(engine.last_index(), 5);
-        assert!(engine.entry(6).await?.is_none());
-        assert!(engine.entry(5).await?.is_some());
         Ok(())
     }
 

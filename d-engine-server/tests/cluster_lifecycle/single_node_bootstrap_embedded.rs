@@ -3,6 +3,8 @@ use std::time::Duration;
 use d_engine_server::DefaultEmbeddedEngine;
 use tracing_test::traced_test;
 
+use crate::common::TEST_CLIENT_TIMEOUT_MS;
+
 /// Test single-node DefaultEmbeddedEngine basic lifecycle
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,6 +15,10 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     // Safe in test context: tests run in isolated processes
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
+        std::env::set_var(
+            "RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS",
+            TEST_CLIENT_TIMEOUT_MS.to_string(),
+        );
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9001");
     }
 
@@ -22,6 +28,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     // Clean up environment variables immediately
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
+        std::env::remove_var("RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
 
@@ -78,6 +85,10 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
     // Configure single-node cluster
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
+        std::env::set_var(
+            "RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS",
+            TEST_CLIENT_TIMEOUT_MS.to_string(),
+        );
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9002");
     }
 
@@ -85,6 +96,7 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
+        std::env::remove_var("RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
 
@@ -121,6 +133,10 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     // Configure single-node cluster
     unsafe {
         std::env::set_var("RAFT__CLUSTER__NODE_ID", "1");
+        std::env::set_var(
+            "RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS",
+            TEST_CLIENT_TIMEOUT_MS.to_string(),
+        );
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9003");
     }
 
@@ -155,6 +171,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     // Clean up
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
+        std::env::remove_var("RAFT__RAFT__GENERAL_RAFT_TIMEOUT_DURATION_IN_MS");
         std::env::remove_var("RAFT__CLUSTER__LISTEN_ADDRESS");
     }
 

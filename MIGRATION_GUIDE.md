@@ -86,6 +86,7 @@ The Raft log and the hard state (current term and vote) are one trait now. Imple
 | `flush()` left to its default | Implement it. Make log entries and the hard state durable; `Ok(())` if your writes already are |
 | `flush_async()` | Delete it. The engine never called it |
 | `reset()` | Delete it. The engine never called it |
+| `replace_range()` | Delete it. The engine now calls `truncate` then `persist_entries`; `truncate` past the last entry must leave `last_index` unchanged |
 | `is_write_durable()` returning `false` | Delete it. `flush()` already does the sync |
 | `is_write_durable()` returning `true` | Delete it, and make `flush()` return `Ok(())`: your writes are already on disk |
 

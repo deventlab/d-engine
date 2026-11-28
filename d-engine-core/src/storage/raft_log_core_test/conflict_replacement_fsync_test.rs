@@ -1,4 +1,4 @@
-//! `replace_range_and_submit` (term-conflict truncation, see
+//! `truncate_and_persist_tail` (term-conflict truncation, see
 //! `filter_out_conflicts_and_append`'s slow path) must submit fsync itself,
 //! directly, as part of the same call — it must not depend on a subsequent
 //! `append_entries()` call to separately trigger persistence.
@@ -24,12 +24,13 @@ fn entry(
     }
 }
 
-/// A term-conflict truncation (`replace_range_and_submit`) must eventually
+/// A term-conflict truncation (`truncate_and_persist_tail`) must eventually
 /// become durable even if no `append_entries()` call follows it.
 #[tokio::test]
-async fn test_replace_range_becomes_durable_without_a_following_append() {
-    let mut ctx =
-        RaftLogCoreTestContext::new("replace_range_becomes_durable_without_a_following_append");
+async fn test_conflict_replacement_becomes_durable_without_a_following_append() {
+    let mut ctx = RaftLogCoreTestContext::new(
+        "conflict_replacement_becomes_durable_without_a_following_append",
+    );
 
     // Arrange: log [1,2,3] all term=1, explicitly flushed durable.
     ctx.append_entries(1, 3, 1).await;
@@ -40,7 +41,7 @@ async fn test_replace_range_becomes_durable_without_a_following_append() {
     // Act: leader (term=2) sends entries that conflict at index=2 and extend
     // the log to index=4. filter_out_conflicts_and_append's slow path detects
     // the term mismatch at index=2, truncates [2,3], and replaces with
-    // [2,3,4] (term=2) via `replace_range_and_submit` — with no append_entries()
+    // [2,3,4] (term=2) via `truncate_and_persist_tail` — with no append_entries()
     // call afterward.
     let result = ctx
         .raft_log
@@ -60,6 +61,6 @@ async fn test_replace_range_becomes_durable_without_a_following_append() {
     assert_eq!(
         ctx.raft_log.durable_index(),
         4,
-        "replace_range_and_submit must submit fsync itself, without needing a following append"
+        "truncate_and_persist_tail must submit fsync itself, without needing a following append"
     );
 }

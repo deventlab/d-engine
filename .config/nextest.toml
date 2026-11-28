@@ -10,7 +10,6 @@ max-threads = 2
 
 [profile.default]
 
-
 # Serialize wall-clock perf assertions — CPU contention causes false failures, not the
 # assertions. Don't #[ignore] them, isolate instead.
 [[profile.default.overrides]]
@@ -36,7 +35,6 @@ test-group = "multi-node-cluster-local"
 
 # CI profile — select with `--profile ci` (see .github/workflows/ci.yml).
 [profile.ci]
-
 
 [[profile.ci.overrides]]
 filter = "test(raft_log_core::performance_test)"

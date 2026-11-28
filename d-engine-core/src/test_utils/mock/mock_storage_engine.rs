@@ -25,7 +25,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         Self::configure_flush_success(&mut mock);
@@ -43,7 +42,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         // configure_flush_counted is called instead of configure_flush_success so its
@@ -107,13 +105,9 @@ impl MockStorageEngine {
             }
         });
 
-        // replace_range is NOT configured here — extracted into
-        // configure_replace_range_success() for the same FIFO-ordering
-        // reason as persist_entries above.
-
         // purge is NOT configured here — extracted into
         // configure_purge_success() for the same FIFO-ordering reason as
-        // persist_entries/replace_range above.
+        // persist_entries above.
         engine.expect_load_purge_boundary().returning(|| Ok(None));
         engine.expect_truncate().returning({
             let instance_id_ref = instance_id.clone();
@@ -144,7 +138,7 @@ impl MockStorageEngine {
         });
         // save_hard_state is NOT configured here — extracted into
         // configure_save_hard_state_success() for the same FIFO-ordering
-        // reason as persist_entries/replace_range/purge above.
+        // reason as persist_entries/purge above.
         engine.expect_load_hard_state().returning({
             let instance_id_ref = instance_id.clone();
             move || {
@@ -183,57 +177,15 @@ impl MockStorageEngine {
         });
     }
 
-    /// Default `replace_range()`: always succeeds, atomically deletes entries >= `from_index` then
-    /// inserts `new_entries`. Extracted out of `configure_mocks` for the same reason as
-    /// `configure_persist_entries_success`.
-    fn configure_replace_range_success(
-        engine: &mut MockStorageEngine,
-        instance_id: &str,
-    ) {
-        let instance_id_ref = instance_id.to_string();
-        engine.expect_replace_range().returning(move |from_index, new_entries| {
-            let mut data = MOCK_STORAGE_DATA.lock().unwrap();
-            let prefix = format!("{instance_id_ref}_entry_");
-            let keys_to_delete: Vec<String> = data
-                .keys()
-                .filter(|k| {
-                    k.strip_prefix(&prefix)
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .is_some_and(|idx| idx >= from_index)
-                })
-                .cloned()
-                .collect();
-            for key in keys_to_delete {
-                data.remove(&key);
-            }
-            let new_last_index = if new_entries.is_empty() {
-                from_index.saturating_sub(1)
-            } else {
-                for entry in &new_entries {
-                    let key = format!("{}_entry_{}", instance_id_ref, entry.index);
-                    data.insert(key, bincode::serialize(entry).unwrap());
-                }
-                new_entries.last().unwrap().index
-            };
-            let last_key = format!("{instance_id_ref}_last_index");
-            if new_last_index == 0 {
-                data.remove(&last_key);
-            } else {
-                data.insert(last_key, new_last_index.to_be_bytes().to_vec());
-            }
-            Ok(new_last_index)
-        });
-    }
-
     /// Default `purge()`: always succeeds. Extracted out of `configure_mocks`
-    /// for the same reason as persist_entries/replace_range.
+    /// for the same reason as persist_entries.
     fn configure_purge_success(engine: &mut MockStorageEngine) {
         engine.expect_purge().returning(|_| Ok(()));
     }
 
     /// Default `save_hard_state()`: always succeeds, writes into
     /// `MOCK_STORAGE_DATA`. Extracted out of `configure_mocks` for the same
-    /// reason as persist_entries/replace_range/purge.
+    /// reason as persist_entries/purge.
     fn configure_save_hard_state_success(
         engine: &mut MockStorageEngine,
         instance_id: &str,
@@ -258,7 +210,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         // First flush fails — leaves pending_max non-zero (only success path zeros it).
@@ -277,7 +228,7 @@ impl MockStorageEngine {
     ///
     /// Distinct from `first_flush_fails`, which only fails the later
     /// fsync step — `persist_entries()` and `flush()` are two independent failure
-    /// surfaces in `RaftLogCore` (`persist_pending_range` vs
+    /// surfaces in `RaftLogCore` (`persist_from_memory` vs
     /// `FsyncWorker::run_until_caught_up`). `flush()` itself always succeeds
     /// here, keeping the two surfaces isolated. All subsequent `persist_entries()`
     /// calls succeed.
@@ -285,7 +236,6 @@ impl MockStorageEngine {
         let mut mock = MockStorageEngine::new();
 
         Self::configure_mocks(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         mock.expect_flush().returning(|| Ok(()));
@@ -304,21 +254,20 @@ impl MockStorageEngine {
         mock
     }
 
-    /// Create a MockStorageEngine where `replace_range()` always fails,
-    /// simulating a fatal storage error during conflict-resolution
-    /// (truncate + write). `replace_range_and_submit` treats this as
-    /// unrecoverable and poisons the log — disk state is now uncertain.
-    pub fn replace_range_fails(id: String) -> Self {
+    /// Create a MockStorageEngine where `truncate()` always fails, simulating a
+    /// fatal storage error while a term conflict removes the divergent tail.
+    /// `truncate_and_persist_tail` treats this as unrecoverable and poisons the
+    /// log — disk state is now uncertain.
+    pub fn truncate_fails(id: String) -> Self {
         let mut mock = MockStorageEngine::new();
 
+        // Registered before `configure_mocks`' always-succeeds `truncate()` —
+        // mockall tries expectations in registration order, so this one always wins.
+        mock.expect_truncate()
+            .returning(|_| Err(crate::Error::Fatal("simulated truncate failure".into())));
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
         mock.expect_flush().returning(|| Ok(()));
-        mock.expect_replace_range().returning(|_, _| {
-            Err(crate::Error::Fatal(
-                "simulated replace_range failure".into(),
-            ))
-        });
 
         mock
     }
@@ -330,7 +279,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_save_hard_state_success(&mut mock, &id);
         mock.expect_flush().returning(|| Ok(()));
         mock.expect_purge()
@@ -346,7 +294,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         mock.expect_flush().returning(|| Ok(()));
         mock.expect_save_hard_state().returning(|_| {
@@ -368,7 +315,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         mock.expect_flush()
@@ -392,7 +338,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         mock.expect_flush().returning(move || {
@@ -418,7 +363,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         let counter = flush_count.clone();
@@ -445,7 +389,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         Self::configure_persist_entries_success(&mut mock, &id);
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         mock.expect_flush().returning(move || {
@@ -475,7 +418,6 @@ impl MockStorageEngine {
 
         Self::configure_mocks(&mut mock, &id);
         // persist_entries is gated below instead of via configure_persist_entries_success.
-        Self::configure_replace_range_success(&mut mock, &id);
         Self::configure_purge_success(&mut mock);
         Self::configure_save_hard_state_success(&mut mock, &id);
         Self::configure_flush_success(&mut mock);

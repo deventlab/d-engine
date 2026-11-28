@@ -264,61 +264,6 @@ impl StorageEngine for RocksDBStorageEngine {
             .cf_handle(LOG_CF)
             .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
 
-        let start_key = Self::index_to_key(from_index);
-        let mut batch = WriteBatch::default();
-
-        // Get the last_index before deletion
-        let current_last_index = self.last_index.load(Ordering::SeqCst);
-
-        // Collect all keys to be deleted
-        let mut keys_to_delete = Vec::new();
-        let iter = self.db.iterator_cf(&cf, IteratorMode::From(&start_key, Direction::Forward));
-
-        for item in iter {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            keys_to_delete.push(key.clone());
-
-            // Check if it is the last key
-            if key.len() == 8 {
-                let key_index = u64::from_be_bytes([
-                    key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-                ]);
-                if key_index >= current_last_index {
-                    break;
-                }
-            }
-        }
-
-        // Batch delete
-        for key in keys_to_delete {
-            batch.delete_cf(&cf, &key);
-        }
-
-        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        // Update last_index: The new last_index should be from_index - 1
-        // But if from_index is 0 or 1, last_index should be 0
-        let new_last_index = from_index.saturating_sub(1);
-
-        self.last_index.store(new_last_index, Ordering::SeqCst);
-
-        Ok(())
-    }
-
-    /// Atomically truncate from `from_index` and persist `new_entries` in one WriteBatch.
-    ///
-    /// Uses `delete_range_cf` (O(1) range tombstone) + puts in a single commit,
-    /// eliminating the two-batch window of the default implementation.
-    async fn replace_range(
-        &self,
-        from_index: u64,
-        new_entries: Vec<Entry>,
-    ) -> Result<u64, Error> {
-        let cf = self
-            .db
-            .cf_handle(LOG_CF)
-            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
-
         let mut batch = WriteBatch::default();
 
         // delete_range_cf: single range tombstone, compaction reclaims space later
@@ -326,15 +271,13 @@ impl StorageEngine for RocksDBStorageEngine {
         let end_key = Self::index_to_key(u64::MAX);
         batch.delete_range_cf(&cf, start_key, end_key);
 
-        let new_last_index =
-            new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
-        for entry in &new_entries {
-            batch.put_cf(&cf, Self::index_to_key(entry.index), entry.encode_to_vec());
-        }
-
         self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.last_index.store(new_last_index, Ordering::SeqCst);
-        Ok(new_last_index)
+
+        // The log is contiguous, so what remains ends at from_index - 1, or at the old
+        // last_index when from_index is past the end and nothing was removed.
+        self.last_index.fetch_min(from_index.saturating_sub(1), Ordering::SeqCst);
+
+        Ok(())
     }
 
     fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {

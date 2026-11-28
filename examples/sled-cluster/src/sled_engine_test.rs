@@ -91,7 +91,7 @@ async fn test_sled_performance() -> Result<()> {
     Ok(())
 }
 
-/// replace_range removes stale tail and persists new entries in one atomic batch.
+/// Truncating a conflicting tail and persisting the new entries replaces the tail.
 ///
 /// Verifies the three invariants:
 ///   1. Entries before from_index are untouched
@@ -99,7 +99,7 @@ async fn test_sled_performance() -> Result<()> {
 ///   3. New entries replace them, last_index reflects new tail
 #[tokio::test]
 #[traced_test]
-async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Result<()> {
+async fn test_truncate_then_persist_replaces_stale_tail() -> Result<()> {
     let builder = SledStorageEngineBuilder::new();
     let engine = builder.build().await?;
 
@@ -113,14 +113,12 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Res
         .await?;
 
     // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
+    engine.truncate(3).await?;
     engine
-        .replace_range(
-            3,
-            vec![
-                Entry { index: 3, term: 2, payload: None },
-                Entry { index: 4, term: 2, payload: None },
-            ],
-        )
+        .persist_entries(vec![
+            Entry { index: 3, term: 2, payload: None },
+            Entry { index: 4, term: 2, payload: None },
+        ])
         .await?;
 
     assert_eq!(engine.entry(1).await?.unwrap().term, 1);
@@ -132,37 +130,12 @@ async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Res
     Ok(())
 }
 
-/// replace_range with empty new_entries truncates only.
-#[tokio::test]
-#[traced_test]
-async fn test_replace_range_with_empty_entries_truncates_only() -> Result<()> {
-    let builder = SledStorageEngineBuilder::new();
-    let engine = builder.build().await?;
-
-    engine
-        .persist_entries(
-            (1..=5)
-                .map(|i| Entry { index: i, term: 1, payload: None })
-                .collect(),
-        )
-        .await?;
-
-    engine.replace_range(3, vec![]).await?;
-
-    assert_eq!(engine.entry(2).await?.unwrap().term, 1);
-    assert!(engine.entry(3).await?.is_none());
-    assert_eq!(engine.last_index(), 2);
-    Ok(())
-}
-
 /// Helper function to create a test command payload
 fn create_test_command_payload(index: u64) -> EntryPayload {
     let key = Bytes::from(format!("key_{index}").into_bytes());
     let value = Bytes::from(format!("value_{index}").into_bytes());
 
-    let insert = Insert {
-        key,
-        value,    };
+    let insert = Insert { key, value };
     let operation = Operation::Insert(insert);
     let write_cmd = WriteCommand {
         operation: Some(operation),

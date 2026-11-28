@@ -157,17 +157,17 @@ async fn test_close_flushes_multiple_batches() {
     );
 }
 
-/// Verifies that a fatal `replace_range` failure:
+/// Verifies that a fatal `truncate` failure while resolving a term conflict:
 /// 1. Propagates the error synchronously to the caller.
 /// 2. Poisons the log — writes after the failure are rejected outright, not silently accepted into
 ///    memory with nothing left to ever persist them.
 #[tokio::test]
-async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
+async fn test_conflict_truncate_failure_poisons_log_and_rejects_future_writes() {
     let mut mock = MockStorageEngine::new();
 
-    // replace_range always fails — simulates an unrecoverable disk error.
-    mock.expect_replace_range()
-        .returning(|_, _| Err(crate::Error::Fatal("simulated disk failure".into())));
+    // truncate always fails — simulates an unrecoverable disk error.
+    mock.expect_truncate()
+        .returning(|_| Err(crate::Error::Fatal("simulated disk failure".into())));
 
     mock.expect_last_index().returning(|| 0);
     mock.expect_persist_entries().returning(|_| Ok(()));
@@ -175,7 +175,6 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -190,18 +189,18 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
         .await
         .unwrap();
 
-    // Trigger replace_range: term conflict at index 3 (term 1 → 2).
+    // Trigger the conflict path: term conflict at index 3 (term 1 → 2).
     let result = raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)], 0)
         .await;
 
     assert!(
         result.is_err(),
-        "expected replace_range failure to be propagated to caller"
+        "expected truncate failure to be propagated to caller"
     );
     assert!(
         raft_log.is_poisoned(),
-        "a replace_range() failure must poison the log"
+        "a truncate() failure must poison the log"
     );
 
     let append_result = raft_log.append_entries(vec![entry(5, 2)]).await;

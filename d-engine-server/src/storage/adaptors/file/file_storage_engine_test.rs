@@ -466,14 +466,11 @@ mod tests {
         );
     }
 
-    /// replace_range removes stale tail and persists new entries.
-    ///
-    /// File adaptor uses the default StorageEngine::replace_range() implementation
-    /// (truncate + persist_entries sequentially). This test verifies the correct
-    /// behavior is preserved, and acts as a regression guard if the default impl changes.
+    /// A term conflict replaces the tail with `truncate` then `persist_entries`:
+    /// the prefix is untouched, the old tail is gone, the new entries are readable.
     #[tokio::test]
     #[traced_test]
-    async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
+    async fn test_truncate_then_persist_removes_stale_tail_and_stores_new_entries() {
         let (storage, _dir) = setup_storage();
 
         // Arrange: [1..5] all term=1
@@ -491,22 +488,20 @@ mod tests {
             .unwrap();
 
         // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
+        storage.truncate(3).await.unwrap();
         storage
-            .replace_range(
-                3,
-                vec![
-                    Entry {
-                        index: 3,
-                        term: 2,
-                        payload: None,
-                    },
-                    Entry {
-                        index: 4,
-                        term: 2,
-                        payload: None,
-                    },
-                ],
-            )
+            .persist_entries(vec![
+                Entry {
+                    index: 3,
+                    term: 2,
+                    payload: None,
+                },
+                Entry {
+                    index: 4,
+                    term: 2,
+                    payload: None,
+                },
+            ])
             .await
             .unwrap();
 
@@ -519,31 +514,6 @@ mod tests {
             "entry 5 must be removed"
         );
         assert_eq!(storage.last_index(), 4);
-    }
-
-    /// replace_range with empty new_entries truncates only.
-    #[tokio::test]
-    #[traced_test]
-    async fn test_replace_range_with_empty_entries_truncates_only() {
-        let (storage, _dir) = setup_storage();
-
-        storage
-            .persist_entries(
-                (1..=5)
-                    .map(|i| Entry {
-                        index: i,
-                        term: 1,
-                        payload: None,
-                    })
-                    .collect(),
-            )
-            .await
-            .unwrap();
-        storage.replace_range(3, vec![]).await.unwrap();
-
-        assert_eq!(storage.entry(2).await.unwrap().unwrap().term, 1);
-        assert!(storage.entry(3).await.unwrap().is_none());
-        assert_eq!(storage.last_index(), 2);
     }
 
     #[tokio::test]
