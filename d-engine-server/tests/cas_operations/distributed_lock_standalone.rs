@@ -77,7 +77,11 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
     info!("Cluster ready. Testing CAS lock operations");
 
     let urls = create_bootstrap_urls(ports);
-    let client = Client::builder(urls).connect_timeout(Duration::from_secs(5)).build().await?;
+    let client = Client::builder(urls)
+        .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
+        .build()
+        .await?;
     wait_for_stable_leader(&client).await?;
 
     let lock_key = b"distributed_lock";

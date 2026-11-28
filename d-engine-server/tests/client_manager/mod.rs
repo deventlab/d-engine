@@ -39,6 +39,8 @@ impl ClientManager {
         let client = match ClientBuilder::new(bootstrap_urls.clone())
             .connect_timeout(Duration::from_secs(600))
             .request_timeout(Duration::from_secs(600))
+            // Startup elections can take several rounds; wait for a leader instead of failing.
+            .cluster_ready_timeout(Duration::from_secs(30))
             .enable_compression(true)
             .build()
             .await

@@ -80,6 +80,7 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
     // Connect client and verify metadata
     let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
     wait_for_stable_leader(&client).await?;
@@ -155,6 +156,7 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
     // Connect client
     let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
     wait_for_stable_leader(&client).await?;
@@ -257,6 +259,7 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
     // Connect client
     let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
     wait_for_stable_leader(&client).await?;

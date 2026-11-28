@@ -72,7 +72,11 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     info!("Cluster ready. Testing CAS snapshot recovery");
 
     let urls = create_bootstrap_urls(ports);
-    let client = Client::builder(urls).connect_timeout(Duration::from_secs(5)).build().await?;
+    let client = Client::builder(urls)
+        .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
+        .build()
+        .await?;
     wait_for_stable_leader(&client).await?;
 
     let lock_key = b"persistent_lock";

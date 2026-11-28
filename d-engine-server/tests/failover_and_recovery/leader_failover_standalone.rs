@@ -68,6 +68,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     info!("Cluster ready. Writing initial data");
     let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
     wait_for_stable_leader(&client).await?;
@@ -227,6 +228,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
 
     let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
+        .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
     wait_for_stable_leader(&client).await?;
@@ -261,7 +263,8 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
 
     // Attempt write should fail (no majority)
     // refresh may fail when no leader is available — that is expected, ignore the error.
-    let _ = client.refresh(None).await;
+    // Bounded: with no majority it would otherwise wait out the client's cluster-ready timeout.
+    let _ = tokio::time::timeout(Duration::from_secs(5), client.refresh(None)).await;
     let write_result = tokio::time::timeout(
         Duration::from_secs(5),
         client.put("should-fail", "no-majority"),
