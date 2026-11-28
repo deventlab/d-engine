@@ -5,6 +5,7 @@
 //! unsynced tail torn or missing, a never-synced file gone), reopens, and checks that every entry
 //! acknowledged by `flush()` is still there, byte for byte, and that the store accepts new writes.
 
+use d_engine::storage_engine_test::EntryAt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -73,13 +74,12 @@ async fn assert_log(
     assert_eq!(log.last_index(), to, "last_index after recovery");
     for index in from..=to {
         let e = log
-            .entry(index)
-            .await
+            .entry_at(index)
             .unwrap()
             .unwrap_or_else(|| panic!("acknowledged entry {index} is missing after recovery"));
         assert_eq!(marker_of(&e), expected(index), "entry {index} has the wrong payload");
     }
-    assert!(log.entry(to + 1).await.unwrap().is_none(), "entry {} must not exist", to + 1);
+    assert!(log.entry_at(to + 1).unwrap().is_none(), "entry {} must not exist", to + 1);
 }
 
 /// `.raftlog` files, oldest first.

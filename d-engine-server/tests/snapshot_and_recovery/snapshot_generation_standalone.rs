@@ -14,11 +14,11 @@
 //!
 //! - Node 3 has a snapshot and has purged log entries 1..=3
 
+use d_engine_core::storage_engine_test::EntryAt;
 use std::time::Duration;
 
 use d_engine_core::ClientApiError;
 use d_engine_proto::server::election::VotedFor;
-use d_engine_server::StorageEngine;
 use tokio::time::sleep;
 use tracing_test::traced_test;
 
@@ -182,7 +182,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     loop {
         let mut purged = true;
         for i in 1..=3 {
-            purged &= r3.entry(i).await.unwrap().is_none();
+            purged &= r3.entry_at(i).unwrap().is_none();
         }
         if purged {
             break;

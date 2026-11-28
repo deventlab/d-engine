@@ -375,7 +375,6 @@ async fn test_conflict_persist_failure_after_truncate_poisons() {
             Ok(())
         });
     }
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -798,7 +797,6 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
         persisted_total_c.fetch_add(entries.len() as u64, Ordering::Relaxed);
         Ok(())
     });
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -871,7 +869,6 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
             Ok(())
         });
     }
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_truncate().returning(|_| Ok(()));
@@ -931,7 +928,6 @@ async fn test_save_hard_state_flushes_before_returning() {
     mock.expect_last_index().returning(|| 0);
     mock.expect_persist_entries().returning(|_| Ok(()));
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -981,7 +977,6 @@ async fn test_save_hard_state_flush_failure_poisons() {
     let mut mock = MockStorageEngine::new();
     mock.expect_last_index().returning(|| 0);
     mock.expect_persist_entries().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
 

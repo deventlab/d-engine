@@ -1,3 +1,4 @@
+use d_engine_core::storage_engine_test::EntryAt;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
@@ -37,7 +38,7 @@ async fn test_empty_storage() {
     let (storage, _dir) = setup_storage();
 
     assert_eq!(storage.last_index(), 0);
-    assert!(storage.entry(1).await.unwrap().is_none());
+    assert!(storage.entry_at(1).unwrap().is_none());
     assert!(storage.get_entries(1..=5).unwrap().is_empty());
 }
 
@@ -50,7 +51,7 @@ async fn test_single_entry_persistence() {
     // Persist and retrieve
     storage.persist_entries(entries.clone()).await.unwrap();
     assert_eq!(storage.last_index(), 1);
-    assert_eq!(storage.entry(1).await.unwrap().unwrap(), entries[0]);
+    assert_eq!(storage.entry_at(1).unwrap().unwrap(), entries[0]);
     assert_eq!(storage.get_entries(1..=1).unwrap(), entries);
 }
 
@@ -66,9 +67,9 @@ async fn test_batch_persistence() {
     assert_eq!(storage.last_index(), 100);
 
     // Spot check random entries
-    assert_eq!(storage.entry(1).await.unwrap().unwrap(), entries[0]);
-    assert_eq!(storage.entry(50).await.unwrap().unwrap(), entries[49]);
-    assert_eq!(storage.entry(100).await.unwrap().unwrap(), entries[99]);
+    assert_eq!(storage.entry_at(1).unwrap().unwrap(), entries[0]);
+    assert_eq!(storage.entry_at(50).unwrap().unwrap(), entries[49]);
+    assert_eq!(storage.entry_at(100).unwrap().unwrap(), entries[99]);
 
     // Verify range query
     let range = storage.get_entries(25..=75).unwrap();
@@ -93,9 +94,9 @@ async fn test_purge_logs() {
         .unwrap();
 
     assert_eq!(storage.last_index(), 100); // Last index should remain
-    assert!(storage.entry(1).await.unwrap().is_none());
-    assert!(storage.entry(50).await.unwrap().is_none());
-    assert!(storage.entry(51).await.unwrap().is_some());
+    assert!(storage.entry_at(1).unwrap().is_none());
+    assert!(storage.entry_at(50).unwrap().is_none());
+    assert!(storage.entry_at(51).unwrap().is_some());
 }
 
 #[tokio::test]
@@ -108,9 +109,9 @@ async fn test_truncation() {
     storage.truncate(76).await.unwrap();
 
     assert_eq!(storage.last_index(), 75);
-    assert!(storage.entry(76).await.unwrap().is_none());
-    assert!(storage.entry(100).await.unwrap().is_none());
-    assert!(storage.entry(75).await.unwrap().is_some());
+    assert!(storage.entry_at(76).unwrap().is_none());
+    assert!(storage.entry_at(100).unwrap().is_none());
+    assert!(storage.entry_at(75).unwrap().is_some());
 }
 
 #[tokio::test]
@@ -151,7 +152,7 @@ async fn test_corrupted_data_handling() {
     let (storage, _dir) = setup_storage();
 
     // Try to access non-existent entry
-    assert!(storage.entry(999).await.unwrap().is_none());
+    assert!(storage.entry_at(999).unwrap().is_none());
 }
 
 #[test]
@@ -258,7 +259,7 @@ async fn test_file_recovery_after_crash() {
 
     // File storage should recover all data since we flush on each write
     assert_eq!(storage2.last_index(), 10);
-    assert!(storage2.entry(5).await.unwrap().is_some());
+    assert!(storage2.entry_at(5).unwrap().is_some());
 }
 
 #[tokio::test]
@@ -275,7 +276,7 @@ async fn test_large_entry_persistence() {
 
     storage.persist_entries(vec![large_entry.clone()]).await.unwrap();
 
-    let retrieved = storage.entry(1).await.unwrap().unwrap();
+    let retrieved = storage.entry_at(1).unwrap().unwrap();
     assert_eq!(retrieved.index, 1);
     assert_eq!(retrieved.term, 1);
     assert_eq!(retrieved.payload, large_entry.payload);
@@ -456,12 +457,12 @@ mod tests {
         let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
 
         assert_eq!(storage2.last_index(), 4);
-        assert_eq!(storage2.entry(1).await.unwrap().unwrap().term, 1);
-        assert_eq!(storage2.entry(2).await.unwrap().unwrap().term, 1);
-        assert_eq!(storage2.entry(3).await.unwrap().unwrap().term, 2);
-        assert_eq!(storage2.entry(4).await.unwrap().unwrap().term, 2);
+        assert_eq!(storage2.entry_at(1).unwrap().unwrap().term, 1);
+        assert_eq!(storage2.entry_at(2).unwrap().unwrap().term, 1);
+        assert_eq!(storage2.entry_at(3).unwrap().unwrap().term, 2);
+        assert_eq!(storage2.entry_at(4).unwrap().unwrap().term, 2);
         assert!(
-            storage2.entry(5).await.unwrap().is_none(),
+            storage2.entry_at(5).unwrap().is_none(),
             "stale entry 5 must not appear after reopen"
         );
     }
@@ -505,12 +506,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(storage.entry(1).await.unwrap().unwrap().term, 1);
-        assert_eq!(storage.entry(2).await.unwrap().unwrap().term, 1);
-        assert_eq!(storage.entry(3).await.unwrap().unwrap().term, 2);
-        assert_eq!(storage.entry(4).await.unwrap().unwrap().term, 2);
+        assert_eq!(storage.entry_at(1).unwrap().unwrap().term, 1);
+        assert_eq!(storage.entry_at(2).unwrap().unwrap().term, 1);
+        assert_eq!(storage.entry_at(3).unwrap().unwrap().term, 2);
+        assert_eq!(storage.entry_at(4).unwrap().unwrap().term, 2);
         assert!(
-            storage.entry(5).await.unwrap().is_none(),
+            storage.entry_at(5).unwrap().is_none(),
             "entry 5 must be removed"
         );
         assert_eq!(storage.last_index(), 4);
@@ -552,7 +553,7 @@ mod tests {
         // Random reads
         for i in 1..=read_count {
             let index = (i * 7) % total_entries + 1; // Pseudo-random access
-            let _ = storage.entry(index).await.unwrap();
+            let _ = storage.entry_at(index).unwrap();
         }
 
         let duration = start.elapsed();
@@ -637,4 +638,69 @@ fn test_save_hard_state_leaves_no_temporary_file() {
         .collect();
 
     assert_eq!(files, vec!["hard_state.bin".to_string()]);
+}
+
+/// A failed hard-state save must not change what `load_hard_state` returns.
+///
+/// The node reads its term and vote back through `load_hard_state`. If a save reported an error
+/// but the new vote still showed up there, the node would act on a vote that never reached disk,
+/// and after a restart it would come back with the old one: it could then vote twice in one term.
+#[test]
+fn test_failed_save_hard_state_keeps_the_previous_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
+    let hard_state = |term| HardState {
+        current_term: term,
+        voted_for: None,
+    };
+    engine.save_hard_state(&hard_state(1)).unwrap();
+
+    // A directory where the temporary file must go makes the next write fail.
+    std::fs::create_dir(dir.path().join("meta").join("hard_state.tmp")).unwrap();
+    assert!(
+        engine.save_hard_state(&hard_state(2)).is_err(),
+        "the save must fail when its temporary file cannot be created"
+    );
+
+    assert_eq!(
+        engine.load_hard_state().unwrap().unwrap().current_term,
+        1,
+        "a save that failed must not be visible: the vote for term 2 never reached disk"
+    );
+}
+
+/// `purge` records the boundary before it rewrites the log. A crash between the two leaves the
+/// boundary on disk with the purged entries still in the log file. Reopening must drop those
+/// entries and keep the boundary: they are already purged, and the term of the last purged entry
+/// must survive the restart.
+#[tokio::test]
+async fn test_reopen_after_crash_between_boundary_and_log_rewrite_drops_purged_entries() {
+    use prost::Message;
+
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let engine = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
+        engine.persist_entries(create_entries(1..=10)).await.unwrap();
+        engine.flush().unwrap();
+    }
+
+    // The state right after purge(5) wrote its boundary and before it rewrote the log.
+    let boundary = LogId { index: 5, term: 1 };
+    std::fs::write(
+        dir.path().join("meta").join("purge_boundary.bin"),
+        boundary.encode_to_vec(),
+    )
+    .unwrap();
+
+    let engine = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
+    assert_eq!(engine.load_purge_boundary().unwrap(), Some(boundary));
+    assert!(
+        engine.entry_at(5).unwrap().is_none(),
+        "an entry at the purge boundary is already purged"
+    );
+    assert!(
+        engine.entry_at(6).unwrap().is_some(),
+        "entries after the boundary stay"
+    );
+    assert_eq!(engine.last_index(), 10);
 }

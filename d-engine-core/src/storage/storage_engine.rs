@@ -32,12 +32,6 @@ pub trait StorageEngine: Send + Sync + 'static {
         entries: Vec<Entry>,
     ) -> Result<(), Error>;
 
-    /// Get single log entry by index
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error>;
-
     /// Get entries in range [start, end] (inclusive)
     ///
     /// # Performance
@@ -98,7 +92,5 @@ pub trait StorageEngine: Send + Sync + 'static {
     /// uses this to restore `last_purged_index/term` after a restart so that
     /// `entry_term(last_purged_index)` returns the correct term even though
     /// the entry has been removed from the in-memory log.
-    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
-        Ok(None) // Default: not persisted
-    }
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error>;
 }

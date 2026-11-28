@@ -21,6 +21,24 @@ use crate::storage::StorageEngine;
 /// with their builder.
 pub struct StorageEngineTestSuite;
 
+/// Reads one entry through `get_entries`, the only read the engine uses. For tests that check
+/// whether a given index is stored and what it holds.
+pub trait EntryAt {
+    fn entry_at(
+        &self,
+        index: u64,
+    ) -> Result<Option<Entry>, Error>;
+}
+
+impl<E: StorageEngine + ?Sized> EntryAt for E {
+    fn entry_at(
+        &self,
+        index: u64,
+    ) -> Result<Option<Entry>, Error> {
+        Ok(self.get_entries(index..=index)?.into_iter().next())
+    }
+}
+
 /// Builder trait for creating StorageEngine instances for testing
 #[async_trait]
 pub trait StorageEngineBuilder: Send + Sync {
@@ -86,7 +104,7 @@ impl StorageEngineTestSuite {
         E: StorageEngine + Send + Sync + 'static,
     {
         assert_eq!(engine.last_index(), 0);
-        assert!(engine.entry(1).await?.is_none());
+        assert!(engine.entry_at(1)?.is_none());
         assert!(engine.get_entries(1..=5)?.is_empty());
 
         Ok(())
@@ -102,7 +120,7 @@ impl StorageEngineTestSuite {
         // Persist and retrieve
         engine.persist_entries(entries.clone()).await?;
         assert_eq!(engine.last_index(), 1);
-        assert_eq!(engine.entry(1).await?.unwrap(), entries[0]);
+        assert_eq!(engine.entry_at(1)?.unwrap(), entries[0]);
         assert_eq!(engine.get_entries(1..=1)?, entries);
 
         Ok(())
@@ -121,9 +139,9 @@ impl StorageEngineTestSuite {
         assert_eq!(engine.last_index(), 100);
 
         // Spot check random entries
-        assert_eq!(engine.entry(1).await?.unwrap(), entries[0]);
-        assert_eq!(engine.entry(50).await?.unwrap(), entries[49]);
-        assert_eq!(engine.entry(100).await?.unwrap(), entries[99]);
+        assert_eq!(engine.entry_at(1)?.unwrap(), entries[0]);
+        assert_eq!(engine.entry_at(50)?.unwrap(), entries[49]);
+        assert_eq!(engine.entry_at(100)?.unwrap(), entries[99]);
 
         // Verify range query
         let range = engine.get_entries(25..=75)?;
@@ -149,9 +167,9 @@ impl StorageEngineTestSuite {
             })
             .await?;
 
-        assert!(engine.entry(1).await?.is_none());
-        assert!(engine.entry(50).await?.is_none());
-        assert!(engine.entry(51).await?.is_some());
+        assert!(engine.entry_at(1)?.is_none());
+        assert!(engine.entry_at(50)?.is_none());
+        assert!(engine.entry_at(51)?.is_some());
 
         Ok(())
     }
@@ -167,9 +185,9 @@ impl StorageEngineTestSuite {
         engine.truncate(76).await?;
 
         assert_eq!(engine.last_index(), 75);
-        assert!(engine.entry(76).await?.is_none());
-        assert!(engine.entry(100).await?.is_none());
-        assert!(engine.entry(75).await?.is_some());
+        assert!(engine.entry_at(76)?.is_none());
+        assert!(engine.entry_at(100)?.is_none());
+        assert!(engine.entry_at(75)?.is_some());
 
         Ok(())
     }
@@ -195,7 +213,7 @@ impl StorageEngineTestSuite {
             10,
             "truncate past the end must not move last_index beyond the stored entries"
         );
-        assert!(engine.entry(10).await?.is_some(), "entry 10 must survive");
+        assert!(engine.entry_at(10)?.is_some(), "entry 10 must survive");
         assert_eq!(engine.get_entries(1..=10)?.len(), 10);
 
         Ok(())
@@ -219,12 +237,12 @@ impl StorageEngineTestSuite {
         engine.persist_entries(replacement).await?;
 
         assert_eq!(engine.last_index(), 7);
-        assert_eq!(engine.entry(6).await?.map(|e| e.term), Some(99));
-        assert_eq!(engine.entry(7).await?.map(|e| e.term), Some(99));
-        assert!(engine.entry(8).await?.is_none(), "old tail must be gone");
-        assert!(engine.entry(10).await?.is_none(), "old tail must be gone");
+        assert_eq!(engine.entry_at(6)?.map(|e| e.term), Some(99));
+        assert_eq!(engine.entry_at(7)?.map(|e| e.term), Some(99));
+        assert!(engine.entry_at(8)?.is_none(), "old tail must be gone");
+        assert!(engine.entry_at(10)?.is_none(), "old tail must be gone");
         assert_eq!(
-            engine.entry(5).await?.map(|e| e.term),
+            engine.entry_at(5)?.map(|e| e.term),
             Some(5),
             "prefix is untouched"
         );
@@ -262,10 +280,7 @@ impl StorageEngineTestSuite {
         engine.purge(LogId { index: 0, term: 0 }).await?;
 
         // Verify: no entries deleted
-        assert!(
-            engine.entry(1).await?.is_some(),
-            "Entry 1 should still exist"
-        );
+        assert!(engine.entry_at(1)?.is_some(), "Entry 1 should still exist");
         assert_eq!(engine.last_index(), 10);
 
         Ok(())
@@ -334,15 +349,15 @@ impl StorageEngineTestSuite {
 
         // Verify all entries are readable
         assert!(
-            engine2.entry(1).await?.is_some(),
+            engine2.entry_at(1)?.is_some(),
             "Entry 1 should survive crash"
         );
         assert!(
-            engine2.entry(5).await?.is_some(),
+            engine2.entry_at(5)?.is_some(),
             "Entry 5 should survive crash"
         );
         assert!(
-            engine2.entry(10).await?.is_some(),
+            engine2.entry_at(10)?.is_some(),
             "Entry 10 should survive crash"
         );
 
@@ -385,7 +400,7 @@ impl StorageEngineTestSuite {
             "flush() must write the log entries out of the process: after a crash the log is shorter"
         );
         assert!(
-            restarted_store.entry(last).await?.is_some(),
+            restarted_store.entry_at(last)?.is_some(),
             "entry {last} was flushed and must be readable after a crash"
         );
         let hard_state = restarted_store
@@ -471,15 +486,15 @@ impl StorageEngineTestSuite {
              Raft log truncation (conflict resolution) must survive crashes."
         );
         assert!(
-            engine2.entry(76).await?.is_none(),
+            engine2.entry_at(76)?.is_none(),
             "Truncated entry 76 should not exist"
         );
         assert!(
-            engine2.entry(100).await?.is_none(),
+            engine2.entry_at(100)?.is_none(),
             "Truncated entry 100 should not exist"
         );
         assert!(
-            engine2.entry(75).await?.is_some(),
+            engine2.entry_at(75)?.is_some(),
             "Entry 75 should still exist"
         );
 
@@ -495,12 +510,25 @@ impl StorageEngineTestSuite {
             let engine = builder.build().await?;
 
             engine.persist_entries(create_test_entries(1..=100)).await?;
+            assert_eq!(
+                engine.load_purge_boundary()?,
+                None,
+                "a log that was never purged has no purge boundary"
+            );
             engine
                 .purge(LogId {
                     index: 50,
                     term: 50,
                 })
                 .await?;
+            assert_eq!(
+                engine.load_purge_boundary()?,
+                Some(LogId {
+                    index: 50,
+                    term: 50
+                }),
+                "purge(cutoff) must record cutoff as the purge boundary"
+            );
         }
 
         // Small delay for filesystem sync
@@ -509,17 +537,27 @@ impl StorageEngineTestSuite {
         // Step 2: Reopen and verify purge survived
         let engine2 = builder.reopen().await?;
 
+        // After a restart the engine needs the term of the last purged entry to answer an
+        // AppendEntries whose prev_log_index is that entry.
+        assert_eq!(
+            engine2.load_purge_boundary()?,
+            Some(LogId {
+                index: 50,
+                term: 50
+            }),
+            "the purge boundary must survive a restart"
+        );
         assert!(
-            engine2.entry(1).await?.is_none(),
+            engine2.entry_at(1)?.is_none(),
             "BUG: purge() must guarantee durability! \
              Purged entries should not reappear after crash."
         );
         assert!(
-            engine2.entry(50).await?.is_none(),
+            engine2.entry_at(50)?.is_none(),
             "Purged entry 50 should not exist"
         );
         assert!(
-            engine2.entry(51).await?.is_some(),
+            engine2.entry_at(51)?.is_some(),
             "Entry 51 should still exist after purge"
         );
 

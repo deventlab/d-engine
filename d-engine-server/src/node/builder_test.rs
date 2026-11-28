@@ -1,3 +1,4 @@
+use d_engine_core::storage_engine_test::EntryAt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -142,7 +143,7 @@ async fn test_build_purges_a_raft_log_that_disagrees_with_the_state_machine() {
     insert_state_machine(&file_sm, (1..=9).collect(), 4).await;
 
     assert!(
-        storage_engine.entry(9).await.unwrap().is_some(),
+        storage_engine.entry_at(9).unwrap().is_some(),
         "the log must hold the stale entry before the node is built"
     );
 
@@ -159,7 +160,7 @@ async fn test_build_purges_a_raft_log_that_disagrees_with_the_state_machine() {
 
     for index in 1..=9 {
         assert!(
-            storage_engine.entry(index).await.unwrap().is_none(),
+            storage_engine.entry_at(index).unwrap().is_none(),
             "entry {index} of the dropped history must be purged by build()"
         );
     }

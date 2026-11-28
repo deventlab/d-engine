@@ -467,7 +467,6 @@ async fn test_conflict_resolution_truncates_then_persists_new_tail() {
 
     // Standard expectations for other operations
     mock.expect_last_index().returning(|| 0);
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));

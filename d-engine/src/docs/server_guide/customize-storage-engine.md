@@ -101,20 +101,26 @@ impl StorageEngineBuilder for CustomStorageEngineBuilder {
     type Engine = CustomStorageEngine;
 
     // A new, empty engine on every call: tests never have to wipe it first.
+    // The number `fetch_add` returns is this call's own, so two builds never share a directory.
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
-        self.builds.fetch_add(1, Ordering::SeqCst);
-        self.reopen().await
+        let n = self.builds.fetch_add(1, Ordering::SeqCst) + 1;
+        self.open(n).await
     }
 
     // The storage the last `build()` used, opened again: a restart.
     async fn reopen(&self) -> Result<Arc<Self::Engine>, Error> {
-        let n = self.builds.load(Ordering::SeqCst);
-        let path = self.temp_dir.path().join(format!("storage_{n}"));
-        Ok(Arc::new(CustomStorageEngine::new(path).await?))
+        self.open(self.builds.load(Ordering::SeqCst)).await
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
         Ok(()) // TempDir auto-cleans on drop
+    }
+}
+
+impl CustomStorageEngineBuilder {
+    async fn open(&self, n: usize) -> Result<Arc<CustomStorageEngine>, Error> {
+        let path = self.temp_dir.path().join(format!("storage_{n}"));
+        Ok(Arc::new(CustomStorageEngine::new(path).await?))
     }
 }
 

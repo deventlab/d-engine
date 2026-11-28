@@ -1,3 +1,4 @@
+use d_engine_core::storage_engine_test::EntryAt;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -167,14 +168,14 @@ async fn test_truncate_then_persist_removes_stale_tail_and_stores_new_entries() 
     engine.persist_entries(vec![make_entry(3, 2), make_entry(4, 2)]).await.unwrap();
 
     // Entries before conflict are unchanged
-    assert_eq!(engine.entry(1).await.unwrap().unwrap().term, 1);
-    assert_eq!(engine.entry(2).await.unwrap().unwrap().term, 1);
+    assert_eq!(engine.entry_at(1).unwrap().unwrap().term, 1);
+    assert_eq!(engine.entry_at(2).unwrap().unwrap().term, 1);
     // New entries present with correct term
-    assert_eq!(engine.entry(3).await.unwrap().unwrap().term, 2);
-    assert_eq!(engine.entry(4).await.unwrap().unwrap().term, 2);
+    assert_eq!(engine.entry_at(3).unwrap().unwrap().term, 2);
+    assert_eq!(engine.entry_at(4).unwrap().unwrap().term, 2);
     // Stale tail removed
     assert!(
-        engine.entry(5).await.unwrap().is_none(),
+        engine.entry_at(5).unwrap().is_none(),
         "entry 5 must be removed"
     );
     assert_eq!(engine.last_index(), 4);

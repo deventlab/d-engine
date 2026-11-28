@@ -25,6 +25,7 @@ use tracing::info;
 
 // Constants for file structure
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
+const PURGE_BOUNDARY_FILE_NAME: &str = "purge_boundary.bin";
 
 /// All mutable state of the file storage engine, protected by a single Mutex.
 ///
@@ -67,6 +68,8 @@ pub struct FileStorageEngine {
     meta_dir: PathBuf,
     /// The serialized hard state, kept in memory so a read does not touch the file.
     hard_state: Mutex<Option<Vec<u8>>>,
+    /// The last purged entry, kept in memory; persisted in `meta_dir` by `purge`.
+    purge_boundary: Mutex<Option<LogId>>,
 }
 
 impl FileStorageEngine {
@@ -92,7 +95,17 @@ impl FileStorageEngine {
             index_end_pos: BTreeMap::new(),
         };
 
-        let last_index = inner.load_from_file()?;
+        let mut last_index = inner.load_from_file()?;
+
+        // `purge` records the boundary before it rewrites the log, so a crash between the two
+        // leaves entries at or below the boundary in the file. They are already purged: drop them.
+        let purge_boundary = Self::load_purge_boundary_from_file(&meta_dir)?;
+        if let Some(boundary) = purge_boundary
+            && inner.entries.keys().next().is_some_and(|&first| first <= boundary.index)
+        {
+            inner.remove_up_to(boundary.index);
+            last_index = inner.entries.keys().next_back().copied().unwrap_or(0);
+        }
 
         let engine = Self {
             data_dir,
@@ -100,6 +113,7 @@ impl FileStorageEngine {
             last_index: AtomicU64::new(last_index),
             meta_dir,
             hard_state: Mutex::new(None),
+            purge_boundary: Mutex::new(purge_boundary),
         };
         engine.load_hard_state_from_file()?;
 
@@ -109,6 +123,21 @@ impl FileStorageEngine {
     /// Get the data directory path
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// Read the purge boundary file, or `None` if `purge` never ran.
+    ///
+    /// A file that exists but does not decode is an error: the engine must not start believing
+    /// nothing was purged.
+    fn load_purge_boundary_from_file(meta_dir: &Path) -> Result<Option<LogId>, Error> {
+        let path = meta_dir.join(PURGE_BOUNDARY_FILE_NAME);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)?;
+        let boundary =
+            LogId::decode(bytes.as_slice()).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(Some(boundary))
     }
 
     /// Load the hard state from its file on startup.
@@ -235,6 +264,18 @@ impl FileStorageEngineInner {
             .unwrap_or(0)
     }
 
+    /// Remove all in-memory state for indices <= up_to.
+    fn remove_up_to(
+        &mut self,
+        up_to: u64,
+    ) {
+        let keys: Vec<u64> = self.entries.range(..=up_to).map(|(&k, _)| k).collect();
+        for k in keys {
+            self.entries.remove(&k);
+            self.index_end_pos.remove(&k);
+        }
+    }
+
     /// Remove all in-memory state for indices >= from_index.
     fn remove_from_index(
         &mut self,
@@ -277,14 +318,6 @@ impl StorageEngine for FileStorageEngine {
         Ok(())
     }
 
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error> {
-        let inner = self.inner.lock().unwrap();
-        Ok(inner.entries.get(&index).cloned())
-    }
-
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
@@ -298,6 +331,16 @@ impl StorageEngine for FileStorageEngine {
         cutoff_index: LogId,
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().unwrap();
+
+        // Record the boundary before removing anything: a crash after this point leaves the
+        // boundary with the old entries still in the file, which `new` drops. The other order
+        // could lose the entries and the boundary together, and with them the term of the last
+        // purged entry.
+        super::file_state_machine::write_file_atomically(
+            &self.meta_dir.join(PURGE_BOUNDARY_FILE_NAME),
+            &cutoff_index.encode_to_vec(),
+        )?;
+        *self.purge_boundary.lock().unwrap() = Some(cutoff_index);
 
         let entries_to_keep: Vec<Entry> = inner
             .entries
@@ -347,9 +390,11 @@ impl StorageEngine for FileStorageEngine {
     ) -> Result<(), Error> {
         let serialized = bincode::serialize(state).map_err(StorageError::BincodeError)?;
 
-        *self.hard_state.lock().unwrap() = Some(serialized.clone());
-
+        // Held through the write: saves never share the temporary file, and the cache
+        // only ever shows a value that reached disk.
+        let mut cached = self.hard_state.lock().unwrap();
         self.write_hard_state_file(&serialized)?;
+        *cached = Some(serialized);
 
         info!("Persisted hard state to file");
         Ok(())
@@ -382,6 +427,10 @@ impl StorageEngine for FileStorageEngine {
 
     fn last_index(&self) -> u64 {
         self.last_index.load(Ordering::SeqCst)
+    }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        Ok(*self.purge_boundary.lock().unwrap())
     }
 }
 

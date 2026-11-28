@@ -79,16 +79,6 @@ impl MockStorageEngine {
         // registered here would silently absorb every call before a
         // stricter, later expectation ever got a turn).
 
-        // Get entry implementation with persistence simulation
-        engine.expect_entry().returning({
-            let instance_id_ref = instance_id.clone();
-            move |index| {
-                let data = MOCK_STORAGE_DATA.lock().unwrap();
-                let key = format!("{instance_id_ref}_entry_{index}");
-                Ok(data.get(&key).map(|v| bincode::deserialize(v).unwrap()))
-            }
-        });
-
         // Get entries range implementation with persistence simulation
         engine.expect_get_entries().returning({
             let instance_id_ref = instance_id.clone();

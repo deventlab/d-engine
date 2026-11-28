@@ -546,12 +546,18 @@ where
     }
 
     async fn close(&self) {
-        let timed_out = tokio::time::timeout(
+        let result = tokio::time::timeout(
             Duration::from_millis(self.shutdown_timeout_ms),
             self.flush(),
         )
-        .await
-        .is_err();
+        .await;
+        let timed_out = result.is_err();
+        if let Ok(Err(e)) = &result {
+            error!(
+                ?self.node_id,
+                "close(): flush() failed: {e:?} — entries not yet durable may be lost"
+            );
+        }
         if timed_out {
             error!(
                 ?self.node_id,
@@ -560,12 +566,6 @@ where
                  resolve once it does",
                 self.shutdown_timeout_ms
             );
-        }
-        // After a timeout the in-flight fsync still holds the store, and flushing again would wait
-        // for it and hang the shutdown. The hard state needs no flush here: every `save_hard_state`
-        // flushes it before it returns.
-        if !timed_out {
-            let _ = self.storage.flush();
         }
     }
 }

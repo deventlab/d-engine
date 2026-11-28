@@ -15,6 +15,7 @@ use tracing::info;
 use tracing::trace;
 
 const HARD_STATE_KEY: &[u8] = b"hard_state";
+const PURGE_BOUNDARY_KEY: &[u8] = b"purge_boundary";
 const RAFT_LOG_NAMESPACE: &str = "raft_log";
 const RAFT_META_NAMESPACE: &str = "raft_meta";
 
@@ -47,20 +48,6 @@ impl StorageEngine for SledStorageEngine {
         Ok(())
     }
 
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>> {
-        let key = SledStorageEngine::index_to_key(index);
-        match self.tree.get(key).map_err(|e| StorageError::DbError(e.to_string()))? {
-            Some(bytes) => {
-                Entry::decode(&*bytes).map(Some).map_err(|e| ProstError::Decode(e).into())
-            }
-
-            None => Ok(None),
-        }
-    }
-
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
@@ -82,17 +69,15 @@ impl StorageEngine for SledStorageEngine {
         &self,
         cutoff_index: LogId,
     ) -> Result<()> {
-        let start = SledStorageEngine::index_to_key(0);
-        let end = SledStorageEngine::index_to_key(cutoff_index.index);
-        let mut batch = Batch::default();
+        // The boundary reaches disk before any entry is removed: sled does not order writes
+        // across trees, and losing the entries but not the boundary would lose the term of the
+        // last purged entry. A crash after this flush leaves old entries, which `new` drops.
+        self.meta_tree
+            .insert(PURGE_BOUNDARY_KEY, cutoff_index.encode_to_vec())
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.meta_tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        for item in self.tree.range(start..=end) {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.remove(key);
-        }
-
-        self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
+        self.remove_up_to(cutoff_index.index)
     }
 
     async fn truncate(
@@ -208,6 +193,19 @@ impl StorageEngine for SledStorageEngine {
             _ => 0,
         }
     }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>> {
+        match self
+            .meta_tree
+            .get(PURGE_BOUNDARY_KEY)
+            .map_err(|e| StorageError::DbError(e.to_string()))?
+        {
+            Some(bytes) => LogId::decode(bytes.as_ref())
+                .map(Some)
+                .map_err(|e| StorageError::DbError(e.to_string()).into()),
+            None => Ok(None),
+        }
+    }
 }
 
 impl std::fmt::Debug for SledStorageEngine {
@@ -245,10 +243,31 @@ impl SledStorageEngine {
             "CRITICAL: Log and metadata must use different trees"
         );
 
-        Ok(Self {
+        let engine = Self {
             tree: log_tree,
             meta_tree,
-        })
+        };
+        // Entries at or below the boundary may survive a crash inside `purge`: drop them.
+        if let Some(boundary) = engine.load_purge_boundary()? {
+            engine.remove_up_to(boundary.index)?;
+        }
+        Ok(engine)
+    }
+
+    /// Remove every log entry with index <= `up_to`.
+    fn remove_up_to(
+        &self,
+        up_to: u64,
+    ) -> Result<()> {
+        let start = SledStorageEngine::index_to_key(0);
+        let end = SledStorageEngine::index_to_key(up_to);
+        let mut batch = Batch::default();
+        for item in self.tree.range(start..=end) {
+            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            batch.remove(key);
+        }
+        self.tree.apply_batch(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
     }
 
     /// Helper: convert index to big-endian bytes

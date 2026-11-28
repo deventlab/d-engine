@@ -164,20 +164,6 @@ impl StorageEngine for RaftEngineStorage {
         Ok(())
     }
 
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error> {
-        match self
-            .engine
-            .get_entry::<EntryAdapter>(LOG_REGION_ID, index)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?
-        {
-            Some(r) => Ok(Some(r.entry)),
-            None => Ok(None),
-        }
-    }
-
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,

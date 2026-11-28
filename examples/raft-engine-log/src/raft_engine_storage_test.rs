@@ -1,3 +1,4 @@
+use d_engine::storage_engine_test::EntryAt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -78,7 +79,7 @@ async fn test_log_flushed_entries_survive_reopen() {
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.last_index(), 10);
     assert_eq!(storage.get_entries(1..=10).unwrap(), written);
-    assert_eq!(storage.entry(7).await.unwrap(), Some(written[6].clone()));
+    assert_eq!(storage.entry_at(7).unwrap(), Some(written[6].clone()));
 }
 
 /// An entry without a payload must round-trip unchanged: the on-disk bytes are
@@ -97,7 +98,7 @@ async fn test_log_entry_without_payload_roundtrips() {
     }
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
-    assert_eq!(storage.entry(1).await.unwrap(), Some(bare));
+    assert_eq!(storage.entry_at(1).unwrap(), Some(bare));
 }
 
 /// A term conflict replaces the tail with `truncate` then `persist_entries`: the
@@ -115,15 +116,15 @@ async fn test_log_truncate_then_persist_drops_old_tail_after_reopen() {
         storage.flush().unwrap();
 
         assert_eq!(storage.last_index(), 6);
-        assert_eq!(storage.entry(7).await.unwrap(), None);
+        assert_eq!(storage.entry_at(7).unwrap(), None);
     }
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.last_index(), 6);
-    assert_eq!(storage.entry(4).await.unwrap(), Some(entry(4, 1, "cmd-4")));
+    assert_eq!(storage.entry_at(4).unwrap(), Some(entry(4, 1, "cmd-4")));
     assert_eq!(storage.get_entries(5..=6).unwrap(), replacement);
-    assert_eq!(storage.entry(7).await.unwrap(), None);
-    assert_eq!(storage.entry(10).await.unwrap(), None);
+    assert_eq!(storage.entry_at(7).unwrap(), None);
+    assert_eq!(storage.entry_at(10).unwrap(), None);
 }
 
 /// Appending exactly at `last + 1` is a plain extension, not a hole: a truncate past
@@ -140,7 +141,7 @@ async fn test_log_truncate_then_persist_at_last_plus_one_extends_log() {
 
     assert_eq!(storage.last_index(), 7);
     assert_eq!(storage.get_entries(6..=7).unwrap(), tail);
-    assert_eq!(storage.entry(5).await.unwrap(), Some(entry(5, 1, "cmd-5")));
+    assert_eq!(storage.entry_at(5).unwrap(), Some(entry(5, 1, "cmd-5")));
 }
 
 /// After every entry has been purged the log is empty but the index space has
@@ -179,13 +180,13 @@ async fn test_log_truncate_at_first_then_persist_rewrites_from_first() {
 
         assert_eq!(storage.last_index(), 4);
         assert_eq!(storage.get_entries(3..=4).unwrap(), tail);
-        assert_eq!(storage.entry(5).await.unwrap(), None);
+        assert_eq!(storage.entry_at(5).unwrap(), None);
     }
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.last_index(), 4);
     assert_eq!(storage.get_entries(3..=4).unwrap(), tail);
-    assert_eq!(storage.entry(5).await.unwrap(), None);
+    assert_eq!(storage.entry_at(5).unwrap(), None);
 }
 
 /// The purge boundary is written together with the compaction, so after a
@@ -205,8 +206,8 @@ async fn test_log_purge_boundary_survives_reopen() {
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.load_purge_boundary().unwrap(), Some(boundary));
-    assert_eq!(storage.entry(5).await.unwrap(), None);
-    assert_eq!(storage.entry(6).await.unwrap(), Some(entry(6, 4, "cmd-6")));
+    assert_eq!(storage.entry_at(5).unwrap(), None);
+    assert_eq!(storage.entry_at(6).unwrap(), Some(entry(6, 4, "cmd-6")));
     assert_eq!(storage.last_index(), 10);
 }
 
@@ -241,7 +242,7 @@ async fn test_log_truncate_drops_suffix_after_reopen() {
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.last_index(), 5);
     assert_eq!(storage.get_entries(1..=10).unwrap(), entries(1..=5, 1));
-    assert_eq!(storage.entry(6).await.unwrap(), None);
+    assert_eq!(storage.entry_at(6).unwrap(), None);
 }
 
 /// After a truncate the log accepts new entries from `from_index` again, which
@@ -259,8 +260,8 @@ async fn test_log_truncate_then_append_continues_from_cut() {
     append_durable(&storage, vec![entry(4, 2, "new-4")]).await;
 
     assert_eq!(storage.last_index(), 4);
-    assert_eq!(storage.entry(4).await.unwrap(), Some(entry(4, 2, "new-4")));
-    assert_eq!(storage.entry(3).await.unwrap(), Some(entry(3, 1, "cmd-3")));
+    assert_eq!(storage.entry_at(4).unwrap(), Some(entry(4, 2, "new-4")));
+    assert_eq!(storage.entry_at(3).unwrap(), Some(entry(3, 1, "cmd-3")));
 }
 
 /// Truncating from the first stored index empties the log, including across a
@@ -279,7 +280,7 @@ async fn test_log_truncate_from_first_index_empties_log() {
 
     let storage = RaftEngineStorage::open(dir.path()).unwrap();
     assert_eq!(storage.last_index(), 0);
-    assert_eq!(storage.entry(1).await.unwrap(), None);
+    assert_eq!(storage.entry_at(1).unwrap(), None);
 
     append_durable(&storage, entries(1..=2, 3)).await;
     assert_eq!(storage.last_index(), 2);

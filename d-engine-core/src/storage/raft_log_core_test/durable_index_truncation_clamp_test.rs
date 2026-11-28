@@ -212,7 +212,6 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
         });
     }
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -290,7 +289,6 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
         });
     }
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -362,7 +360,6 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
         });
     }
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -424,7 +421,6 @@ async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
     mock.expect_persist_entries()
         .returning(|_| Err(crate::Error::Fatal("simulated disk failure".into())));
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));

@@ -171,7 +171,6 @@ async fn test_conflict_truncate_failure_poisons_log_and_rejects_future_writes() 
 
     mock.expect_last_index().returning(|| 0);
     mock.expect_persist_entries().returning(|_| Ok(()));
-    mock.expect_entry().returning(|_| Ok(None));
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
@@ -207,5 +206,31 @@ async fn test_conflict_truncate_failure_poisons_log_and_rejects_future_writes() 
     assert!(
         append_result.is_err(),
         "writes must be rejected once poisoned"
+    );
+}
+
+/// `close()` must return within `shutdown_timeout_ms` even when the log has nothing left to make
+/// durable and the disk's flush is stuck.
+///
+/// A node that is shut down before it ever wrote an entry (or after everything is already durable)
+/// still goes through `close()`. If the disk stalls at that moment, a flush outside the timeout
+/// would keep the shutdown waiting forever.
+#[tokio::test]
+async fn test_close_with_nothing_to_flush_returns_while_disk_flush_is_stuck() {
+    let (storage, flush_gate) =
+        MockStorageEngine::gated_flush("close_with_nothing_to_flush".into());
+    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 100);
+
+    // The gate stays closed: any call to the disk's flush() blocks its thread. Run close() on the
+    // blocking pool so a blocked call cannot also stop this test's timer.
+    let handle = tokio::runtime::Handle::current();
+    let close = tokio::task::spawn_blocking(move || handle.block_on(raft_log.close()));
+    let returned = tokio::time::timeout(Duration::from_secs(1), close).await;
+
+    // Release the gate before asserting, so a stuck close() can finish and the runtime can shut down.
+    let _ = flush_gate.send(());
+    assert!(
+        returned.is_ok(),
+        "close() must return within shutdown_timeout_ms, not wait on a stuck disk flush"
     );
 }

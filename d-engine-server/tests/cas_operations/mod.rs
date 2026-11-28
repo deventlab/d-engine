@@ -36,12 +36,11 @@
 //!
 //! - ✅ **Embedded Mode**: In-process EmbeddedClient
 //!   - `distributed_lock_embedded.rs` - Multi-client lock competition
-//!   - `snapshot_recovery_embedded.rs` - CAS state persistence
+//!   - `snapshot_recovery_embedded.rs` - CAS state recovered from a node's own snapshot
 //!   - `leader_failover_cas_embedded.rs` - CAS atomicity during leader crash
 //!
 //! - ✅ **Standalone Mode**: gRPC GrpcClient
 //!   - `distributed_lock_standalone.rs` - Remote lock competition
-//!   - `snapshot_recovery_standalone.rs` - Remote CAS persistence
 //!   - `leader_failover_cas_standalone.rs` - gRPC retry logic during failover
 //!
 //! ## Test Files
@@ -87,4 +86,3 @@ mod distributed_lock_standalone;
 mod leader_failover_cas_embedded;
 mod leader_failover_cas_standalone;
 mod snapshot_recovery_embedded;
-mod snapshot_recovery_standalone;

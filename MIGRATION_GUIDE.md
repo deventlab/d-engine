@@ -98,7 +98,7 @@ The Raft log and the hard state (current term and vote) are one trait now. Imple
 
 If you never set `[storage] unified_db = true`, nothing changes: delete the `[storage]` section if you have one, it is ignored.
 
-If you did, the data of that node is in `data_dir/db` and v0.3.0 does not read it. Start the node from an empty data directory and let it catch up from the leader's snapshot.
+If you did, v0.3.0 does not read the old data in `data_dir/db`, and there is no migration tool. To keep the data, read it out with a client before upgrading and write it back afterwards.
 
 | If you have | Do this |
 | --- | --- |

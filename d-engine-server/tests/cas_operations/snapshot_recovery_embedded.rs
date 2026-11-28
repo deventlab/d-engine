@@ -8,148 +8,190 @@ use d_engine_server::open_rocksdb;
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::common::create_node_config;
 use crate::common::get_available_ports;
+use crate::common::wait_for_snapshot;
 
-/// Test CAS state survives snapshot and recovery (embedded mode)
+const SNAPSHOT_THRESHOLD: u64 = 50;
+const RETAINED_LOGS: u64 = 10;
+const FILLER_WRITES: u64 = 100;
+
+fn node_config(
+    node_id: u64,
+    ports: &[u16],
+    log_dir: &std::path::Path,
+) -> String {
+    format!(
+        r#"
+[cluster]
+node_id = {node_id}
+listen_address = '127.0.0.1:{}'
+initial_cluster = [
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
+]
+log_dir = '{}'
+
+[raft]
+general_raft_timeout_duration_in_ms = 10000
+
+[raft.snapshot]
+max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
+retained_log_entries = {RETAINED_LOGS}
+"#,
+        ports[node_id as usize - 1],
+        ports[0],
+        ports[1],
+        ports[2],
+        log_dir.join(format!("node{node_id}")).display(),
+    )
+}
+
+async fn start_node(
+    node_id: u64,
+    data_dir: &std::path::Path,
+    config_path: &str,
+) -> Result<DefaultEmbeddedEngine, Box<dyn std::error::Error>> {
+    let db_path = data_dir.join(format!("node{node_id}/db"));
+    tokio::fs::create_dir_all(&db_path).await?;
+    let (storage, state_machine) = open_rocksdb(&db_path)?;
+    Ok(DefaultEmbeddedEngine::start_custom(
+        &db_path,
+        Arc::new(storage),
+        state_machine,
+        Some(config_path),
+    )
+    .await?)
+}
+
+/// A lock taken with CAS survives a restart of a node whose log was compacted into a snapshot.
 ///
 /// Scenario:
-/// 1. Start 3-node cluster
-/// 2. Perform CAS operations (acquire lock)
-/// 3. Trigger snapshot
-/// 4. Restart node
-/// 5. Verify CAS state persists (lock still held)
+/// 1. Start a 3-node cluster that snapshots every 50 entries.
+/// 2. Take the lock with CAS, then write 100 more entries: the follower takes a snapshot and
+///    purges the log entries it covers, the lock among them.
+/// 3. Stop all three nodes, then restart only that follower. Alone it has no quorum and no
+///    leader, so nothing can be replicated to it: whatever it serves came from its own disk.
+/// 4. The lock and the oldest filler write must be readable on it. Both live only in the snapshot.
+/// 5. Restart the other two nodes: the lock can still be released and taken again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
-
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
-    let ports = port_guard.as_slice();
+    let ports = port_guard.as_slice().to_vec();
 
-    info!("Starting 3-node cluster for CAS snapshot test");
-
+    let mut config_paths = Vec::new();
     let mut engines = Vec::new();
-    let mut db_paths = Vec::new();
-
-    for i in 0..3 {
-        let node_id = (i + 1) as u64;
-        let config_str = create_node_config(
-            node_id,
-            ports[i],
-            ports,
-            data_dir.to_str().unwrap(),
-            log_dir.to_str().unwrap(),
-        )
-        .await;
-
-        let node_db_root = data_dir.join(format!("node{node_id}"));
-        let db_path = node_db_root.join("db");
-
-        tokio::fs::create_dir_all(&db_path).await?;
-
-        db_paths.push(db_path.clone());
-
-        let (storage, state_machine) = open_rocksdb(&db_path)?;
-
-        let config_path = format!("/tmp/d-engine-cas-snapshot-node{node_id}.toml");
-        tokio::fs::write(&config_path, &config_str).await?;
-
-        let engine = DefaultEmbeddedEngine::start_custom(
-            &db_path,
-            Arc::new(storage),
-            state_machine,
-            Some(&config_path),
-        )
-        .await?;
-        engines.push(engine);
+    for node_id in 1..=3u64 {
+        let config_path = temp_dir.path().join(format!("node{node_id}.toml"));
+        tokio::fs::write(&config_path, node_config(node_id, &ports, &log_dir)).await?;
+        let config_path = config_path.to_string_lossy().to_string();
+        engines.push(start_node(node_id, &data_dir, &config_path).await?);
+        config_paths.push(config_path);
     }
 
-    // Wait for leader election
-    let leader_info = engines[0]
-        .wait_ready(Duration::from_secs(10))
-        .await
-        .expect("Failed to elect leader");
-    info!("Leader elected: node {}", leader_info.leader_id);
-
-    let leader_idx = (leader_info.leader_id - 1) as usize;
-    let leader_client = engines[leader_idx].client();
-    // Clone client to avoid borrow conflict when modifying engines Vec
-    let leader_client_clone = leader_client.clone();
+    let leader_id = engines[0].wait_ready(Duration::from_secs(10)).await?.leader_id;
+    let leader = engines
+        .iter()
+        .find(|e| e.node_id() == leader_id)
+        .expect("leader is one of the nodes");
+    let leader_client = leader.client().clone();
+    let follower_id = (1..=3u64).find(|&id| id != u64::from(leader_id)).expect("a follower exists");
+    info!("Leader is node {leader_id}; node {follower_id} will be restarted");
 
     let lock_key = b"persistent_lock";
-
-    // Step 1: Acquire lock via CAS
-    info!("Step 1: Acquiring lock via CAS");
-    let acquired = leader_client_clone
-        .compare_and_swap(lock_key, None::<&[u8]>, b"owner_before_snapshot")
-        .await?;
-    assert!(acquired, "Should acquire lock");
-
-    // Verify lock state
-    let holder = leader_client_clone.get(lock_key).await?;
-    assert_eq!(holder, Some(b"owner_before_snapshot".to_vec().into()));
-    info!("Lock acquired and verified");
-
-    // Step 2: Write additional data to trigger snapshot threshold
-    info!("Step 2: Writing data to trigger snapshot");
-    for i in 0..100 {
-        leader_client_clone
+    assert!(
+        leader_client
+            .compare_and_swap(lock_key, None::<&[u8]>, b"owner_before_snapshot")
+            .await?,
+        "Should acquire lock"
+    );
+    for i in 0..FILLER_WRITES {
+        leader_client
             .put(
                 format!("key_{i}").as_bytes(),
                 format!("value_{i}").as_bytes(),
             )
             .await?;
     }
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 3: Stop and restart one follower node
-    let follower_idx = if leader_idx == 0 { 1 } else { 0 };
-    info!("Step 3: Stopping follower node {}", follower_idx + 1);
-
-    engines[follower_idx].stop().await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    info!("Restarting follower node {}", follower_idx + 1);
-    let (storage, state_machine) = open_rocksdb(&db_paths[follower_idx])?;
-    let config_path = format!("/tmp/d-engine-cas-snapshot-node{}.toml", follower_idx + 1);
-
-    let new_engine = DefaultEmbeddedEngine::start_custom(
-        &db_paths[follower_idx],
-        Arc::new(storage),
-        state_machine,
-        Some(&config_path),
-    )
-    .await?;
-    engines[follower_idx] = new_engine;
-
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Step 4: Verify lock persists after restart
-    info!("Step 4: Verifying lock persists after restart");
-    let recovered_holder = leader_client_clone.get(lock_key).await?;
-    assert_eq!(
-        recovered_holder,
-        Some(b"owner_before_snapshot".to_vec().into()),
-        "Lock should persist after snapshot recovery"
+    let follower_snapshots = data_dir.join(format!("node{follower_id}/db/snapshots"));
+    assert!(
+        wait_for_snapshot(&follower_snapshots, Duration::from_secs(15)).await,
+        "node {follower_id} must take a snapshot after {SNAPSHOT_THRESHOLD} entries"
     );
 
-    // Step 5: Verify lock can be released and re-acquired
-    info!("Step 5: Release and re-acquire lock");
-    let released = leader_client
-        .compare_and_swap(lock_key, Some(b"owner_before_snapshot"), b"")
-        .await?;
-    assert!(released, "Should release lock");
+    // Stop only after the follower applied the last write, so every write is on its disk.
+    let follower = &engines[follower_id as usize - 1];
+    let last_key = format!("key_{}", FILLER_WRITES - 1);
+    let mut caught_up = false;
+    for _ in 0..50 {
+        if follower.client().get_eventual(last_key.as_bytes()).await?.is_some() {
+            caught_up = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        caught_up,
+        "node {follower_id} must apply every write before it is stopped"
+    );
 
-    let reacquired = leader_client.compare_and_swap(lock_key, Some(b""), b"new_owner").await?;
-    assert!(reacquired, "Should re-acquire lock");
+    for engine in engines.drain(..) {
+        engine.stop().await?;
+    }
 
-    let final_holder = leader_client.get(lock_key).await?;
-    assert_eq!(final_holder, Some(b"new_owner".to_vec().into()));
+    let follower = start_node(
+        follower_id,
+        &data_dir,
+        &config_paths[follower_id as usize - 1],
+    )
+    .await?;
+    let client = follower.client();
+    assert_eq!(
+        client.get_eventual(lock_key).await?,
+        Some(b"owner_before_snapshot".to_vec().into()),
+        "the lock must be recovered from node {follower_id}'s own snapshot"
+    );
+    assert_eq!(
+        client.get_eventual(b"key_0").await?,
+        Some(b"value_0".to_vec().into()),
+        "the oldest write must be recovered from node {follower_id}'s own snapshot"
+    );
 
-    info!("CAS snapshot recovery test passed");
+    // The rest of the cluster comes back; the recovered lock still works as a lock.
+    let mut engines = vec![follower];
+    for node_id in (1..=3u64).filter(|&id| id != follower_id) {
+        engines.push(start_node(node_id, &data_dir, &config_paths[node_id as usize - 1]).await?);
+    }
+    let leader_id = engines[0].wait_ready(Duration::from_secs(10)).await?.leader_id;
+    let leader_client = engines
+        .iter()
+        .find(|e| e.node_id() == leader_id)
+        .expect("leader is one of the nodes")
+        .client()
+        .clone();
+    assert!(
+        leader_client
+            .compare_and_swap(lock_key, Some(b"owner_before_snapshot"), b"")
+            .await?,
+        "Should release lock"
+    );
+    assert!(
+        leader_client.compare_and_swap(lock_key, Some(b""), b"new_owner").await?,
+        "Should re-acquire lock"
+    );
+    assert_eq!(
+        leader_client.get(lock_key).await?,
+        Some(b"new_owner".to_vec().into())
+    );
+
+    for engine in engines {
+        engine.stop().await?;
+    }
     Ok(())
 }

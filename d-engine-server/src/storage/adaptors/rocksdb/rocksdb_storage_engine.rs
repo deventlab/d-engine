@@ -150,24 +150,6 @@ impl StorageEngine for RocksDBStorageEngine {
         Ok(())
     }
 
-    async fn entry(
-        &self,
-        index: u64,
-    ) -> Result<Option<Entry>, Error> {
-        let cf = self
-            .db
-            .cf_handle(LOG_CF)
-            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
-
-        let key = Self::index_to_key(index);
-        match self.db.get_cf(&cf, key).map_err(|e| StorageError::DbError(e.to_string()))? {
-            Some(bytes) => Entry::decode(&*bytes)
-                .map(Some)
-                .map_err(|e| StorageError::SerializationError(e.to_string()).into()),
-            None => Ok(None),
-        }
-    }
-
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
