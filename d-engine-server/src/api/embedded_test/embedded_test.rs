@@ -1148,6 +1148,8 @@ listen_address = "{}"
 heartbeat_idle_flush_interval_ms = 500
 election_timeout_min_ms = 1500
 election_timeout_max_ms = 3000
+# The 50ms default client timeout is too tight for a loaded CI runner.
+general_raft_timeout_duration_in_ms = 5000
 "#,
             data_dir.display(),
             free_listen_address()
