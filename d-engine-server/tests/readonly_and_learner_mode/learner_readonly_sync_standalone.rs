@@ -252,8 +252,10 @@ general_raft_timeout_duration_in_ms = 5000
 
     // Phase 6: Verify node 4 status remains READ_ONLY (never promoted)
     println!("[Phase 6] Verifying node 4 status remains READ_ONLY...");
-    // The client caches the member list of whichever node answered its last refresh, which can
-    // be a follower that has not applied node 4's join yet: refresh until node 4 appears.
+    // Refresh until node 4 appears. This can still fail: a node that started late catches up
+    // through a snapshot, and a snapshot does not carry the membership, so a join inside it is
+    // never applied there and that node keeps listing [1, 2, 3]. The test is left able to fail
+    // until the snapshot carries the membership.
     let node4_meta_current = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let _ = client_manager.refresh(None).await;

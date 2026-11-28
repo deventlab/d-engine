@@ -351,6 +351,9 @@ async fn test_embedded_watch_integration() -> Result<(), Box<dyn std::error::Err
     let db_path = temp_dir.path().join("db");
 
     // Create a minimal config with Watch enabled
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_path = temp_dir.path().join("d-engine.toml");
     let raft_table = test_raft_table();
     std::fs::write(
@@ -358,7 +361,7 @@ async fn test_embedded_watch_integration() -> Result<(), Box<dyn std::error::Err
         format!(
             r#"
 [cluster]
-listen_address = "127.0.0.1:50055" # Fixed port
+listen_address = "127.0.0.1:{port}"
 
 {raft_table}
 [raft.watch]
