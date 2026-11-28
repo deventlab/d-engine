@@ -49,8 +49,6 @@ mod shared_state_machine;
 
 pub use shared_state_machine::SharedStateMachine;
 
-pub const WAIT_FOR_NODE_READY_IN_SEC: u64 = 6;
-
 // we are testing linearizable read from Leader directly, the latency should less than 1ms ideally
 pub const LATENCY_IN_MS: u64 = 50;
 
