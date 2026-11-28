@@ -72,7 +72,7 @@ max_batch_size = 100
 /// - System remains responsive to protocol messages
 ///
 /// **Success Criteria**: Fair scheduling, no protocol deadlocks
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_select_fairness_drain_no_starvation() {
     // Create single-node cluster
     let (engine, _temp_dir) = create_test_engine("select_fairness").await;

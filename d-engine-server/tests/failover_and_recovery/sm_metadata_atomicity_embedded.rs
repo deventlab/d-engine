@@ -103,7 +103,7 @@ async fn start_single_node(
 /// `get_linearizable()` on the last write guarantees the SM has fully applied
 /// the whole batch (both the data and the atomically-written last_applied
 /// metadata are already in the MemTable) before `flush()` runs.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_flush_then_crash_preserves_data_and_last_applied_together()
 -> Result<(), Box<dyn std::error::Error>> {

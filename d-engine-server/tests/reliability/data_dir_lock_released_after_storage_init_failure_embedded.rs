@@ -12,7 +12,7 @@ use crate::common::get_available_ports;
 /// needs) fails on it, since a file can't be written into like a directory.
 /// This failure happens after the lock is acquired but before RocksDB is
 /// ever touched, which is the window where a leaked lock would go unnoticed.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_lock_released_after_storage_init_failure() {
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(

@@ -71,7 +71,7 @@ size_threshold = {}
 /// - No requests return empty/stale data
 /// - All requests complete successfully
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_batching_preserves_linearizability() {
     let (engine, _temp_dir) = create_engine_with_batching("test_linearizability", 50).await;
 
@@ -139,7 +139,7 @@ async fn test_batching_preserves_linearizability() {
 /// - All 50 requests return v1 (not empty/stale)
 /// - Requests complete within reasonable time (<500ms)
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrent_write_and_read() {
     let (engine, _temp_dir) = create_engine_with_batching("test_concurrent_write", 50).await;
 
@@ -212,7 +212,7 @@ async fn test_concurrent_write_and_read() {
 /// Single-node clusters have optimized quorum verification (only leader confirms),
 /// so requests complete in microseconds, not milliseconds. This is correct behavior.
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_single_request_timeout_trigger() {
     let (engine, _temp_dir) = create_engine_with_batching("test_timeout", 50).await;
 
@@ -270,7 +270,7 @@ async fn test_single_request_timeout_trigger() {
 /// - Flush latency < 5ms (proves size trigger, not time trigger)
 /// - All 50 requests succeed
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_size_threshold_immediate_flush() {
     let (engine, _temp_dir) = create_engine_with_batching("test_performance", 100).await;
 
@@ -333,7 +333,7 @@ async fn test_size_threshold_immediate_flush() {
 /// - Run 2 throughput >= Run 1 throughput (no regression)
 /// - Log actual improvement for monitoring
 #[traced_test]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_batching_throughput_improvement() {
     // Skip benchmark in non-CI environments to save time
     if std::env::var("CI").is_ok() {

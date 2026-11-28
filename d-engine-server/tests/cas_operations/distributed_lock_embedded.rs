@@ -19,7 +19,7 @@ use crate::common::get_available_ports;
 /// 3. Verify exactly one client acquires lock (mutual exclusion)
 /// 4. Lock holder releases, another acquires
 /// 5. Verify lock state persists across operations
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;

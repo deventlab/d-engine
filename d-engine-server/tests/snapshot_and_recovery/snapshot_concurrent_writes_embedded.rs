@@ -59,7 +59,7 @@ use crate::common::get_available_ports;
 /// - Snapshot generation occurs in separate async task
 /// - Write path remains unblocked during checkpoint creation
 /// - Verifies `generate_snapshot_data()` correctness
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_leader_snapshot_concurrent_writes() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;

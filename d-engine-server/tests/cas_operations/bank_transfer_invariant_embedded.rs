@@ -47,7 +47,7 @@ fn unpack(bytes: &[u8]) -> [u64; 3] {
 /// workers continue without interruption.
 ///
 /// Assert: total balance is invariant throughout; no account goes negative.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_concurrent_transfers_preserve_bank_invariant()

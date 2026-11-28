@@ -62,7 +62,7 @@ use crate::common::wait_for_snapshot;
 /// ✅ All 200 entries replicated to Follower without data loss
 /// ✅ Cluster term unchanged — Follower stayed connected during snapshot
 /// ✅ No stall or deadlock in the Follower event loop
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_follower_snapshot_generation_during_replication()
 -> Result<(), Box<dyn std::error::Error>> {

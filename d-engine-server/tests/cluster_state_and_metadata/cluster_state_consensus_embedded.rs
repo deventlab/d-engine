@@ -27,7 +27,7 @@ use crate::common::get_available_ports;
 /// - All nodes agree on the same leader_id via leader_info()
 ///
 /// Business scenario: Basic 3-node HA deployment
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_multi_node_single_leader() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -193,7 +193,7 @@ listen_address = '127.0.0.1:{}'
 /// - Results are consistent across multiple calls on each node
 ///
 /// Business scenario: Monitoring dashboard polling cluster state from all nodes
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_leader_info_consistency_across_cluster() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -373,7 +373,7 @@ general_raft_timeout_duration_in_ms = 3000
 /// - Term increases
 ///
 /// Business scenario: Leader node crashes, cluster recovers automatically
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_leader_failover_state_change() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;

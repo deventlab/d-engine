@@ -47,7 +47,7 @@ use crate::common::wait_for_snapshot;
 /// ✅ Learner successfully applies snapshot despite stale temp file
 /// ✅ All 150 entries present with correct values
 /// ✅ `temp-snapshot.part.tar.gz` replaced — no corruption
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_snapshot_receiver_truncates_stale_temp_file() -> Result<(), Box<dyn std::error::Error>>

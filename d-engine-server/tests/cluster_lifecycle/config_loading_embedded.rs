@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_start_with_no_config_path_env() {
     // Clear CONFIG_PATH to reproduce the bug scenario
     unsafe {

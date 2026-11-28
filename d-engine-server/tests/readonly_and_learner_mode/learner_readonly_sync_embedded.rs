@@ -51,7 +51,7 @@ const LOG_DIR: &str = "./logs/embedded/readonly";
 ///
 /// ## Conclusion
 /// **ReadOnly Learners are fully supported in Embedded mode** ✅
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_readonly_mode_learner_embedded() -> Result<(), Box<dyn std::error::Error>> {

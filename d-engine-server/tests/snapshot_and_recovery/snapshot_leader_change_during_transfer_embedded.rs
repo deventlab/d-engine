@@ -43,7 +43,7 @@ use crate::common::wait_for_snapshot;
 /// ✅ Learner recovers snapshot from the new leader
 /// ✅ Snapshot-only entries (purged from log) readable on the Learner
 /// ✅ Cluster maintains quorum throughout (2 of 3 original voters survive)
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_snapshot_transfer_resumes_after_leader_change()

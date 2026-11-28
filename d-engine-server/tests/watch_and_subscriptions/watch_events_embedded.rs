@@ -50,7 +50,7 @@ watcher_buffer_size = 10
     Ok((engine, temp_dir))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_registration() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -67,7 +67,7 @@ async fn test_embedded_watch_registration() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_receives_put_events() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -96,7 +96,7 @@ async fn test_embedded_watch_receives_put_events() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_always_available_when_compiled()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -139,7 +139,7 @@ listen_address = "127.0.0.1:{port}"
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_watch_node_crash_embedded_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Scenario:
     // 1. Node1: DefaultEmbeddedEngine.watch(key)
@@ -202,7 +202,7 @@ async fn test_watch_node_crash_embedded_mode() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_receives_delete_events() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -240,7 +240,7 @@ async fn test_embedded_watch_receives_delete_events() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
 
@@ -298,7 +298,7 @@ async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_multiple_watchers_same_key() -> Result<(), Box<dyn std::error::Error>>
 {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -339,7 +339,7 @@ async fn test_embedded_watch_multiple_watchers_same_key() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_integration() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup
     let temp_dir = TempDir::new()?;
@@ -427,7 +427,7 @@ watcher_buffer_size = 10
 /// #300: Prefix watcher must fire for every child key under the prefix, regardless
 /// of which specific child key is written.  Clients use this to watch an entire
 /// namespace (e.g. "/services/") without registering per-key watchers.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_prefix_watch_receives_child_key_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -473,7 +473,7 @@ async fn test_embedded_prefix_watch_receives_child_key_events()
 /// #300: A key that shares the prefix string but is not a child (e.g. "/config" with no
 /// trailing slash) must NOT be delivered to a "/config/" prefix watcher.  The slash
 /// boundary is the contract boundary for namespace isolation.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_prefix_watch_does_not_fire_for_parent_key()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -507,7 +507,7 @@ async fn test_embedded_prefix_watch_does_not_fire_for_parent_key()
 
 /// #300: Root prefix "/" must match every key written (since all paths start with "/").
 /// Useful for administrative observers that need a full-namespace view.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_root_prefix_watch_receives_all_keys()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -544,7 +544,7 @@ async fn test_embedded_root_prefix_watch_receives_all_keys()
 /// #300: `revision` in each WatchEvent must be a positive Raft applied index —
 /// it increases monotonically with each committed write.  Clients depend on this
 /// to detect gaps and decide whether to re-sync.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_event_revision_is_positive_and_increases()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -585,7 +585,7 @@ async fn test_embedded_watch_event_revision_is_positive_and_increases()
 
 /// #300: Prefix watcher handle must be automatically cleaned up when dropped, just
 /// like exact-key watchers.  No zombie entries left in the registry.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_prefix_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::error::Error>>
 {
     let (engine, _temp_dir) = setup_engine().await?;
@@ -617,7 +617,7 @@ async fn test_embedded_prefix_watch_handle_drop_cleanup() -> Result<(), Box<dyn 
 /// #300 / fix: watch_prefix must reject prefixes that don't start and end with '/'.
 /// `InvalidPrefix` maps to an immediate `Err` at the embedded-client layer;
 /// no partial state must be left in the registry.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_embedded_watch_prefix_invalid_format_returns_error()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, _temp_dir) = setup_engine().await?;

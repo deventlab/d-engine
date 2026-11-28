@@ -20,7 +20,7 @@ use crate::common::wait_for_new_leader;
 /// 2. Kill leader node
 /// 3. Verify re-election and data consistency
 /// 4. Verify cluster operational with 2/3 nodes
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -210,7 +210,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 /// 3. Verify cluster still operational (2/3 quorum)
 /// 4. Restart killed follower
 /// 5. Verify it rejoins and syncs data
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -369,7 +369,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Test minority failure (2/3 nodes down) causes cluster unavailability
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -524,7 +524,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 /// 3. Start nodes 1 and 2 and wait for a leader
 /// 4. The leader's term must be small: without PreVote node 3 would have raised its term once per
 ///    round and the whole cluster would have adopted it (term >= 6)
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;

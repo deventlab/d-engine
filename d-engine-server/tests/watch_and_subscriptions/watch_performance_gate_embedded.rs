@@ -91,7 +91,7 @@ async fn measure_put_latency(watcher_count: usize) -> f64 {
     elapsed.as_secs_f64()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Run explicitly with: cargo test --release --ignored
 async fn test_watch_overhead_100_watchers_gate() {
     println!("\nPerformance Gate: Testing 100 watchers overhead...\n");
@@ -136,7 +136,7 @@ async fn test_watch_overhead_100_watchers_gate() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Run explicitly with: cargo test --release --ignored
 async fn test_watch_overhead_1000_watchers_gate() {
     println!("\nPerformance Gate: Testing 1000 watchers overhead...\n");

@@ -4,7 +4,7 @@ use d_engine_server::DefaultEmbeddedEngine;
 use tracing_test::traced_test;
 
 /// Test single-node DefaultEmbeddedEngine basic lifecycle
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let data_dir = temp_dir.path().join("db");
@@ -69,7 +69,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 /// Test leader notification mechanism
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -108,7 +108,7 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Test data persistence across restarts
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;

@@ -8,7 +8,7 @@ use crate::common::get_available_ports;
 /// cleanly (no panic, no hang), and the first, already-running engine must
 /// stay fully functional — the failed second attempt must not affect it.
 /// This is the copy-paste-shared-directory mistake the lock exists to catch.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_second_start_on_same_data_dir_fails_first_unaffected() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut ports = get_available_ports(2).await;

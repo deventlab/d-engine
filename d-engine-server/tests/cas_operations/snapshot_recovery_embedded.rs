@@ -19,7 +19,7 @@ use crate::common::get_available_ports;
 /// 3. Trigger snapshot
 /// 4. Restart node
 /// 5. Verify CAS state persists (lock still held)
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;

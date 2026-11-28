@@ -60,7 +60,7 @@ use crate::common::wait_for_snapshot;
 // a process-wide subscriber via `capture_logs_globally_filtered` (only one global
 // tracing subscriber can exist per process; under `cargo test`, which runs every test
 // in a file in one process, whichever install happened second would panic).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_follower_catchup_within_retained_buffer_and_data_consistency()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -292,7 +292,7 @@ retained_log_entries = {RETAINED_LOGS}
 ///
 /// The follower's own tracing output must contain evidence that it actually received and
 /// applied a snapshot stream — not just that its data happens to be correct at the end.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_follower_catchup_beyond_retained_buffer_requires_install_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -509,7 +509,7 @@ retained_log_entries = {RETAINED_LOGS}
 /// → NeedSnapshot → InstallSnapshot). A brand-new learner with an empty log joins
 /// a leader whose retained log no longer reaches index 1, so AppendEntries cannot
 /// supply the gap — it MUST receive a full snapshot.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_learner_join_after_compaction_requires_install_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {

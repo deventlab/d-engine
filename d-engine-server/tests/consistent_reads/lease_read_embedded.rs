@@ -71,7 +71,7 @@ state_machine_sync_timeout_ms = 2000
 /// # Success Criteria
 /// - Lease read returns correct value
 /// - No errors during read
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_lease_read_with_valid_lease() {
     // Given: Create engine with lease enabled
@@ -125,7 +125,7 @@ async fn test_lease_read_with_valid_lease() {
 /// # Success Criteria
 /// - All reads return correct sequential values
 /// - Monotonically increasing values observed
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_lease_read_consistency_across_writes() {
     // Given: Create engine with lease enabled
@@ -175,7 +175,7 @@ async fn test_lease_read_consistency_across_writes() {
 /// # Success Criteria
 /// - lease_result == linearizable_result
 /// - Both return correct committed value
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_lease_vs_linearizable_read_consistency() {
     let (engine, _temp_dir) = create_test_engine_with_lease("lease_vs_lin").await;

@@ -23,7 +23,7 @@ use crate::common::get_available_ports;
 ///
 /// Poll window is generous (a few seconds) purely as a CI/OS-jitter tolerance — a
 /// correct fix should make this near-instant, not "eventually within the window."
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_leader_detects_follower_stop_within_bounded_window()
 -> Result<(), Box<dyn std::error::Error>> {
     let logs = capture_logs_globally_filtered(

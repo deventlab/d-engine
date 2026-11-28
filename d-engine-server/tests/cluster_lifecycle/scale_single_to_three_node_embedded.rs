@@ -17,7 +17,7 @@ use crate::common::retry_until;
 /// 2. Start another two nodes and join node 1 as cluster. Node 1 should remain as Leader, no data
 ///    lost
 /// 3. Verify cluster healthy and data preserved
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -276,7 +276,7 @@ general_raft_timeout_duration_in_ms = 5000
 /// 2. New leader must be elected within reasonable time (< 10 seconds)
 /// 3. No data loss across all phases
 /// 4. Cluster remains operational with 2/3 majority
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 async fn test_leader_failover_after_dynamic_scaling() -> Result<(), Box<dyn std::error::Error>> {
     // reset(&format!("{TEST_DIR}_failover")).await?;

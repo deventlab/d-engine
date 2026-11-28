@@ -28,7 +28,7 @@ use crate::common::wait_for_new_leader;
 /// - No partial writes (atomicity guarantee)
 /// - Lock state remains consistent after failover
 /// - Clients can retry and succeed after new leader elected
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::Error>> {
