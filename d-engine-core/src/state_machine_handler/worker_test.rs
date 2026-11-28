@@ -1190,6 +1190,9 @@ async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced()
 /// instead of this test cleanly observing `CaptureSkipped`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish() {
+    // Upper bounds for liveness, not latency expectations: capture #1 answers only after its
+    // 500-file directory is removed, which a fully loaded machine can take well over 500ms to do.
+    const LIVENESS_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let release_rx = std::sync::Mutex::new(Some(release_rx));
 
@@ -1259,8 +1262,7 @@ async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish
 
     let _ = release_tx.send(());
 
-    let install_result =
-        tokio::time::timeout(std::time::Duration::from_millis(200), install_response_rx).await;
+    let install_result = tokio::time::timeout(LIVENESS_BOUND, install_response_rx).await;
     assert!(
         matches!(
             install_result,
@@ -1278,8 +1280,7 @@ async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish
         })
         .unwrap();
 
-    let capture2_result =
-        tokio::time::timeout(std::time::Duration::from_millis(200), capture2_response_rx).await;
+    let capture2_result = tokio::time::timeout(LIVENESS_BOUND, capture2_response_rx).await;
     match capture2_result {
         Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::CaptureSkipped))))) => {}
         other => panic!(
@@ -1288,8 +1289,7 @@ async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish
         ),
     }
 
-    let capture1_result =
-        tokio::time::timeout(std::time::Duration::from_millis(500), capture1_response_rx).await;
+    let capture1_result = tokio::time::timeout(LIVENESS_BOUND, capture1_response_rx).await;
     assert!(
         matches!(
             capture1_result,
