@@ -161,7 +161,7 @@ impl<E: StorageEngine> FsyncWorker<E> {
             if self.generation.load(Ordering::Acquire) != gen_at_start {
                 for reply in replies {
                     let _ = reply.send(Err(crate::Error::Fatal(
-                        "stale fsync generation, superseded by reset".into(),
+                        "stale fsync generation, superseded by a truncation".into(),
                     )));
                 }
                 continue; // do not publish FsyncCompleted
@@ -174,22 +174,6 @@ impl<E: StorageEngine> FsyncWorker<E> {
                 let _ = reply.send(Ok(()));
             }
         }
-    }
-
-    /// Called from reset_internal() before clearing in-memory state.
-    /// Bumps generation to fence the in-flight physical flush (if any),
-    /// AND drains anything already queued but not yet picked up by a
-    /// flush round — that queued data was submitted before reset and
-    /// must not be silently adopted by the next round.
-    pub(super) fn fence_reset(&self) {
-        *self.pending_max.lock() = LogId::default();
-        let stale = std::mem::take(&mut *self.pending_replies.lock());
-        for reply in stale {
-            let _ = reply.send(Err(Error::Fatal(
-                "stale fsync generation, superseded by reset".into(),
-            )));
-        }
-        self.bump_generation();
     }
 
     pub(super) fn bump_generation(&self) {

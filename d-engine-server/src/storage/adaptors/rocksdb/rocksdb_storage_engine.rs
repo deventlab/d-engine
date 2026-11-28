@@ -403,26 +403,6 @@ impl StorageEngine for RocksDBStorageEngine {
         Ok(())
     }
 
-    async fn reset(&self) -> Result<(), Error> {
-        let cf = self
-            .db
-            .cf_handle(LOG_CF)
-            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
-
-        // Delete all keys in the log column family
-        let mut batch = WriteBatch::default();
-        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
-
-        for item in iter {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.delete_cf(&cf, &key);
-        }
-
-        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.last_index.store(0, Ordering::SeqCst);
-        Ok(())
-    }
-
     fn last_index(&self) -> u64 {
         self.last_index.load(Ordering::SeqCst)
     }

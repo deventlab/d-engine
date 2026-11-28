@@ -103,11 +103,6 @@ pub trait StorageEngine: Send + Sync + 'static {
     /// whose writes are already durable when they return still implements it, as `Ok(())`.
     fn flush(&self) -> Result<(), Error>;
 
-    /// Delete every log entry and start again from an empty log: `last_index()` becomes 0.
-    ///
-    /// Only the log is affected. Return only when the deletion is done.
-    async fn reset(&self) -> Result<(), Error>;
-
     /// Get last log index (optimized for frequent access)
     ///
     /// # Implementation note

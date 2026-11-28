@@ -469,7 +469,6 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));

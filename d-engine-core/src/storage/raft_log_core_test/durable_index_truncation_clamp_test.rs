@@ -218,7 +218,6 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -301,7 +300,6 @@ async fn test_persisted_index_corrected_downward_after_shrinking_truncation() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -375,7 +373,6 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));
@@ -439,7 +436,6 @@ async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     mock.expect_save_hard_state().returning(|_| Ok(()));

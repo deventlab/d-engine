@@ -208,19 +208,6 @@ async fn test_log_get_entries_clamps_to_stored_range() {
     assert!(storage.get_entries(7..=9).unwrap().is_empty());
 }
 
-/// `reset` drops every entry and returns `last_index` to 0.
-#[tokio::test]
-async fn test_log_reset_clears_all_entries() {
-    let dir = TestDir::new("reset");
-    let storage = RaftEngineStorage::open(dir.path()).unwrap();
-    append_durable(&storage, entries(1..=5, 1)).await;
-
-    storage.reset().await.unwrap();
-
-    assert_eq!(storage.last_index(), 0);
-    assert_eq!(storage.entry(1).await.unwrap(), None);
-}
-
 /// Truncating a suffix must drop it durably: after a restart the log still ends
 /// at the entry before `from_index`, and the kept prefix is unchanged.
 #[tokio::test]
@@ -295,36 +282,6 @@ async fn test_log_truncate_beyond_last_index_is_noop() {
     storage.truncate(100).await.unwrap();
 
     assert_eq!(storage.get_entries(1..=3).unwrap(), entries(1..=3, 1));
-}
-
-/// `reset` clears the log only. The hard state and the purge boundary live in
-/// the same engine and must survive it, in memory and after a restart.
-#[tokio::test]
-async fn test_log_reset_keeps_hard_state_and_purge_boundary() {
-    let dir = TestDir::new("reset-meta");
-    let boundary = LogId { term: 2, index: 3 };
-    {
-        let storage = RaftEngineStorage::open(dir.path()).unwrap();
-        append_durable(&storage, entries(1..=5, 2)).await;
-        storage.save_hard_state(&HardState {
-            current_term: 9,
-            voted_for: None,
-        })
-        .unwrap();
-        storage.purge(boundary).await.unwrap();
-
-        storage.reset().await.unwrap();
-        storage.flush().unwrap();
-
-        assert_eq!(storage.last_index(), 0);
-        assert_eq!(storage.load_hard_state().unwrap().unwrap().current_term, 9);
-        assert_eq!(storage.load_purge_boundary().unwrap(), Some(boundary));
-    }
-
-    let storage = RaftEngineStorage::open(dir.path()).unwrap();
-    assert_eq!(storage.last_index(), 0);
-    assert_eq!(storage.load_hard_state().unwrap().unwrap().current_term, 9);
-    assert_eq!(storage.load_purge_boundary().unwrap(), Some(boundary));
 }
 
 /// The hard state saved before a restart is the one loaded after it.

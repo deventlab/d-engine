@@ -160,7 +160,6 @@ mod mem_first_tests {
         ctx.append_entries(1, 100, 1).await;
 
         // Simulate power loss before flush
-        // storage.reset() simulates data loss after crash
 
         // In real scenario, durable_index would be 0 after restart
         assert_eq!(ctx.raft_log.durable_index(), 0);

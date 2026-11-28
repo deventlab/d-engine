@@ -78,7 +78,6 @@ async fn test_filter_conflicts_removes_entries_with_different_term() {
         RaftLogCoreTestContext::new("test_filter_conflicts_removes_entries_with_different_term");
 
     // Arrange: Setup initial log
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
     simulate_insert_command(&ctx.raft_log, vec![2, 3], 2).await;
     simulate_insert_command(&ctx.raft_log, vec![4], 4).await;
@@ -119,7 +118,6 @@ async fn test_filter_conflicts_handles_multiple_scenarios() {
     let ctx = RaftLogCoreTestContext::new("test_filter_conflicts_handles_multiple_scenarios");
 
     // Arrange: Setup initial log
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
     simulate_insert_command(&ctx.raft_log, vec![2, 3], 2).await;
     simulate_insert_command(&ctx.raft_log, vec![4], 4).await;
@@ -174,7 +172,6 @@ async fn test_last_entry_returns_highest_index() {
     let ctx = RaftLogCoreTestContext::new("test_last_entry_returns_highest_index");
 
     // Arrange: Reset and insert entries
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, (1..300).collect(), 1).await;
     simulate_insert_command(&ctx.raft_log, vec![1, 2], 1).await;
 
@@ -235,7 +232,6 @@ async fn test_append_entries_appends_entries_in_order() {
     let ctx = RaftLogCoreTestContext::new("test_append_entries_appends_entries_in_order");
 
     // Arrange: Reset and insert 2000 entries
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, (1..2001).collect(), 1).await;
 
     // Act: Query range
@@ -262,7 +258,6 @@ async fn test_get_entries_range_multiple_bounds() {
     let ctx = RaftLogCoreTestContext::new("test_get_entries_range_multiple_bounds");
 
     // Arrange: Insert 2000 entries
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, (1..2001).collect(), 1).await;
 
     // Act & Assert: Test various ranges
@@ -311,7 +306,6 @@ async fn test_insert_duplicate_commands_as_separate_events() {
     let ctx = RaftLogCoreTestContext::new("test_insert_duplicate_commands_as_separate_events");
 
     // Arrange: Reset and insert first batch
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, (1..10).collect(), 1).await;
 
     // Act: Insert second batch with incremented indexes
@@ -340,7 +334,6 @@ async fn test_purge_after_insert_maintains_consistency() {
     let ctx = RaftLogCoreTestContext::new("test_purge_after_insert_maintains_consistency");
 
     // Arrange: Insert initial entries
-    ctx.raft_log.reset().await.unwrap();
     simulate_insert_command(&ctx.raft_log, (1..=10).collect(), 1).await;
     assert_eq!(ctx.raft_log.last_entry_id(), 10);
 
@@ -367,7 +360,6 @@ async fn test_purge_logs_removes_entries_up_to_index() {
     let ctx = RaftLogCoreTestContext::new("test_purge_logs_removes_entries_up_to_index");
 
     // Arrange: Insert 9 entries
-    ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 9, 1);
     ctx.raft_log.append_entries(entries).await.unwrap();
 
@@ -409,7 +401,6 @@ async fn test_concurrent_purge_operations_are_safe() {
     let ctx = RaftLogCoreTestContext::new("test_concurrent_purge_operations_are_safe");
 
     // Arrange: Insert 10 entries
-    ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 10, 1);
     ctx.raft_log.append_entries(entries).await.unwrap();
 
@@ -442,7 +433,6 @@ async fn test_first_entry_id_after_purge_updates() {
     let ctx = RaftLogCoreTestContext::new("test_first_entry_id_after_purge_updates");
 
     // Arrange: Insert 10 entries
-    ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 10, 1);
     ctx.raft_log.append_entries(entries).await.unwrap();
 
@@ -573,8 +563,6 @@ async fn test_same_index_and_term_implies_identical_prefix() {
     let ctx2 = RaftLogCoreTestContext::new("test_log_matching_2");
 
     // Arrange: Create identical prefix in both logs
-    ctx1.raft_log.reset().await.unwrap();
-    ctx2.raft_log.reset().await.unwrap();
 
     for i in 1..=5 {
         let entries = mock_empty_entries(i, 1, 3);
@@ -600,7 +588,6 @@ async fn test_committed_entry_present_in_future_leaders() {
     let ctx = RaftLogCoreTestContext::new("test_committed_entry_present");
 
     // Arrange: Insert and commit entry
-    ctx.raft_log.reset().await.unwrap();
     let entries = mock_empty_entries(1, 5, 1);
     ctx.raft_log.append_entries(entries).await.unwrap();
     ctx.raft_log.flush().await.unwrap();
@@ -626,7 +613,6 @@ async fn test_append_updates_last_entry() {
     let ctx = RaftLogCoreTestContext::new("test_append_updates_last_entry");
 
     // Arrange: Reset log
-    ctx.raft_log.reset().await.unwrap();
 
     // Act & Assert: Append and verify
     simulate_insert_command(&ctx.raft_log, vec![1, 2, 3], 1).await;
@@ -663,7 +649,6 @@ async fn test_append_entries_updates_metadata() {
     let ctx = RaftLogCoreTestContext::new("test_append_entries_updates_metadata");
 
     // Arrange: Reset log
-    ctx.raft_log.reset().await.unwrap();
 
     // Act: Insert batch
     let entries = mock_empty_entries(1, 10, 5);

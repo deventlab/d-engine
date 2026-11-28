@@ -224,11 +224,6 @@ impl StorageEngine for SledStorageEngine {
         Ok(())
     }
 
-    async fn reset(&self) -> Result<()> {
-        self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
     fn last_index(&self) -> u64 {
         match self.tree.last() {
             Ok(Some((key, _))) => {

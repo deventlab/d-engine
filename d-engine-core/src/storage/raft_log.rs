@@ -316,20 +316,6 @@ pub trait RaftLog: Send + Sync + 'static {
     /// has stopped.
     async fn flush(&self) -> Result<()>;
 
-    /// Resets the entire log storage (destructive operation).
-    ///
-    /// # Safety Invariants
-    /// - MUST clear all log entries
-    /// - MUST clear all metadata
-    /// - MUST reset first_entry_id() and last_entry_id() to 0
-    /// - MUST clear term indexes
-    /// - MUST be atomic (no partial state visible)
-    /// - MUST NOT be called during normal operation (only during initialization/recovery)
-    ///
-    /// # Durability Contract
-    /// - Changes MUST be durable before returning Ok(())
-    async fn reset(&self) -> Result<()>;
-
     // =========================================================================
     // PERSISTENT STATE (Raft Paper §5.2)
     // =========================================================================

@@ -67,91 +67,6 @@ fn test_new_initializes_empty_state() {
 
 // ── fence_reset() ────────────────────────────────────────────────────────────
 
-/// `fence_reset()` zeroes `pending_max` — any batch size recorded before
-/// reset must not leak into a post-reset round.
-#[test]
-fn test_fence_reset_zeroes_pending_max() {
-    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
-    *worker.pending_max.lock() = LogId { term: 1, index: 10 };
-
-    worker.fence_reset();
-
-    assert_eq!(
-        worker.pending_max.lock().index,
-        0,
-        "fence_reset() must zero pending_max"
-    );
-}
-
-/// `fence_reset()` drains `pending_replies` and answers each with `Err` —
-/// callers queued before reset must not be silently dropped nor receive a
-/// stale `Ok(())`.
-#[test]
-fn test_fence_reset_drains_pending_replies_with_err() {
-    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
-
-    let (tx1, mut rx1) = oneshot::channel();
-    let (tx2, mut rx2) = oneshot::channel();
-    worker.pending_replies.lock().extend([tx1, tx2]);
-
-    worker.fence_reset();
-
-    assert!(
-        worker.pending_replies.lock().is_empty(),
-        "pending_replies must be empty after fence_reset()"
-    );
-    assert!(
-        rx1.try_recv().expect("tx1 must have been answered").is_err(),
-        "queued reply must receive Err, not a silent drop or stale Ok"
-    );
-    assert!(
-        rx2.try_recv().expect("tx2 must have been answered").is_err(),
-        "queued reply must receive Err, not a silent drop or stale Ok"
-    );
-}
-
-/// `fence_reset()` increments `generation` — the fence itself.
-#[test]
-fn test_fence_reset_increments_generation() {
-    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
-
-    worker.fence_reset();
-    assert_eq!(
-        worker.generation.load(Ordering::Acquire),
-        1,
-        "first fence_reset() must bump to 1"
-    );
-    worker.fence_reset();
-    assert_eq!(
-        worker.generation.load(Ordering::Acquire),
-        2,
-        "second fence_reset() must bump to 2"
-    );
-}
-
-/// `fence_reset()` is safe to call with nothing pending.
-#[test]
-fn test_fence_reset_is_safe_with_nothing_pending() {
-    let worker = minimal_worker(Arc::new(MockStorageEngine::new()));
-
-    worker.fence_reset();
-
-    assert_eq!(
-        worker.generation.load(Ordering::Acquire),
-        1,
-        "generation must still increment"
-    );
-    assert_eq!(
-        worker.pending_max.lock().index,
-        0,
-        "pending_max must stay 0"
-    );
-    assert!(
-        worker.pending_replies.lock().is_empty(),
-        "pending_replies must stay empty"
-    );
-}
-
 // ── submit() ─────────────────────────────────────────────────────────────
 
 /// `submit()` records the high-water mark — a smaller, later `mark` must not
@@ -438,8 +353,8 @@ fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
     ));
 
     // Two unrelated fences happened earlier — generation is 2, not 0.
-    worker.fence_reset();
-    worker.fence_reset();
+    worker.bump_generation();
+    worker.bump_generation();
     assert_eq!(worker.generation.load(Ordering::Acquire), 2);
 
     let (reply_tx, mut reply_rx) = oneshot::channel::<Result<()>>();

@@ -75,7 +75,6 @@ async fn test_leader_completeness_property() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case0() {
     let mut ctx = RaftLogCoreTestContext::new("test_calculate_majority_matched_index_case0");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     let current_term = 2;
     let commit_index = 2;
@@ -94,7 +93,6 @@ async fn test_calculate_majority_matched_index_case0() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case1() {
     let ctx = RaftLogCoreTestContext::new("test_calculate_majority_matched_index_case1");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Case 1: majority matched index is 2, commit_index: 4, current_term is 3,
     // while log(2) term is 2, return None
@@ -112,7 +110,6 @@ async fn test_calculate_majority_matched_index_case1() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case2() {
     let mut ctx = RaftLogCoreTestContext::new("test_calculate_majority_matched_index_case2");
-    ctx.raft_log.reset().await.expect("reset successfully!");
 
     // Case 2: majority matched index is 3, commit_index: 2, current_term is 3,
     // while log(3) term is 3, return Some(3)

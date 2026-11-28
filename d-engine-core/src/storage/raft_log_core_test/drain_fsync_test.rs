@@ -120,82 +120,6 @@ async fn test_batch_append_produces_one_flush() {
     );
 }
 
-/// `reset()` must not let a stale `pending_max` corrupt `durable_index`.
-///
-/// ## Background
-/// `FsyncWorker::pending_max` holds the highest mark written to the OS page cache
-/// but not yet fsynced. `reset()` calls `fence_reset()`, which zeroes it.
-///
-/// ## Original bug (fixed pre-#422, in the since-removed IO-thread design)
-/// The IO thread's reset path wiped the on-disk log but did NOT zero
-/// `pending_max`. On the next wakeup the IO thread would compute:
-/// ```
-/// pending_max = pending_max.max(new_end)   // stale 10 wins over new 3
-/// fsync_and_advance(10)                    // advances durable_index to 10 — WRONG
-/// ```
-/// `durable_index (10) >= max_index (3)` would then make every subsequent `flush()`
-/// return immediately without syncing the new entries — silently lost on a crash.
-///
-/// ## Update (2026-07-19): now structurally unreachable
-/// A failed fsync now poisons the log permanently, so writes after Phase 2
-/// are rejected outright — the corruption repro path no longer exists.
-/// Assertions updated to check for that rejection instead.
-#[tokio::test]
-async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() {
-    let storage = Arc::new(MockStorageEngine::first_flush_fails(
-        "pending_max_zeroed_on_reset".into(),
-    ));
-    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    std::thread::sleep(Duration::from_millis(10)); // let the spawned fsync task start
-
-    // Phase 1: append 10 entries.
-    // FsyncWorker persists then fsyncs: persist succeeds, fsync FAILS (first call).
-    // Failed fsync leaves pending_max = 10 (not zeroed — only success path zeros
-    // it) AND now poisons the log permanently (see FsyncWorker).
-    let entries: Vec<Entry> = (1u64..=10)
-        .map(|i| Entry {
-            index: i,
-            term: 1,
-            payload: None,
-        })
-        .collect();
-    raft_log.append_entries(entries).await.unwrap();
-    // Wait for FsyncWorker to process the submit (persist ok, fsync fails).
-    sleep(Duration::from_millis(20)).await;
-    assert!(
-        raft_log.is_poisoned(),
-        "the fsync failure above must have poisoned the log"
-    );
-
-    // Phase 2: reset — disk wiped. Still permitted (reset doesn't promise
-    // durability), but does NOT clear poisoned (see test_poisoned_survives_reset).
-    raft_log.reset().await.unwrap();
-    assert!(
-        raft_log.is_poisoned(),
-        "poisoned must survive reset — this is what closes off the original bug"
-    );
-
-    // Phase 3: attempt to append 3 new entries starting from index 1 — this is
-    // the exact sequence that used to reproduce the durable_index corruption.
-    // It must now be rejected outright, never reaching FsyncWorker at all.
-    let new_entries: Vec<Entry> = (1u64..=3)
-        .map(|i| Entry {
-            index: i,
-            term: 2,
-            payload: None,
-        })
-        .collect();
-    let result = raft_log.append_entries(new_entries).await;
-    assert!(
-        result.is_err(),
-        "a poisoned log must reject writes even after reset — the original \
-         'stale pending_max causes silent data loss' bug can no longer be \
-         reached because there is no post-poisoning write path left to corrupt"
-    );
-
-    raft_log.close().await;
-}
-
 /// flush() acts as a strict durability barrier: all entries appended before the
 /// flush() call must be durable when flush() returns, regardless of internal batching.
 #[tokio::test]
@@ -307,9 +231,9 @@ async fn test_flush_propagates_io_error() {
 /// property no longer exists: one fsync failure is now permanent. Rewritten
 /// to check for the new (correct) behavior instead.
 #[tokio::test]
-async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
+async fn test_fsync_failure_poisons_and_rejects_later_writes() {
     let storage = Arc::new(MockStorageEngine::first_flush_fails(
-        "fsync_failure_poisons_and_rejects_writes_after_reset".into(),
+        "fsync_failure_poisons_and_rejects_later_writes".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
     std::thread::sleep(Duration::from_millis(10)); // let the spawned fsync task start
@@ -328,9 +252,6 @@ async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
         raft_log.is_poisoned(),
         "a real fsync failure must poison the log"
     );
-
-    raft_log.reset().await.unwrap();
-    assert!(raft_log.is_poisoned(), "poisoned must survive reset");
 
     let result = raft_log
         .append_entries(vec![Entry {
@@ -467,40 +388,6 @@ async fn test_purge_failure_poisons() {
         }])
         .await;
     assert!(result.is_err(), "writes must be rejected once poisoned");
-}
-
-/// A `reset()` failure poisons the log, same as the other storage-layer
-/// failures.
-#[tokio::test]
-async fn test_reset_failure_poisons() {
-    let storage = Arc::new(MockStorageEngine::reset_fails(
-        "reset_failure_poisons".into(),
-    ));
-    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    std::thread::sleep(Duration::from_millis(10));
-
-    let result = raft_log.reset().await;
-    assert!(
-        result.is_err(),
-        "a failed reset() must surface as an error to the caller"
-    );
-
-    assert!(
-        raft_log.is_poisoned(),
-        "a reset() failure must poison the log"
-    );
-
-    let append_result = raft_log
-        .append_entries(vec![Entry {
-            index: 1,
-            term: 1,
-            payload: None,
-        }])
-        .await;
-    assert!(
-        append_result.is_err(),
-        "writes must be rejected once poisoned"
-    );
 }
 
 /// A `save_hard_state()` failure (persisting current_term/voted_for) poisons
@@ -643,35 +530,6 @@ async fn test_poisoned_skips_replace_range() {
     }
 }
 
-/// Once already poisoned, `Reset` is deliberately NOT short-circuited —
-/// unlike `ReplaceRange`/`Purge`, it makes no new durability promise (it's a
-/// clean wipe, not a write the cluster will rely on), so it's allowed to run
-/// even when poisoned, letting the node reach a known-clean state before it
-/// exits. This test proves `reset()` actually executes (reaches
-/// `storage.reset()`) instead of being rejected — using a mock whose
-/// `reset()` always succeeds, so the call completing with `Ok(())` is proof
-/// it wasn't skipped.
-#[tokio::test]
-async fn test_poisoned_does_not_skip_reset() {
-    let storage = Arc::new(MockStorageEngine::with_id(
-        "poisoned_does_not_skip_reset".into(),
-    ));
-    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    std::thread::sleep(Duration::from_millis(10));
-
-    raft_log.poisoned.store(true, Ordering::SeqCst);
-
-    let result = raft_log.reset().await;
-    assert!(
-        result.is_ok(),
-        "Reset must not be short-circuited by poisoned — got: {result:?}"
-    );
-    assert!(
-        raft_log.is_poisoned(),
-        "poisoned must remain true — Reset succeeding doesn't clear it"
-    );
-}
-
 /// Once already poisoned, `Purge` must be rejected immediately without ever
 /// calling `storage.purge()`. Proven by checking the error message: if the
 /// underlying mock's own failure had been reached, the message would differ
@@ -720,28 +578,6 @@ async fn test_new_raft_log_core_starts_unpoisoned() {
     assert!(
         !raft_log.is_poisoned(),
         "A freshly constructed log is never born poisoned"
-    );
-}
-
-/// Once poisoned, the state survives `reset()` — it must NOT be cleared by
-/// `reset_internal()` / `FsyncWorker::fence_reset()`.
-///
-/// Why this matters: `reset()` is also invoked mid-flight for legitimate
-/// reasons (snapshot install, log conflict rewind). If poisoned were treated
-/// as just another piece of "current generation" state and wiped on reset,
-/// a node with an unconfirmed/corrupted WAL could silently resume accepting
-/// writes right after a snapshot install — exactly the silent-continue bug
-/// this whole fix exists to close.
-#[tokio::test]
-async fn test_poisoned_survives_reset() {
-    let storage = MockStorageEngine::with_id("poisoned_survives_reset".into());
-    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(storage), None, 5000);
-
-    raft_log.poisoned.store(true, Ordering::SeqCst);
-    assert!(raft_log.reset().await.is_ok());
-    assert!(
-        raft_log.is_poisoned(),
-        "reset shoud not cleaned poisoned flag"
     );
 }
 
@@ -876,7 +712,6 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_replace_range().returning(|from, new_entries| {
         Ok(new_entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
@@ -952,7 +787,6 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
     mock.expect_entry().returning(|_| Ok(None));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_replace_range()
         .returning(|from, e| Ok(e.last().map(|x| x.index).unwrap_or(from.saturating_sub(1))));
@@ -1019,7 +853,6 @@ async fn test_save_hard_state_flushes_before_returning() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
 
     let saved = Arc::clone(&events);
     mock.expect_save_hard_state().returning(move |_| {

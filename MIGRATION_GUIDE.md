@@ -85,10 +85,13 @@ The Raft log and the hard state (current term and vote) are one trait now. Imple
 | `FileLogStore` or `RocksDBLogStore` | Use `FileStorageEngine` or `RocksDBStorageEngine` |
 | `flush()` left to its default | Implement it. Make log entries and the hard state durable; `Ok(())` if your writes already are |
 | `flush_async()` | Delete it. The engine never called it |
+| `reset()` | Delete it. The engine never called it |
 | `is_write_durable()` returning `false` | Delete it. `flush()` already does the sync |
 | `is_write_durable()` returning `true` | Delete it, and make `flush()` return `Ok(())`: your writes are already on disk |
 
 `save_hard_state` is followed by `flush()` before the node answers a vote, so `flush()` must cover the hard state.
+
+**Tests.** `StorageEngineBuilder::build()` returns an engine on new, empty storage. Implement the new `reopen()` to restart the same storage.
 
 ## Upgrading to v0.3.0: RocksDB unified mode removed
 

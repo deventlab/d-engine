@@ -13,13 +13,13 @@ use prost::Message;
 use tempfile::TempDir;
 use tracing::debug;
 use tracing_test::traced_test;
-use uuid::Uuid;
 
 use super::*;
 
 pub struct RocksDBStorageEngineBuilder {
     temp_dir: TempDir,
-    instance_id: String,
+    // How many times `build()` ran: every build gets its own directory.
+    builds: std::sync::atomic::AtomicUsize,
     // Partner SM kept alive alongside storage; must be dropped before the next build().
     sm: Mutex<Option<RocksDBStateMachine>>,
     // Partner SM of the crash image; keeps its database open as long as the image is in use.
@@ -29,13 +29,18 @@ pub struct RocksDBStorageEngineBuilder {
 impl RocksDBStorageEngineBuilder {
     pub fn new() -> Self {
         let temp_dir = TempDir::new().unwrap();
-        let instance_id = Uuid::new_v4().to_string();
         Self {
             temp_dir,
-            instance_id,
+            builds: std::sync::atomic::AtomicUsize::new(0),
             sm: Mutex::new(None),
             image_sm: Mutex::new(None),
         }
+    }
+
+    /// The directory the last `build()` used.
+    fn current_dir(&self) -> std::path::PathBuf {
+        let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
+        self.temp_dir.path().join(format!("rocksdb-{n}"))
     }
 }
 
@@ -44,14 +49,18 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
     type Engine = RocksDBStorageEngine;
 
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.reopen().await
+    }
+
+    async fn reopen(&self) -> Result<Arc<Self::Engine>, Error> {
         // Drop old SM so Arc<DB> refcount falls to 0 and RocksDB releases the lock.
         {
             *self.sm.lock().unwrap() = None;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let path = self.temp_dir.path().join(format!("rocksdb-{}", self.instance_id));
-        let (engine, sm) = open_rocksdb(&path)?;
+        let (engine, sm) = open_rocksdb(self.current_dir())?;
         *self.sm.lock().unwrap() = Some(sm);
 
         // Ensure the engine is fully initialized before returning
@@ -63,8 +72,7 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
         *self.image_sm.lock().unwrap() = None;
         let image = self.temp_dir.path().join("rocksdb-crash-image");
         let _ = std::fs::remove_dir_all(&image);
-        let live = self.temp_dir.path().join(format!("rocksdb-{}", self.instance_id));
-        d_engine_core::state_machine_test::copy_storage_dir(&live, &image)?;
+        d_engine_core::state_machine_test::copy_storage_dir(&self.current_dir(), &image)?;
         let (engine, sm) = open_rocksdb(&image)?;
         *self.image_sm.lock().unwrap() = Some(sm);
         Ok(Some(Arc::new(engine)))

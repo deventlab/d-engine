@@ -337,15 +337,6 @@ impl StorageEngine for RaftEngineStorage {
         Ok(())
     }
 
-    async fn reset(&self) -> Result<(), Error> {
-        let mut batch = LogBatch::default();
-        batch.add_command(LOG_REGION_ID, Command::Clean);
-        self.engine
-            .write(&mut batch, false)
-            .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        Ok(())
-    }
-
     fn last_index(&self) -> u64 {
         self.engine.last_index(LOG_REGION_ID).unwrap_or(0)
     }

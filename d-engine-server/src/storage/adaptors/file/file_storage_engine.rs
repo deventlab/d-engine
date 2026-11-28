@@ -420,17 +420,6 @@ impl StorageEngine for FileStorageEngine {
         Ok(())
     }
 
-    async fn reset(&self) -> Result<(), Error> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.file.set_len(0)?;
-        inner.file.seek(SeekFrom::Start(0))?;
-        inner.file.flush()?;
-        inner.entries.clear();
-        inner.index_end_pos.clear();
-        self.last_index.store(0, Ordering::SeqCst);
-        Ok(())
-    }
-
     fn last_index(&self) -> u64 {
         self.last_index.load(Ordering::SeqCst)
     }

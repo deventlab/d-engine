@@ -27,10 +27,15 @@ pub trait StorageEngineBuilder: Send + Sync {
     /// The concrete StorageEngine type returned by this builder
     type Engine: StorageEngine + Send + Sync + 'static;
 
-    /// Create a new StorageEngine instance for testing
+    /// Creates an engine on new, empty storage. Every call starts from nothing: whatever an earlier
+    /// call wrote is not visible, so a test never has to wipe an engine first.
     async fn build(&self) -> Result<Arc<Self::Engine>, Error>;
 
-    /// Opens an engine on a copy of the files the last `build()` used, exactly as they are on disk
+    /// Opens an engine on the storage the last `build()` or `reopen()` used, with whatever that
+    /// storage holds now: a restart. The engine returned by that call has been dropped first.
+    async fn reopen(&self) -> Result<Arc<Self::Engine>, Error>;
+
+    /// Opens an engine on a copy of the files the last `build()` or `reopen()` used, exactly as they are on disk
     /// right now, without closing or dropping the live engine: what a restart after a crash (the
     /// process killed, no `close()`, no `Drop`) would find. Return `None` if the builder cannot do
     /// this; the crash test is then skipped.
@@ -59,11 +64,9 @@ impl StorageEngineTestSuite {
         Self::test_truncation(builder.build().await?).await?;
         Self::test_replace_range(builder.build().await?).await?;
         Self::test_replace_range_empty_entries_truncates(builder.build().await?).await?;
-        Self::test_reset_operation(builder.build().await?).await?;
         Self::test_edge_cases(builder.build().await?).await?;
         Self::test_purge_empty_range(builder.build().await?).await?;
         Self::test_hard_state_persistence(builder.build().await?).await?;
-        Self::test_reset_preserves_meta(builder.build().await?).await?;
         Self::test_flush_persists_all_data(builder.build().await?).await?;
 
         // Durability tests (crash recovery)
@@ -158,7 +161,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        engine.reset().await?;
         engine.persist_entries(create_test_entries(1..=100)).await?;
 
         // Truncate from index 76 onward
@@ -180,7 +182,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        engine.reset().await?;
         engine.persist_entries(create_test_entries(1..=10)).await?;
 
         let mut replacement = create_test_entries(6..=7);
@@ -210,7 +211,6 @@ impl StorageEngineTestSuite {
     where
         E: StorageEngine + Send + Sync + 'static,
     {
-        engine.reset().await?;
         engine.persist_entries(create_test_entries(1..=10)).await?;
 
         let last = engine.replace_range(6, Vec::new()).await?;
@@ -219,21 +219,6 @@ impl StorageEngineTestSuite {
         assert_eq!(engine.last_index(), 5);
         assert!(engine.entry(6).await?.is_none());
         assert!(engine.entry(5).await?.is_some());
-        Ok(())
-    }
-
-    /// Test storage reset functionality
-    pub async fn test_reset_operation<E>(engine: Arc<E>) -> Result<(), Error>
-    where
-        E: StorageEngine + Send + Sync + 'static,
-    {
-        engine.persist_entries(create_test_entries(1..=50)).await?;
-
-        engine.reset().await?;
-
-        assert_eq!(engine.last_index(), 0);
-        assert!(engine.entry(1).await?.is_none());
-
         Ok(())
     }
 
@@ -292,25 +277,6 @@ impl StorageEngineTestSuite {
         Ok(())
     }
 
-    /// Test that reset preserves metadata
-    pub async fn test_reset_preserves_meta<E>(engine: Arc<E>) -> Result<(), Error>
-    where
-        E: StorageEngine + Send + Sync + 'static,
-    {
-        let hard_state = create_test_hard_state(3, Some((5, 4)));
-
-        engine.save_hard_state(&hard_state)?;
-
-        // Reset should clear logs but keep meta
-        engine.reset().await?;
-
-        let loaded = engine.load_hard_state()?;
-        assert!(loaded.is_some());
-        assert_eq!(loaded.unwrap().current_term, 3);
-
-        Ok(())
-    }
-
     /// Test that flush persists all data
     pub async fn test_flush_persists_all_data<E>(engine: Arc<E>) -> Result<(), Error>
     where
@@ -346,7 +312,7 @@ impl StorageEngineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Step 2: Reopen and verify all entries survived
-        let engine2 = builder.build().await?;
+        let engine2 = builder.reopen().await?;
 
         assert_eq!(
             engine2.last_index(),
@@ -450,7 +416,7 @@ impl StorageEngineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Step 2: Reopen and verify
-        let engine2 = builder.build().await?;
+        let engine2 = builder.reopen().await?;
 
         let loaded = engine2.load_hard_state()?.unwrap();
         assert_eq!(
@@ -487,7 +453,7 @@ impl StorageEngineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Step 2: Reopen and verify truncation survived
-        let engine2 = builder.build().await?;
+        let engine2 = builder.reopen().await?;
 
         assert_eq!(
             engine2.last_index(),
@@ -532,7 +498,7 @@ impl StorageEngineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Step 2: Reopen and verify purge survived
-        let engine2 = builder.build().await?;
+        let engine2 = builder.reopen().await?;
 
         assert!(
             engine2.entry(1).await?.is_none(),

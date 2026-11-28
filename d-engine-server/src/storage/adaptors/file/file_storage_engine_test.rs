@@ -115,18 +115,6 @@ async fn test_truncation() {
 
 #[tokio::test]
 #[traced_test]
-async fn test_reset_operation() {
-    let (storage, _dir) = setup_storage();
-    storage.persist_entries(create_entries(1..=50)).await.unwrap();
-
-    storage.reset().await.unwrap();
-
-    assert_eq!(storage.last_index(), 0);
-    assert!(storage.entry(1).await.unwrap().is_none());
-}
-
-#[tokio::test]
-#[traced_test]
 async fn test_edge_cases() {
     let (storage, _dir) = setup_storage();
 
@@ -189,29 +177,6 @@ fn test_hard_state_persistence() {
     let storage2 = FileStorageEngine::new(dir.path().to_path_buf()).unwrap();
     let reloaded = storage2.load_hard_state().unwrap().unwrap();
     assert_eq!(reloaded.current_term, 5);
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_reset_preserves_meta() {
-    let (storage, _dir) = setup_storage();
-
-    let hard_state = HardState {
-        current_term: 3,
-        voted_for: Some(VotedFor {
-            voted_for_id: 5,
-            voted_for_term: 4,
-            committed: false,
-        }),
-    };
-    storage.save_hard_state(&hard_state).unwrap();
-
-    // Reset should clear logs but keep meta
-    storage.reset().await.unwrap();
-
-    let loaded = storage.load_hard_state().unwrap();
-    assert!(loaded.is_some());
-    assert_eq!(loaded.unwrap().current_term, 3);
 }
 
 #[tokio::test]
@@ -449,13 +414,22 @@ mod tests {
     /// Builder for FileStorageEngine test instances
     struct FileStorageEngineBuilder {
         temp_dir: TempDir,
+        // How many times `build()` ran: every build gets its own directory.
+        builds: std::sync::atomic::AtomicUsize,
     }
 
     impl FileStorageEngineBuilder {
         fn new() -> Self {
             Self {
                 temp_dir: TempDir::new().expect("Failed to create temp dir"),
+                builds: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        /// The directory the last `build()` used.
+        fn current_dir(&self) -> std::path::PathBuf {
+            let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
+            self.temp_dir.path().join(format!("file_storage_{n}"))
         }
     }
 
@@ -464,10 +438,12 @@ mod tests {
         type Engine = FileStorageEngine;
 
         async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
-            // Use fixed path to support restart recovery testing
-            let path = self.temp_dir.path().join("file_storage");
-            let engine = FileStorageEngine::new(path)?;
-            Ok(Arc::new(engine))
+            self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.reopen().await
+        }
+
+        async fn reopen(&self) -> Result<Arc<Self::Engine>, Error> {
+            Ok(Arc::new(FileStorageEngine::new(self.current_dir())?))
         }
 
         async fn cleanup(&self) -> Result<(), Error> {

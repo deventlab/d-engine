@@ -527,11 +527,6 @@ where
             .map_err(|_| NetworkError::SingalSendFailed("flush channel closed".into()))?
     }
 
-    async fn reset(&self) -> Result<()> {
-        let _timer = ScopedTimer::new("raft_log_core::reset");
-        self.reset_internal().await
-    }
-
     fn load_hard_state(&self) -> Result<Option<HardState>> {
         self.storage.load_hard_state()
     }
@@ -1024,33 +1019,6 @@ where
         }
     }
 
-    async fn reset_internal(&self) -> Result<()> {
-        // Fence first: bump generation before clearing state, so any fsync task
-        // still in flight will observe a mismatch and discard its stale result.
-        self.fsync_worker.fence_reset();
-
-        self.entries.write().clear();
-        self.durable_index.store(0, Ordering::Release);
-
-        // Reset boundaries
-        self.min_index.store(0, Ordering::Release);
-        self.memory_max_index.store(0, Ordering::Release);
-
-        // Clear term indexes to ensure consistency after reset
-        self.term_first_index.clear();
-        self.term_last_index.clear();
-        self.term_segments.clear();
-
-        if let Err(e) = self.storage.reset().await {
-            error!(?self.node_id, "reset failed (fatal): {e:?}");
-            self.mark_poisoned_and_notify(format!("Reset failed: {e:?}"));
-            return Err(e);
-        }
-        self.persisted_index.store(0, Ordering::Release);
-
-        Ok(())
-    }
-
     pub fn len(&self) -> usize {
         self.entries.read().len()
     }
@@ -1258,13 +1226,6 @@ impl TermSegments {
             self.last_term_start.store(entry.index, Ordering::Release);
             self.last_term.store(entry.term, Ordering::Release);
         }
-    }
-
-    /// Reset to empty. Called on log reset (snapshot install / full rewind).
-    pub(crate) fn clear(&self) {
-        self.seg_count.store(0, Ordering::Release);
-        self.last_term.store(0, Ordering::Release);
-        self.last_term_start.store(0, Ordering::Release);
     }
 }
 

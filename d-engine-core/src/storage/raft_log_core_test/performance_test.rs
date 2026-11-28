@@ -23,7 +23,6 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
     mock.expect_last_index().returning(|| 0);
     mock.expect_load_purge_boundary().returning(|| Ok(None));
     mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 
     // Add controllable delay to persist_entries
@@ -34,51 +33,6 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
     });
 
     Arc::new(mock)
-}
-
-// Tests reset performance during active flush
-#[tokio::test]
-async fn test_reset_performance_during_active_flush() {
-    // persist_entries mock sleeps for FLUSH_DELAY_MS.
-    // reset() fences the in-flight fsync (generation bump) rather than waiting
-    // on it. The test verifies reset completes within a bounded time (3x the
-    // flush delay) and does not block indefinitely.
-    const FLUSH_DELAY_MS: u64 = 200;
-    let max_reset_duration_ms = FLUSH_DELAY_MS * 3; // 600ms: accounts for scheduling overhead
-
-    let storage = create_delayed_storage(FLUSH_DELAY_MS);
-    let log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    let barrier = Arc::new(Barrier::new(2));
-
-    // Start long-running append+flush in background (slow due to persist_entries delay)
-    let flush_log = log.clone();
-    let flush_barrier = barrier.clone();
-    tokio::spawn(async move {
-        flush_barrier.wait().await; // Sync point
-        let entries: Vec<Entry> = (1..=10)
-            .map(|i| Entry {
-                index: i,
-                term: 1,
-                payload: None,
-            })
-            .collect();
-        let _ = flush_log.append_entries(entries).await;
-        let _ = flush_log.flush().await;
-    });
-
-    // Wait for flush to start
-    barrier.wait().await;
-
-    // Measure reset performance during active flush
-    let start = Instant::now();
-    log.reset().await.unwrap();
-    let duration = start.elapsed();
-
-    assert!(
-        duration.as_millis() < max_reset_duration_ms as u128,
-        "Reset took {}ms during active flush",
-        duration.as_millis(),
-    );
 }
 
 // Tests filter_out_conflicts performance with active flush
@@ -135,35 +89,6 @@ async fn test_filter_conflicts_performance_during_flush() {
     assert!(
         duration.as_millis() < max_duration_ms as u128,
         "Operation took {}ms during flush",
-        duration.as_millis(),
-    );
-}
-
-// Tests fresh cluster performance consistency
-#[tokio::test]
-async fn test_fresh_cluster_performance_consistency() {
-    let is_ci = std::env::var("CI").is_ok();
-    // Relax time limit in CI environment
-    let max_duration_ms = if is_ci { 50 } else { 5 };
-
-    let mut mock = MockStorageEngine::new();
-    mock.expect_flush().return_once(|| Ok(()));
-    mock.expect_last_index().returning(|| 0);
-    mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_truncate().returning(|_| Ok(()));
-    mock.expect_persist_entries().returning(|_| Ok(()));
-    mock.expect_reset().returning(|| Ok(()));
-
-    let log = RaftLogCore::<MockTypeConfig>::new(1, Arc::new(mock), None, 5000);
-
-    // Measure reset performance in fresh cluster
-    let start = Instant::now();
-    log.reset().await.unwrap();
-    let duration = start.elapsed();
-
-    assert!(
-        duration.as_millis() < max_duration_ms as u128,
-        "Fresh cluster reset took {}ms",
         duration.as_millis(),
     );
 }

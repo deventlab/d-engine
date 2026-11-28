@@ -175,7 +175,6 @@ async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
     mock.expect_get_entries().returning(|_| Ok(vec![]));
     mock.expect_purge().returning(|_| Ok(()));
     mock.expect_load_purge_boundary().returning(|| Ok(None));
-    mock.expect_reset().returning(|| Ok(()));
     mock.expect_truncate().returning(|_| Ok(()));
     mock.expect_flush().returning(|| Ok(()));
 

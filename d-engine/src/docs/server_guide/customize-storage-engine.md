@@ -81,7 +81,6 @@ impl StorageEngine for CustomStorageEngine {
 | `save_hard_state()`  | Persist term/vote state (durable after the next `flush()`)                                                      | High - atomic required |
 | `load_hard_state()`  | Load persisted term/vote state                                                                                  | High                   |
 | `flush()`            | Make log entries and the hard state durable; required, `Ok(())` if writes are already durable                   | Varies by backend      |
-| `reset()`            | Clear all data                                                                                                  | <1s                    |
 | `last_index()`       | Get highest persisted index                                                                                     | <100μs                 |
 
 ## 4. Testing Your Implementation
@@ -89,21 +88,30 @@ impl StorageEngine for CustomStorageEngine {
 Use the standardized test suite to ensure compatibility:
 
 ```rust,ignore
+use std::sync::atomic::{AtomicUsize, Ordering};
 use d_engine::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
 use tempfile::TempDir;
 
 struct CustomStorageEngineBuilder {
     temp_dir: TempDir,
+    builds: AtomicUsize, // every build() gets its own directory
 }
 
 #[async_trait]
 impl StorageEngineBuilder for CustomStorageEngineBuilder {
     type Engine = CustomStorageEngine;
 
+    // A new, empty engine on every call: tests never have to wipe it first.
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
-        let path = self.temp_dir.path().join("storage");
-        let engine = CustomStorageEngine::new(path).await?;
-        Ok(Arc::new(engine))
+        self.builds.fetch_add(1, Ordering::SeqCst);
+        self.reopen().await
+    }
+
+    // The storage the last `build()` used, opened again: a restart.
+    async fn reopen(&self) -> Result<Arc<Self::Engine>, Error> {
+        let n = self.builds.load(Ordering::SeqCst);
+        let path = self.temp_dir.path().join(format!("storage_{n}"));
+        Ok(Arc::new(CustomStorageEngine::new(path).await?))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
