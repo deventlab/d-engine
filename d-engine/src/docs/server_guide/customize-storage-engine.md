@@ -7,7 +7,7 @@ d-engine supports **pluggable storage** through the `StorageEngine` trait. This 
 - The **StorageEngine** trait provides a **generic interface** for storage backends
 - One trait, `StorageEngine`, keeps both the Raft log and the hard state (current term and vote)
 - **Built-in implementations** include:
-  - **File-based**: Production-ready file system storage
+  - **File-based**: Simple file system storage, for development and tests
   - **RocksDB**: High-performance embedded database (requires `features = ["rocksdb"]`)
 - Custom implementations enable support for cloud storage, SQL databases, etc.
 
