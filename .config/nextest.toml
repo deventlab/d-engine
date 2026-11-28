@@ -1,20 +1,15 @@
 # Nextest configuration for d-engine
 
-# Throttles (not serializes) the ~28 real-multi-node-cluster tests — full parallelism let
-# too many race for CPU and fail under load. Two groups: local vs CI (2 vCPU) core counts differ.
+# Throttles (not serializes) the real-multi-node-cluster tests — full parallelism let
+# too many race for CPU and fail under load. Two groups: local vs CI (4 vCPU) core counts differ.
 [test-groups.multi-node-cluster-local]
-max-threads = 4
+max-threads = 8
 
 [test-groups.multi-node-cluster-ci]
 max-threads = 2
 
 [profile.default]
 
-# Force serial execution for tests that use /tmp/db, or that mutate the
-# process-global RAFT__CLUSTER__* env vars (data_dir_lock/single_node_bootstrap)
-[[profile.default.overrides]]
-filter = "test(tmp_db) | test(config_path_env) | test(data_dir_lock) | test(single_node_bootstrap)"
-threads-required = 'num-cpus'
 
 # Serialize wall-clock perf assertions — CPU contention causes false failures, not the
 # assertions. Don't #[ignore] them, isolate instead.
@@ -42,9 +37,6 @@ test-group = "multi-node-cluster-local"
 # CI profile — select with `--profile ci` (see .github/workflows/ci.yml).
 [profile.ci]
 
-[[profile.ci.overrides]]
-filter = "test(tmp_db) | test(config_path_env) | test(data_dir_lock) | test(single_node_bootstrap)"
-threads-required = 'num-cpus'
 
 [[profile.ci.overrides]]
 filter = "test(raft_log_core::performance_test)"

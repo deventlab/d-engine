@@ -370,5 +370,8 @@ retained_log_entries = {}
         "Conclusion: Learner can safely queue and apply AppendEntries during snapshot application"
     );
 
+    for engine in engines.iter().chain([&learner_engine]) {
+        engine.stop().await?;
+    }
     Ok(())
 }

@@ -229,4 +229,6 @@ async fn test_select_fairness_drain_no_starvation() {
     );
 
     println!("✅ Select fairness test passed: no starvation detected");
+
+    engine.stop().await.expect("stop");
 }

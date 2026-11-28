@@ -129,5 +129,8 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
     assert!(correct_release, "Client B should release own lock");
 
     info!("All CAS distributed lock tests passed");
+    for engine in &engines {
+        engine.stop().await?;
+    }
     Ok(())
 }

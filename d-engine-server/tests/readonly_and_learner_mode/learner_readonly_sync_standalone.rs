@@ -252,8 +252,21 @@ general_raft_timeout_duration_in_ms = 5000
 
     // Phase 6: Verify node 4 status remains READ_ONLY (never promoted)
     println!("[Phase 6] Verifying node 4 status remains READ_ONLY...");
-    let members = client_manager.list_members().await?;
-    let node4_meta_current = members.iter().find(|m| m.id == 4).expect("Node 4 should exist");
+    // The client caches the member list of whichever node answered its last refresh, which can
+    // be a follower that has not applied node 4's join yet: refresh until node 4 appears.
+    let node4_meta_current = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let _ = client_manager.refresh(None).await;
+            if let Ok(members) = client_manager.list_members().await
+                && let Some(m) = members.into_iter().find(|m| m.id == 4)
+            {
+                return m;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    let node4_meta_current = node4_meta_current.expect("Node 4 should exist");
     assert_eq!(
         node4_meta_current.status,
         d_engine_proto::common::NodeStatus::ReadOnly as i32,

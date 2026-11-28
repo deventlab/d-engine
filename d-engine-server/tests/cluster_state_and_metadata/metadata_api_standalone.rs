@@ -21,19 +21,15 @@ use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use crate::common::reset;
 use crate::common::start_node;
 use crate::common::wait_for_stable_leader;
 
-const TEST_DIR: &str = "cluster_start_stop/metadata_api";
 const LOG_DIR: &str = "./logs/cluster_start_stop/metadata_api";
 
 /// Test: GetClusterMembership returns current_leader_id after bootstrap
 #[tokio::test]
 #[traced_test]
 async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientApiError> {
-    reset(TEST_DIR).await?;
-
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
@@ -110,8 +106,6 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
 #[tokio::test]
 #[traced_test]
 async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApiError> {
-    reset(TEST_DIR).await?;
-
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
@@ -213,8 +207,6 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
 #[tokio::test]
 #[traced_test]
 async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiError> {
-    reset(TEST_DIR).await?;
-
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();

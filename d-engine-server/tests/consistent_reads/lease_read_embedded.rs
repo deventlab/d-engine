@@ -98,6 +98,8 @@ async fn test_lease_read_with_valid_lease() {
     );
 
     println!("✅ Lease read with valid lease succeeded (local read path)");
+
+    engine.stop().await.expect("stop");
 }
 
 /// Test T4: Lease Read - Multiple Reads Verifying Consistency
@@ -152,6 +154,8 @@ async fn test_lease_read_consistency_across_writes() {
     }
 
     println!("✅ Lease read consistency verified across 5 sequential writes");
+
+    engine.stop().await.expect("stop");
 }
 
 /// Test: Lease Read vs Linearizable Read - Both Return Correct Data
@@ -206,4 +210,6 @@ async fn test_lease_vs_linearizable_read_consistency() {
     );
 
     println!("✅ Lease and linearizable reads return consistent data");
+
+    engine.stop().await.expect("stop");
 }

@@ -288,5 +288,8 @@ retained_log_entries = {}
     );
     info!("  - No unintended leader election during Follower snapshot");
 
+    for engine in &engines {
+        engine.stop().await?;
+    }
     Ok(())
 }

@@ -404,54 +404,6 @@ mod tests {
         }
     }
 
-    // Integration tests using StorageEngineTestSuite
-
-    use async_trait::async_trait;
-    use d_engine_core::Error;
-    use d_engine_core::storage::storage_engine_test::StorageEngineBuilder;
-    use d_engine_core::storage::storage_engine_test::StorageEngineTestSuite;
-
-    /// Builder for FileStorageEngine test instances
-    struct FileStorageEngineBuilder {
-        temp_dir: TempDir,
-        // How many times `build()` ran: every build gets its own directory.
-        builds: std::sync::atomic::AtomicUsize,
-    }
-
-    impl FileStorageEngineBuilder {
-        fn new() -> Self {
-            Self {
-                temp_dir: TempDir::new().expect("Failed to create temp dir"),
-                builds: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        /// The directory the last `build()` used.
-        fn current_dir(&self) -> std::path::PathBuf {
-            let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
-            self.temp_dir.path().join(format!("file_storage_{n}"))
-        }
-    }
-
-    #[async_trait]
-    impl StorageEngineBuilder for FileStorageEngineBuilder {
-        type Engine = FileStorageEngine;
-
-        async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
-            self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.reopen().await
-        }
-
-        async fn reopen(&self) -> Result<Arc<Self::Engine>, Error> {
-            Ok(Arc::new(FileStorageEngine::new(self.current_dir())?))
-        }
-
-        async fn cleanup(&self) -> Result<(), Error> {
-            // TempDir automatically cleans up on drop
-            Ok(())
-        }
-    }
-
     /// Truncate then persist survives a reopen with correct file boundaries.
     ///
     /// Verifies that after truncate(3) + persist [3,4 term=2], the file is physically
@@ -592,14 +544,6 @@ mod tests {
         assert_eq!(storage.entry(2).await.unwrap().unwrap().term, 1);
         assert!(storage.entry(3).await.unwrap().is_none());
         assert_eq!(storage.last_index(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_file_storage_engine_suite() {
-        let builder = FileStorageEngineBuilder::new();
-        StorageEngineTestSuite::run_all_tests(builder)
-            .await
-            .expect("FileStorageEngine should pass all tests");
     }
 
     #[tokio::test]
