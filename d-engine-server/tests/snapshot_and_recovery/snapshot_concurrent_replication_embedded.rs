@@ -42,7 +42,10 @@ use crate::common::get_available_ports;
 /// - After snapshot application completes, queued entries are applied
 /// - Final state: Learner has all 2000 entries with correct values
 /// - No data loss or corruption during temporary DB replacement
-#[tokio::test]
+// Multi-threaded, as in a real deployment: on a single thread, any blocking call made while
+// starting a node (opening RocksDB takes hundreds of ms under load) also stops every other
+// node's timers, and the followers start an election the real cluster would never see.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[traced_test]
 #[serial]
 async fn test_learner_snapshot_concurrent_replication() -> Result<(), Box<dyn std::error::Error>> {
